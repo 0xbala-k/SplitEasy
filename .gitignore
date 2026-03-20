@@ -1,2 +1,4 @@
 .superpowers/
 .worktrees/
+supabase/.env.local
+SplitEasy/Config/Secrets.xcconfig
