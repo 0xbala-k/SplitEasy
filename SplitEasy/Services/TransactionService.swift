@@ -18,20 +18,31 @@ final class TransactionService {
     // Fetch history (split + skipped) with cursor-based pagination
     // cursor: (date, id) of last row from previous page
     func fetchHistory(cursor: (date: String, id: UUID)? = nil, limit: Int = 50) async throws -> [Transaction] {
-        var query = client
-            .from("transactions")
-            .select()
-            .in("status", values: ["split", "skipped"])
-            .order("date", ascending: false)
-            .order("id", ascending: true)
-            .limit(limit)
-
+        // .or() must be called on PostgrestFilterBuilder (before .order/.limit),
+        // so we branch early to keep the filter chain types correct.
         if let cursor {
             // Rows where (date < cursor.date) OR (date == cursor.date AND id > cursor.id)
-            query = query.or("date.lt.\(cursor.date),and(date.eq.\(cursor.date),id.gt.\(cursor.id))")
+            return try await client
+                .from("transactions")
+                .select()
+                .in("status", values: ["split", "skipped"])
+                .or("date.lt.\(cursor.date),and(date.eq.\(cursor.date),id.gt.\(cursor.id))")
+                .order("date", ascending: false)
+                .order("id", ascending: true)
+                .limit(limit)
+                .execute()
+                .value
+        } else {
+            return try await client
+                .from("transactions")
+                .select()
+                .in("status", values: ["split", "skipped"])
+                .order("date", ascending: false)
+                .order("id", ascending: true)
+                .limit(limit)
+                .execute()
+                .value
         }
-
-        return try await query.execute().value
     }
 
     // Mark a transaction as skipped (direct client update, RLS permits this)
@@ -50,7 +61,7 @@ final class TransactionService {
             InsertAction.self,
             schema: "public",
             table: "transactions",
-            filter: "status=eq.new"
+            filter: .init(column: "status", operator: .eq, value: "new")
         )
         Task {
             for await _ in changes {
@@ -59,7 +70,7 @@ final class TransactionService {
                 }
             }
         }
-        Task { await channel.subscribe() }
+        Task { try? await channel.subscribeWithError() }
         return channel
     }
 }
