@@ -39,5 +39,13 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <key>SUPABASE_URL</key>
+    <string>$(SUPABASE_URL)</string>
+    <key>SUPABASE_ANON_KEY</key>
+    <string>$(SUPABASE_ANON_KEY)</string>
+    <key>SPLITWISE_CLIENT_ID</key>
+    <string>$(SPLITWISE_CLIENT_ID)</string>
+    <key>SPLITWISE_REDIRECT_URI</key>
+    <string>$(SPLITWISE_REDIRECT_URI)</string>
 </dict>
 </plist>
