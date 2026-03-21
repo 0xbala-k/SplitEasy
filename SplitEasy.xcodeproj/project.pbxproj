@@ -35,6 +35,7 @@
 		A69551DC0CC32D4904BC6118 /* BankConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0390862182E07FB0E4E34080 /* BankConnectView.swift */; };
 		A8928DD2F27962D01FD78C46 /* PlaidItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9BD40FD42ACF6295D63A7D6 /* PlaidItem.swift */; };
 		B0E0E81315977C625BA9A873 /* SplitDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90129E725E3999E7C05CE3D5 /* SplitDecision.swift */; };
+		B1B20CE9EA32E5D69DA23D22 /* SplitwiseWebAuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3CC20BF304473305CB9BF3C /* SplitwiseWebAuthView.swift */; };
 		B53E6D78C550C70E29130F57 /* FriendPickerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 203993E002C5EA759B2953A1 /* FriendPickerViewModel.swift */; };
 		BB9F401440543A9D21BA386B /* FriendPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58022B00E622377BD324E9F0 /* FriendPickerView.swift */; };
 		C4262FCD9093E20FB2B6BBB2 /* AppUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6520075DF5F0AC6EDE0E235 /* AppUser.swift */; };
@@ -85,6 +86,7 @@
 		96B6D5BFF14A7B7F380819E9 /* LinkController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkController.swift; sourceTree = "<group>"; };
 		99E5E51D8270358CC25A1983 /* SupabaseService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseService.swift; sourceTree = "<group>"; };
 		9F9EB516CF5AA90F7170411D /* NewTransactionsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTransactionsViewModel.swift; sourceTree = "<group>"; };
+		A3CC20BF304473305CB9BF3C /* SplitwiseWebAuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitwiseWebAuthView.swift; sourceTree = "<group>"; };
 		A9BD40FD42ACF6295D63A7D6 /* PlaidItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaidItem.swift; sourceTree = "<group>"; };
 		A9F28E386CFFF5A0FEBFC32B /* FriendService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendService.swift; sourceTree = "<group>"; };
 		B6520075DF5F0AC6EDE0E235 /* AppUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUser.swift; sourceTree = "<group>"; };
@@ -256,6 +258,7 @@
 			children = (
 				0390862182E07FB0E4E34080 /* BankConnectView.swift */,
 				96B6D5BFF14A7B7F380819E9 /* LinkController.swift */,
+				A3CC20BF304473305CB9BF3C /* SplitwiseWebAuthView.swift */,
 				CD3021A194C6DC8DE574DAF0 /* WelcomeView.swift */,
 			);
 			path = Onboarding;
@@ -409,6 +412,7 @@
 				35A245D976004561450759A8 /* SplitService.swift in Sources */,
 				E3A5DB44D08F1ACF37F66D21 /* SplitwiseAuthService.swift in Sources */,
 				E2660ABC65613D4F80E97F25 /* SplitwiseFriend.swift in Sources */,
+				B1B20CE9EA32E5D69DA23D22 /* SplitwiseWebAuthView.swift in Sources */,
 				6E28505855BDA011FC23AEC8 /* SupabaseService.swift in Sources */,
 				DAD0EC6BEB4675F1807D4D17 /* ToastView.swift in Sources */,
 				4E22B398793CF39211CE0528 /* Transaction.swift in Sources */,
