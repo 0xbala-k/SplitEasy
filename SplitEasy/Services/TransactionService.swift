@@ -61,7 +61,7 @@ final class TransactionService {
             InsertAction.self,
             schema: "public",
             table: "transactions",
-            filter: .init(column: "status", operator: .eq, value: "new")
+            filter: "status=eq.new"
         )
         Task {
             for await _ in changes {
