@@ -56,7 +56,8 @@ final class OnboardingViewModel: ObservableObject {
             currentUser = user
             state = .needsBankLink
         } catch {
-            errorMessage = "Sign in failed. Please try again."
+            print("❌ Splitwise sign-in error: \(error)")
+            errorMessage = "Sign in failed: \(error.localizedDescription)"
         }
     }
 }
