@@ -24,6 +24,7 @@ serve(async (req) => {
       products: ['transactions'],
       country_codes: ['US'],
       language: 'en',
+      webhook: Deno.env.get('PLAID_WEBHOOK_URL'),
     }),
   })
 
