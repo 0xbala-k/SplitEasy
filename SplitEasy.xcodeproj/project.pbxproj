@@ -7,11 +7,42 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0143917F8740BD844269A128 /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3021A194C6DC8DE574DAF0 /* WelcomeView.swift */; };
+		04D6C79B55B80EEBCBBBE490 /* TransactionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF43B7C2E1BE56139FCF7AF4 /* TransactionServiceTests.swift */; };
+		0996CA86BF6DF5EA0AB26239 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A429098D9C15D1ADBE4D7FD /* HistoryView.swift */; };
+		1649280B9D96A7A86BD78CB8 /* HistoryRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8847813B7C94A5C3E17991 /* HistoryRowView.swift */; };
 		1BB593A5425672F12A2FA041 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE99E2C2B584FCD5AE927EC1 /* ContentView.swift */; };
+		1C128C10B97A6B29D5E94467 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E05560E8D0EC87E9A97B80A9 /* MainTabView.swift */; };
+		359A43B00264D174E2CC38F5 /* FriendService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F28E386CFFF5A0FEBFC32B /* FriendService.swift */; };
+		35A245D976004561450759A8 /* SplitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C8C397747B2321385CD1696 /* SplitService.swift */; };
+		3709B7096BB702C8BF442ACB /* ReauthBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B70D746DD03C7CBC9E7F0DA /* ReauthBannerView.swift */; };
+		4039BDFF727C4F40FEBFFE9D /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4CC1A711D925B08C79F65B8 /* HistoryViewModel.swift */; };
+		4178644B8949C16EAFE959E6 /* TransactionRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C13B4030C2574A2437E2D2D /* TransactionRowView.swift */; };
+		48AD6F3C5A856A74D379B13E /* FriendPickerViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5968B3F93E32235CF5427AD4 /* FriendPickerViewModelTests.swift */; };
+		4D2F5C7C9AEEC9A69278762D /* PlaidService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 677D1A92862F340EE934BDB5 /* PlaidService.swift */; };
+		4E22B398793CF39211CE0528 /* Transaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E0822AD71F23DE4B58319BA /* Transaction.swift */; };
+		57640F7A3BFBBAD84F4DEB61 /* TransactionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F2309B97119E582CB198521 /* TransactionService.swift */; };
 		620A7761A789019F493CACD5 /* SplitEasyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83DD8C9AE0510AAE4CD5BE23 /* SplitEasyApp.swift */; };
+		62665EEF1FB5FB1C807D4146 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85E1160E263496D876DCA164 /* SettingsViewModel.swift */; };
 		6A1CEC196AAA445AA1B025D3 /* LinkKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0144B9BA1609AD888C441314 /* LinkKit */; };
+		6E28505855BDA011FC23AEC8 /* SupabaseService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99E5E51D8270358CC25A1983 /* SupabaseService.swift */; };
+		748DB7AAB8C5E4761D69E03D /* NewTransactionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9518B2B65CFA72A4DA45A938 /* NewTransactionsView.swift */; };
+		817E5C1B1067781D7D9EC874 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BA9628C6C89C657BF8F7F6 /* SettingsView.swift */; };
 		976528B3ED31004739F23791 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = DE577D2CBCA4468DD14EAE3F /* Supabase */; };
 		9DBC94B957081974FEC898D6 /* SplitEasyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1DCE47B2DCECDDDC8B26CA0 /* SplitEasyTests.swift */; };
+		9E784FACC2CE0C2413022D95 /* NewTransactionsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9EB516CF5AA90F7170411D /* NewTransactionsViewModel.swift */; };
+		A69551DC0CC32D4904BC6118 /* BankConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0390862182E07FB0E4E34080 /* BankConnectView.swift */; };
+		A8928DD2F27962D01FD78C46 /* PlaidItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9BD40FD42ACF6295D63A7D6 /* PlaidItem.swift */; };
+		B0E0E81315977C625BA9A873 /* SplitDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90129E725E3999E7C05CE3D5 /* SplitDecision.swift */; };
+		B53E6D78C550C70E29130F57 /* FriendPickerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 203993E002C5EA759B2953A1 /* FriendPickerViewModel.swift */; };
+		BB9F401440543A9D21BA386B /* FriendPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58022B00E622377BD324E9F0 /* FriendPickerView.swift */; };
+		C4262FCD9093E20FB2B6BBB2 /* AppUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6520075DF5F0AC6EDE0E235 /* AppUser.swift */; };
+		DAD0EC6BEB4675F1807D4D17 /* ToastView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B18BD540106DAFF00A9A49F /* ToastView.swift */; };
+		E2660ABC65613D4F80E97F25 /* SplitwiseFriend.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC4733852A8FF5F5FF2D80EA /* SplitwiseFriend.swift */; };
+		E3A5DB44D08F1ACF37F66D21 /* SplitwiseAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0260084DA5AD1ECEF03AF48A /* SplitwiseAuthService.swift */; };
+		EE0F1572EE260E13815BD418 /* TransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CAE51E88C9E6436D8711724 /* TransactionTests.swift */; };
+		F2576A3CFDCE94CD1503FB0A /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 707FE3F9E99B5706CAB6EF2C /* NetworkMonitor.swift */; };
+		F397C806ECBF4B80712F46BA /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6361B53E23200F876A2258D9 /* OnboardingViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -25,11 +56,42 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0260084DA5AD1ECEF03AF48A /* SplitwiseAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitwiseAuthService.swift; sourceTree = "<group>"; };
 		038F0D69827913BAAE36EC5F /* SplitEasyTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = SplitEasyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0390862182E07FB0E4E34080 /* BankConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BankConnectView.swift; sourceTree = "<group>"; };
+		0C13B4030C2574A2437E2D2D /* TransactionRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionRowView.swift; sourceTree = "<group>"; };
+		1B18BD540106DAFF00A9A49F /* ToastView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastView.swift; sourceTree = "<group>"; };
+		203993E002C5EA759B2953A1 /* FriendPickerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendPickerViewModel.swift; sourceTree = "<group>"; };
+		2A429098D9C15D1ADBE4D7FD /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		3E0822AD71F23DE4B58319BA /* Transaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transaction.swift; sourceTree = "<group>"; };
+		3F2309B97119E582CB198521 /* TransactionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionService.swift; sourceTree = "<group>"; };
+		45BA9628C6C89C657BF8F7F6 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		4B70D746DD03C7CBC9E7F0DA /* ReauthBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReauthBannerView.swift; sourceTree = "<group>"; };
+		58022B00E622377BD324E9F0 /* FriendPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendPickerView.swift; sourceTree = "<group>"; };
+		5968B3F93E32235CF5427AD4 /* FriendPickerViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendPickerViewModelTests.swift; sourceTree = "<group>"; };
+		6361B53E23200F876A2258D9 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
+		677D1A92862F340EE934BDB5 /* PlaidService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaidService.swift; sourceTree = "<group>"; };
+		6C8C397747B2321385CD1696 /* SplitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitService.swift; sourceTree = "<group>"; };
 		6FC27F908261AA2716D5FCAF /* SplitEasy.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SplitEasy.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		707FE3F9E99B5706CAB6EF2C /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		7B8847813B7C94A5C3E17991 /* HistoryRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryRowView.swift; sourceTree = "<group>"; };
 		83B224806E149699324313C1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		83DD8C9AE0510AAE4CD5BE23 /* SplitEasyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitEasyApp.swift; sourceTree = "<group>"; };
+		85E1160E263496D876DCA164 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
+		8CAE51E88C9E6436D8711724 /* TransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionTests.swift; sourceTree = "<group>"; };
+		90129E725E3999E7C05CE3D5 /* SplitDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitDecision.swift; sourceTree = "<group>"; };
+		9518B2B65CFA72A4DA45A938 /* NewTransactionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTransactionsView.swift; sourceTree = "<group>"; };
+		99E5E51D8270358CC25A1983 /* SupabaseService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseService.swift; sourceTree = "<group>"; };
+		9F9EB516CF5AA90F7170411D /* NewTransactionsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTransactionsViewModel.swift; sourceTree = "<group>"; };
+		A9BD40FD42ACF6295D63A7D6 /* PlaidItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaidItem.swift; sourceTree = "<group>"; };
+		A9F28E386CFFF5A0FEBFC32B /* FriendService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendService.swift; sourceTree = "<group>"; };
+		B6520075DF5F0AC6EDE0E235 /* AppUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUser.swift; sourceTree = "<group>"; };
+		BF43B7C2E1BE56139FCF7AF4 /* TransactionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionServiceTests.swift; sourceTree = "<group>"; };
 		C1DCE47B2DCECDDDC8B26CA0 /* SplitEasyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitEasyTests.swift; sourceTree = "<group>"; };
+		CD3021A194C6DC8DE574DAF0 /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
+		D4CC1A711D925B08C79F65B8 /* HistoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryViewModel.swift; sourceTree = "<group>"; };
+		DC4733852A8FF5F5FF2D80EA /* SplitwiseFriend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitwiseFriend.swift; sourceTree = "<group>"; };
+		E05560E8D0EC87E9A97B80A9 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		F5C04FF6AD5B3EB5BEFA2FB7 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 		FE99E2C2B584FCD5AE927EC1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -47,6 +109,55 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		084FCB5E4571A3354709C683 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A9F28E386CFFF5A0FEBFC32B /* FriendService.swift */,
+				707FE3F9E99B5706CAB6EF2C /* NetworkMonitor.swift */,
+				677D1A92862F340EE934BDB5 /* PlaidService.swift */,
+				6C8C397747B2321385CD1696 /* SplitService.swift */,
+				0260084DA5AD1ECEF03AF48A /* SplitwiseAuthService.swift */,
+				99E5E51D8270358CC25A1983 /* SupabaseService.swift */,
+				3F2309B97119E582CB198521 /* TransactionService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		16BDA55496FB40848F8F721D /* NewTransactions */ = {
+			isa = PBXGroup;
+			children = (
+				58022B00E622377BD324E9F0 /* FriendPickerView.swift */,
+				9518B2B65CFA72A4DA45A938 /* NewTransactionsView.swift */,
+				0C13B4030C2574A2437E2D2D /* TransactionRowView.swift */,
+			);
+			path = NewTransactions;
+			sourceTree = "<group>";
+		};
+		241EE8171E554097B7AF13B3 /* Main */ = {
+			isa = PBXGroup;
+			children = (
+				E05560E8D0EC87E9A97B80A9 /* MainTabView.swift */,
+			);
+			path = Main;
+			sourceTree = "<group>";
+		};
+		37CA903AAA316180553BDC95 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				BF43B7C2E1BE56139FCF7AF4 /* TransactionServiceTests.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		43E3CC3762FDEDEBA1233215 /* History */ = {
+			isa = PBXGroup;
+			children = (
+				7B8847813B7C94A5C3E17991 /* HistoryRowView.swift */,
+				2A429098D9C15D1ADBE4D7FD /* HistoryView.swift */,
+			);
+			path = History;
+			sourceTree = "<group>";
+		};
 		4B773B921E766840C5E92944 = {
 			isa = PBXGroup;
 			children = (
@@ -56,11 +167,62 @@
 			);
 			sourceTree = "<group>";
 		};
+		50204E4042B364228CEDA8C6 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				5968B3F93E32235CF5427AD4 /* FriendPickerViewModelTests.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
 		6861A0586B37D320AD37F651 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				43E3CC3762FDEDEBA1233215 /* History */,
+				241EE8171E554097B7AF13B3 /* Main */,
+				16BDA55496FB40848F8F721D /* NewTransactions */,
+				AA846FE4376E95CAF8309041 /* Onboarding */,
+				6D18674930C6EEC4CCCBB704 /* Settings */,
+				88D34F0CA951A978C2EB0E94 /* Shared */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		6D18674930C6EEC4CCCBB704 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				45BA9628C6C89C657BF8F7F6 /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		728FFA7D596EEDE22EBEDD98 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				8CAE51E88C9E6436D8711724 /* TransactionTests.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		82A75E1F401A0674655CA7E3 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				203993E002C5EA759B2953A1 /* FriendPickerViewModel.swift */,
+				D4CC1A711D925B08C79F65B8 /* HistoryViewModel.swift */,
+				9F9EB516CF5AA90F7170411D /* NewTransactionsViewModel.swift */,
+				6361B53E23200F876A2258D9 /* OnboardingViewModel.swift */,
+				85E1160E263496D876DCA164 /* SettingsViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		88D34F0CA951A978C2EB0E94 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				4B70D746DD03C7CBC9E7F0DA /* ReauthBannerView.swift */,
+				1B18BD540106DAFF00A9A49F /* ToastView.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 		91BB1B000BE884673ADA4E27 /* SplitEasy */ = {
@@ -70,6 +232,9 @@
 				83B224806E149699324313C1 /* Info.plist */,
 				83DD8C9AE0510AAE4CD5BE23 /* SplitEasyApp.swift */,
 				F8E619D818B6B3806374C1C5 /* Config */,
+				D2BAE495BF2A8B3EB0CF7B8D /* Models */,
+				084FCB5E4571A3354709C683 /* Services */,
+				82A75E1F401A0674655CA7E3 /* ViewModels */,
 				6861A0586B37D320AD37F651 /* Views */,
 			);
 			path = SplitEasy;
@@ -84,12 +249,36 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		AA846FE4376E95CAF8309041 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				0390862182E07FB0E4E34080 /* BankConnectView.swift */,
+				CD3021A194C6DC8DE574DAF0 /* WelcomeView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
 		C80F1486B1781EA4E6C85697 /* SplitEasyTests */ = {
 			isa = PBXGroup;
 			children = (
 				C1DCE47B2DCECDDDC8B26CA0 /* SplitEasyTests.swift */,
+				728FFA7D596EEDE22EBEDD98 /* Models */,
+				37CA903AAA316180553BDC95 /* Services */,
+				50204E4042B364228CEDA8C6 /* ViewModels */,
 			);
 			path = SplitEasyTests;
+			sourceTree = "<group>";
+		};
+		D2BAE495BF2A8B3EB0CF7B8D /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B6520075DF5F0AC6EDE0E235 /* AppUser.swift */,
+				A9BD40FD42ACF6295D63A7D6 /* PlaidItem.swift */,
+				90129E725E3999E7C05CE3D5 /* SplitDecision.swift */,
+				DC4733852A8FF5F5FF2D80EA /* SplitwiseFriend.swift */,
+				3E0822AD71F23DE4B58319BA /* Transaction.swift */,
+			);
+			path = Models;
 			sourceTree = "<group>";
 		};
 		F8E619D818B6B3806374C1C5 /* Config */ = {
@@ -181,7 +370,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				48AD6F3C5A856A74D379B13E /* FriendPickerViewModelTests.swift in Sources */,
 				9DBC94B957081974FEC898D6 /* SplitEasyTests.swift in Sources */,
+				04D6C79B55B80EEBCBBBE490 /* TransactionServiceTests.swift in Sources */,
+				EE0F1572EE260E13815BD418 /* TransactionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -189,8 +381,36 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C4262FCD9093E20FB2B6BBB2 /* AppUser.swift in Sources */,
+				A69551DC0CC32D4904BC6118 /* BankConnectView.swift in Sources */,
 				1BB593A5425672F12A2FA041 /* ContentView.swift in Sources */,
+				BB9F401440543A9D21BA386B /* FriendPickerView.swift in Sources */,
+				B53E6D78C550C70E29130F57 /* FriendPickerViewModel.swift in Sources */,
+				359A43B00264D174E2CC38F5 /* FriendService.swift in Sources */,
+				1649280B9D96A7A86BD78CB8 /* HistoryRowView.swift in Sources */,
+				0996CA86BF6DF5EA0AB26239 /* HistoryView.swift in Sources */,
+				4039BDFF727C4F40FEBFFE9D /* HistoryViewModel.swift in Sources */,
+				1C128C10B97A6B29D5E94467 /* MainTabView.swift in Sources */,
+				F2576A3CFDCE94CD1503FB0A /* NetworkMonitor.swift in Sources */,
+				748DB7AAB8C5E4761D69E03D /* NewTransactionsView.swift in Sources */,
+				9E784FACC2CE0C2413022D95 /* NewTransactionsViewModel.swift in Sources */,
+				F397C806ECBF4B80712F46BA /* OnboardingViewModel.swift in Sources */,
+				A8928DD2F27962D01FD78C46 /* PlaidItem.swift in Sources */,
+				4D2F5C7C9AEEC9A69278762D /* PlaidService.swift in Sources */,
+				3709B7096BB702C8BF442ACB /* ReauthBannerView.swift in Sources */,
+				817E5C1B1067781D7D9EC874 /* SettingsView.swift in Sources */,
+				62665EEF1FB5FB1C807D4146 /* SettingsViewModel.swift in Sources */,
+				B0E0E81315977C625BA9A873 /* SplitDecision.swift in Sources */,
 				620A7761A789019F493CACD5 /* SplitEasyApp.swift in Sources */,
+				35A245D976004561450759A8 /* SplitService.swift in Sources */,
+				E3A5DB44D08F1ACF37F66D21 /* SplitwiseAuthService.swift in Sources */,
+				E2660ABC65613D4F80E97F25 /* SplitwiseFriend.swift in Sources */,
+				6E28505855BDA011FC23AEC8 /* SupabaseService.swift in Sources */,
+				DAD0EC6BEB4675F1807D4D17 /* ToastView.swift in Sources */,
+				4E22B398793CF39211CE0528 /* Transaction.swift in Sources */,
+				4178644B8949C16EAFE959E6 /* TransactionRowView.swift in Sources */,
+				57640F7A3BFBBAD84F4DEB61 /* TransactionService.swift in Sources */,
+				0143917F8740BD844269A128 /* WelcomeView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
