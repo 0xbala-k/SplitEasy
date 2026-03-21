@@ -1,11 +1,10 @@
 import Foundation
 import Supabase
 
-@MainActor
 final class SupabaseService: ObservableObject {
-    nonisolated(unsafe) static let shared = SupabaseService()
+    static let shared = SupabaseService()
 
-    nonisolated let client: SupabaseClient
+    let client: SupabaseClient
 
     @Published private(set) var isAuthenticated = false
 
@@ -17,11 +16,13 @@ final class SupabaseService: ObservableObject {
 
     // Sign in anonymously to get a Supabase JWT (needed to call Edge Functions).
     // After Splitwise OAuth, the user row is created server-side.
+    @MainActor
     func signInAnonymously() async throws {
         try await client.auth.signInAnonymously()
         isAuthenticated = true
     }
 
+    @MainActor
     func signOut() async throws {
         try await client.auth.signOut()
         isAuthenticated = false
