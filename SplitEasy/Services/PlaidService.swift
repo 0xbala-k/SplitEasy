@@ -10,12 +10,12 @@ final class PlaidService: ObservableObject {
     // Create a Plaid Link handler. The link_token should be obtained from your backend.
     // For Sandbox testing: use a link_token from Plaid dashboard.
     func createHandler(linkToken: String, completion: @escaping (String) -> Void) {
-        var config = LinkTokenConfiguration(token: linkToken) { result in
-            switch result {
-            case .success(let success):
-                completion(success.publicToken)
-            case .failure(let error):
-                print("Plaid Link error: \(error.localizedDescription)")
+        var config = LinkTokenConfiguration(token: linkToken) { success in
+            completion(success.publicToken)
+        }
+        config.onExit = { exit in
+            if let error = exit.error {
+                print("Plaid Link error: \(error.displayMessage ?? error.errorCode.description)")
             }
         }
         let result = Plaid.create(config)
