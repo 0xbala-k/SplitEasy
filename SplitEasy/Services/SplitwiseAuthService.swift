@@ -10,7 +10,7 @@ final class SplitwiseAuthService: NSObject, ObservableObject, ASWebAuthenticatio
 
     // Initiates Splitwise OAuth. Returns the authorization code for server-side exchange.
     func startOAuth() async throws -> String {
-        var components = URLComponents(string: "https://secure.splitwise.com/oauth/authorize")!
+        var components = URLComponents(string: "https://www.splitwise.com/oauth/authorize")!
         components.queryItems = [
             .init(name: "client_id", value: clientId),
             .init(name: "redirect_uri", value: redirectURI),
