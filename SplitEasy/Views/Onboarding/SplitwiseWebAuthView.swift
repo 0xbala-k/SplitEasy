@@ -36,6 +36,13 @@ struct SplitwiseWebAuthView: UIViewRepresentable {
     let onCode: (String) -> Void
     let onCancel: () -> Void
 
+    func makeCoordinator() -> Coordinator {
+        let c = Coordinator()
+        c.onCode = onCode
+        c.onCancel = onCancel
+        return c
+    }
+
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(
@@ -43,9 +50,28 @@ struct SplitwiseWebAuthView: UIViewRepresentable {
             forURLScheme: "spliteasy"
         )
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var onCode: ((String) -> Void)?
+        var onCancel: (() -> Void)?
+
+        func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            guard let url = webView.url else { return }
+            print("↪️ serverRedirect: \(url.absoluteString)")
+            // Splitwise may redirect to its own domain with ?code= if the registered
+            // callback URL in the developer portal doesn't match. Intercept the code here.
+            if let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "code" })?.value {
+                print("🎯 Got code from redirect: \(code)")
+                webView.stopLoading()
+                onCode?(code)
+            }
+        }
+    }
 }
