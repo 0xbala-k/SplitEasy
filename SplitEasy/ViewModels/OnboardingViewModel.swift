@@ -12,9 +12,11 @@ final class OnboardingViewModel: ObservableObject {
     @Published var state: OnboardingState = .loading
     @Published var errorMessage: String?
     @Published var currentUser: AppUser?
+    @Published var oauthURL: URL?  // non-nil shows the web auth sheet
 
     private let authService = SplitwiseAuthService.shared
     private let supabase = SupabaseService.shared
+    private var codeContinuation: CheckedContinuation<String, Error>?
 
     func checkAuthState() async {
         do {
@@ -51,7 +53,11 @@ final class OnboardingViewModel: ObservableObject {
     func signInWithSplitwise() async {
         errorMessage = nil
         do {
-            let code = try await authService.startOAuth()
+            let code: String = try await withCheckedThrowingContinuation { continuation in
+                codeContinuation = continuation
+                oauthURL = authService.buildOAuthURL()
+            }
+            oauthURL = nil
             let user = try await authService.exchangeCodeWithBackend(code: code)
             currentUser = user
             state = .needsBankLink
@@ -59,5 +65,16 @@ final class OnboardingViewModel: ObservableObject {
             print("❌ Splitwise sign-in error: \(error)")
             errorMessage = "Sign in failed: \(error.localizedDescription)"
         }
+    }
+
+    func handleOAuthCode(_ code: String) {
+        codeContinuation?.resume(returning: code)
+        codeContinuation = nil
+    }
+
+    func handleOAuthCancel() {
+        codeContinuation?.resume(throwing: URLError(.cancelled))
+        codeContinuation = nil
+        oauthURL = nil
     }
 }

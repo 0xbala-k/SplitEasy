@@ -1,5 +1,9 @@
 import SwiftUI
 
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
+}
+
 struct WelcomeView: View {
     @ObservedObject var vm: OnboardingViewModel
 
@@ -36,6 +40,13 @@ struct WelcomeView: View {
             }
             .padding(.horizontal, 32)
             .padding(.bottom, 48)
+        }
+        .sheet(item: $vm.oauthURL) { url in
+            SplitwiseWebAuthView(
+                url: url,
+                onCode: { code in vm.handleOAuthCode(code) },
+                onCancel: { vm.handleOAuthCancel() }
+            )
         }
     }
 }
