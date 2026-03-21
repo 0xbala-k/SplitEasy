@@ -20,6 +20,9 @@ struct SplitEasyApp: App {
                 }
             }
             .task { await onboardingVM.checkAuthState() }
+            .onOpenURL { url in
+                SplitwiseAuthService.shared.handleCallback(url: url)
+            }
         }
     }
 }
