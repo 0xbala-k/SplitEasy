@@ -20,6 +20,12 @@ serve(async (req) => {
       status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
+  // Validate friend IDs are numeric Splitwise user IDs
+  if (!friend_ids.every((id: unknown) => typeof id === 'string' && /^\d+$/.test(id))) {
+    return new Response(JSON.stringify({ error: 'invalid_friend_ids' }), {
+      status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
 
   const supabase = createAdminClient()
 
@@ -37,35 +43,36 @@ serve(async (req) => {
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   }
 
-  // Fetch transaction to get amount
-  const { data: tx, error: txError } = await supabase
-    .from('transactions')
-    .select('id, amount, merchant_name, date, user_id')
-    .eq('id', transaction_id)
-    .eq('user_id', user.id)
-    .single()
+  // Fetch transaction, Splitwise token, and user record in parallel
+  const [
+    { data: tx, error: txError },
+    token,
+    { data: dbUser },
+  ] = await Promise.all([
+    supabase
+      .from('transactions')
+      .select('id, amount, merchant_name, date, user_id')
+      .eq('id', transaction_id)
+      .eq('user_id', user.id)
+      .single(),
+    getSplitwiseToken(user.id),
+    supabase
+      .from('users')
+      .select('splitwise_user_id')
+      .eq('id', user.id)
+      .single(),
+  ])
 
   if (txError || !tx) {
     return new Response(JSON.stringify({ error: 'transaction_not_found' }), {
       status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
-
-  // Get Splitwise token
-  const token = await getSplitwiseToken(user.id)
   if (!token) {
     return new Response(JSON.stringify({ error: 'splitwise_auth_expired' }), {
       status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
-
-  // Get Splitwise user ID for the current user
-  const { data: dbUser } = await supabase
-    .from('users')
-    .select('splitwise_user_id')
-    .eq('id', user.id)
-    .single()
-
   if (!dbUser) {
     return new Response(JSON.stringify({ error: 'user_not_found' }), {
       status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -73,20 +80,29 @@ serve(async (req) => {
   }
 
   // Build equal-split expense body
+  // PostgREST returns numeric columns as strings — convert before arithmetic
+  const amount = Number(tx.amount)
   const totalPeople = friend_ids.length + 1 // friends + current user
-  const amountEach = Number((tx.amount / totalPeople).toFixed(2))
   const allUsers = [dbUser.splitwise_user_id, ...friend_ids]
 
+  // Use integer cents to avoid rounding errors (e.g. $78.50/4 = $19.625 → $19.63 × 4 = $78.52)
+  const totalCents = Math.round(amount * 100)
+  const baseShareCents = Math.floor(totalCents / totalPeople)
+  const remainderCents = totalCents - baseShareCents * totalPeople
+  // Last person absorbs the remainder so shares sum exactly to cost
+  const amountEach = baseShareCents / 100
+
   const expenseBody: Record<string, unknown> = {
-    cost: String(tx.amount.toFixed(2)),
+    cost: amount.toFixed(2),
     description: tx.merchant_name ?? 'Expense',
     date: tx.date,
-    split_equally: true,
   }
   allUsers.forEach((uid, i) => {
+    const isLast = i === allUsers.length - 1
+    const owedCents = isLast ? baseShareCents + remainderCents : baseShareCents
     expenseBody[`users__${i}__user_id`] = uid
-    expenseBody[`users__${i}__paid_share`] = i === 0 ? String(tx.amount.toFixed(2)) : '0.00'
-    expenseBody[`users__${i}__owed_share`] = String(amountEach.toFixed(2))
+    expenseBody[`users__${i}__paid_share`] = i === 0 ? amount.toFixed(2) : '0.00'
+    expenseBody[`users__${i}__owed_share`] = (owedCents / 100).toFixed(2)
   })
 
   // Create expense in Splitwise
@@ -97,6 +113,7 @@ serve(async (req) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(expenseBody),
+    signal: AbortSignal.timeout(10_000),
   })
 
   if (swRes.status === 401) {
@@ -110,29 +127,56 @@ serve(async (req) => {
     })
   }
 
-  const { expense } = await swRes.json()
-  const expenseId = String(expense.id)
+  const swBody = await swRes.json()
+  const { expenses, errors } = swBody as { expenses: Record<string, unknown>[]; errors?: Record<string, unknown> }
 
-  // Write split_decision + update transaction status atomically
-  const { error: decisionError } = await supabase.from('split_decisions').insert({
-    transaction_id,
-    user_id: user.id,
-    splitwise_expense_id: expenseId,
-    friend_ids,
-    split_type: 'equal',
-    equal_amount_each: amountEach,
-  })
-
-  if (decisionError) {
-    // Expense was created in SW but DB write failed — log but return success
-    // (idempotency check on next call will return the existing expense if re-inserted)
-    console.error('split_decision insert failed:', decisionError.message)
+  if (errors && Object.keys(errors).length > 0) {
+    console.error('splitwise create_expense errors:', JSON.stringify(errors))
+    return new Response(JSON.stringify({ error: 'splitwise_validation_error', details: errors }), {
+      status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
+  if (!expenses?.[0]?.id) {
+    console.error('splitwise create_expense unexpected response:', JSON.stringify(swBody))
+    return new Response(JSON.stringify({ error: 'splitwise_api_error' }), {
+      status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
   }
 
-  await supabase
-    .from('transactions')
-    .update({ status: 'split' })
-    .eq('id', transaction_id)
+  const expenseId = String(expenses[0].id)
+
+  // Write split_decision and update transaction status in parallel
+  const [{ error: decisionError }] = await Promise.all([
+    supabase.from('split_decisions').insert({
+      transaction_id,
+      user_id: user.id,
+      splitwise_expense_id: expenseId,
+      friend_ids,
+      split_type: 'equal',
+      equal_amount_each: amountEach,
+    }),
+    supabase
+      .from('transactions')
+      .update({ status: 'split' })
+      .eq('id', transaction_id),
+  ])
+
+  if (decisionError) {
+    // DB write failed after Splitwise expense was created — delete it to keep state consistent
+    console.error('split_decision insert failed:', decisionError.message)
+    try {
+      await fetch(`https://secure.splitwise.com/api/v3.0/delete_expense/${expenseId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      })
+    } catch (e) {
+      console.error('Failed to delete Splitwise expense after DB error:', e)
+    }
+    return new Response(JSON.stringify({ error: 'db_error' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
 
   return new Response(JSON.stringify({
     splitwise_expense_id: expenseId,

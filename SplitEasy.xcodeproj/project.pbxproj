@@ -29,6 +29,7 @@
 		6E28505855BDA011FC23AEC8 /* SupabaseService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99E5E51D8270358CC25A1983 /* SupabaseService.swift */; };
 		748DB7AAB8C5E4761D69E03D /* NewTransactionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9518B2B65CFA72A4DA45A938 /* NewTransactionsView.swift */; };
 		817E5C1B1067781D7D9EC874 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BA9628C6C89C657BF8F7F6 /* SettingsView.swift */; };
+		8BDD66174ADAB634EA7B3794 /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED7C92CBF718225816B5BFE /* Formatters.swift */; };
 		976528B3ED31004739F23791 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = DE577D2CBCA4468DD14EAE3F /* Supabase */; };
 		9DBC94B957081974FEC898D6 /* SplitEasyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1DCE47B2DCECDDDC8B26CA0 /* SplitEasyTests.swift */; };
 		9E784FACC2CE0C2413022D95 /* NewTransactionsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9EB516CF5AA90F7170411D /* NewTransactionsViewModel.swift */; };
@@ -85,6 +86,7 @@
 		9518B2B65CFA72A4DA45A938 /* NewTransactionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTransactionsView.swift; sourceTree = "<group>"; };
 		96B6D5BFF14A7B7F380819E9 /* LinkController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkController.swift; sourceTree = "<group>"; };
 		99E5E51D8270358CC25A1983 /* SupabaseService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseService.swift; sourceTree = "<group>"; };
+		9ED7C92CBF718225816B5BFE /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatters.swift; sourceTree = "<group>"; };
 		9F9EB516CF5AA90F7170411D /* NewTransactionsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTransactionsViewModel.swift; sourceTree = "<group>"; };
 		A3CC20BF304473305CB9BF3C /* SplitwiseWebAuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitwiseWebAuthView.swift; sourceTree = "<group>"; };
 		A9BD40FD42ACF6295D63A7D6 /* PlaidItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaidItem.swift; sourceTree = "<group>"; };
@@ -125,6 +127,14 @@
 				3F2309B97119E582CB198521 /* TransactionService.swift */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		1424F5CD7F7A4EB875CB3AC5 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				9ED7C92CBF718225816B5BFE /* Formatters.swift */,
+			);
+			path = Utilities;
 			sourceTree = "<group>";
 		};
 		16BDA55496FB40848F8F721D /* NewTransactions */ = {
@@ -238,6 +248,7 @@
 				F8E619D818B6B3806374C1C5 /* Config */,
 				D2BAE495BF2A8B3EB0CF7B8D /* Models */,
 				084FCB5E4571A3354709C683 /* Services */,
+				1424F5CD7F7A4EB875CB3AC5 /* Utilities */,
 				82A75E1F401A0674655CA7E3 /* ViewModels */,
 				6861A0586B37D320AD37F651 /* Views */,
 			);
@@ -390,6 +401,7 @@
 				C4262FCD9093E20FB2B6BBB2 /* AppUser.swift in Sources */,
 				A69551DC0CC32D4904BC6118 /* BankConnectView.swift in Sources */,
 				1BB593A5425672F12A2FA041 /* ContentView.swift in Sources */,
+				8BDD66174ADAB634EA7B3794 /* Formatters.swift in Sources */,
 				BB9F401440543A9D21BA386B /* FriendPickerView.swift in Sources */,
 				B53E6D78C550C70E29130F57 /* FriendPickerViewModel.swift in Sources */,
 				359A43B00264D174E2CC38F5 /* FriendService.swift in Sources */,
@@ -437,6 +449,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -518,6 +531,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

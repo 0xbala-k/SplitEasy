@@ -1,6 +1,7 @@
 import Foundation
 
 final class FriendService {
+    static let shared = FriendService()
     private var cachedFriends: [SplitwiseFriend]?
 
     // Returns cached friends or fetches from Edge Function.

@@ -13,7 +13,7 @@ final class SplitService {
         }
         struct Response: Decodable {
             let splitwiseExpenseId: String
-            let amountEach: String
+            let amountEach: Decimal
             enum CodingKeys: String, CodingKey {
                 case splitwiseExpenseId = "splitwise_expense_id"
                 case amountEach = "amount_each"
@@ -28,7 +28,7 @@ final class SplitService {
         )
         return SplitResult(
             splitwiseExpenseId: response.splitwiseExpenseId,
-            amountEach: Decimal(string: response.amountEach) ?? 0
+            amountEach: response.amountEach
         )
     }
 }

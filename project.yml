@@ -33,6 +33,8 @@ targets:
       - SplitEasyTests
     dependencies:
       - target: SplitEasy
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
 packages:
   Supabase:
     url: https://github.com/supabase/supabase-swift

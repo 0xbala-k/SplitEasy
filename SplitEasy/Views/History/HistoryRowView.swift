@@ -3,13 +3,6 @@ import SwiftUI
 struct HistoryRowView: View {
     let transaction: Transaction
 
-    private static let currencyFormatter: NumberFormatter = {
-        let f = NumberFormatter()
-        f.numberStyle = .currency
-        f.currencyCode = "USD"
-        return f
-    }()
-
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -21,7 +14,7 @@ struct HistoryRowView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                Text(Self.currencyFormatter.string(from: transaction.amount as NSDecimalNumber) ?? "$\(transaction.amount)")
+                Text(Formatters.currency.string(from: transaction.amount as NSDecimalNumber) ?? "$\(transaction.amount)")
                     .font(.headline)
                 statusBadge
             }

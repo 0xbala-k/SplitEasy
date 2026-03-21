@@ -3,7 +3,7 @@ import Foundation
 @MainActor
 final class FriendPickerViewModel: ObservableObject {
     let transaction: Transaction
-    private let friendService = FriendService()
+    private let friendService = FriendService.shared
     private let splitService = SplitService()
 
     @Published var friends: [SplitwiseFriend] = []

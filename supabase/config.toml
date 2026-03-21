@@ -361,6 +361,37 @@ inspector_port = 8083
 # The Deno major version to use.
 deno_version = 2
 
+[edge_runtime.secrets]
+PLAID_CLIENT_ID = "env(PLAID_CLIENT_ID)"
+PLAID_SECRET = "env(PLAID_SECRET)"
+PLAID_ENV = "env(PLAID_ENV)"
+PLAID_WEBHOOK_URL = "env(PLAID_WEBHOOK_URL)"
+SPLITWISE_CLIENT_ID = "env(SPLITWISE_CLIENT_ID)"
+SPLITWISE_CLIENT_SECRET = "env(SPLITWISE_CLIENT_SECRET)"
+SPLITWISE_REDIRECT_URI = "env(SPLITWISE_REDIRECT_URI)"
+
+# Disable edge-runtime JWT pre-validation for all functions.
+# The local auth service signs tokens with ES256 (EC keys) but the edge runtime
+# only has the HS256 secret, causing "invalid jwt" 401s. Each function validates
+# auth internally via supabase.auth.getUser(token) which uses the auth service directly.
+[functions.splitwise-auth-callback]
+verify_jwt = false
+
+[functions.splitwise-get-friends]
+verify_jwt = false
+
+[functions.splitwise-create-expense]
+verify_jwt = false
+
+[functions.plaid-create-link-token]
+verify_jwt = false
+
+[functions.plaid-link-exchange]
+verify_jwt = false
+
+[functions.plaid-webhook]
+verify_jwt = false
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 

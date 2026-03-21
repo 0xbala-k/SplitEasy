@@ -5,13 +5,6 @@ struct TransactionRowView: View {
     let onSkip: () -> Void
     let onSplit: () -> Void
 
-    private static let currencyFormatter: NumberFormatter = {
-        let f = NumberFormatter()
-        f.numberStyle = .currency
-        f.currencyCode = "USD"
-        return f
-    }()
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -23,7 +16,7 @@ struct TransactionRowView: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Text(Self.currencyFormatter.string(from: transaction.amount as NSDecimalNumber) ?? "$\(transaction.amount)")
+                Text(Formatters.currency.string(from: transaction.amount as NSDecimalNumber) ?? "$\(transaction.amount)")
                     .font(.headline)
             }
             HStack(spacing: 8) {

@@ -60,8 +60,11 @@ struct BankConnectView: View {
         isConnecting = true
         defer { isConnecting = false }
         struct LinkTokenResponse: Decodable { let link_token: String }
-        guard let response: LinkTokenResponse = try? await SupabaseService.shared.client.functions.invoke("plaid-create-link-token")
-        else {
+        let response: LinkTokenResponse
+        do {
+            response = try await SupabaseService.shared.client.functions.invoke("plaid-create-link-token")
+        } catch {
+            print("❌ plaid-create-link-token error: \(error)")
             toast = Toast(message: "Could not start bank connection. Try again.", style: .error)
             return
         }
@@ -73,6 +76,7 @@ struct BankConnectView: View {
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     vm.state = .complete
                 } catch {
+                    print("❌ plaid-link-exchange error: \(error)")
                     toast = Toast(message: "Connection failed. Try again.", style: .error)
                 }
             }

@@ -37,6 +37,7 @@ serve(async (req) => {
   const exchangeRes = await plaidRequest('/item/public_token/exchange', { public_token })
   if (!exchangeRes.ok) {
     const err = await exchangeRes.json()
+    console.error('[plaid-link-exchange] plaid exchange error:', JSON.stringify(err))
     return new Response(JSON.stringify({ error: err.error_message ?? 'plaid_exchange_failed' }), {
       status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
@@ -69,11 +70,11 @@ serve(async (req) => {
     p_secret: access_token,
   })
   if (vaultError) {
+    console.error('[plaid-link-exchange] vault error:', vaultError)
     return new Response(JSON.stringify({ error: 'vault_error' }), {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
-
   // Upsert plaid_items row
   const { error: upsertError } = await supabase.from('plaid_items').upsert({
     user_id: user.id,
@@ -85,11 +86,11 @@ serve(async (req) => {
   }, { onConflict: 'plaid_item_id' })
 
   if (upsertError) {
+    console.error('[plaid-link-exchange] upsert error:', upsertError)
     return new Response(JSON.stringify({ error: upsertError.message }), {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
-
   return new Response(JSON.stringify({ institution_name: institutionName }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })

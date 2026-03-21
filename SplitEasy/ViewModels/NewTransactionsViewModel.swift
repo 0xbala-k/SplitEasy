@@ -23,6 +23,7 @@ final class NewTransactionsViewModel: ObservableObject {
     func refresh() async { await load() }
 
     func startRealtime() {
+        guard realtimeChannel == nil else { return }
         realtimeChannel = service.subscribeToNew { [weak self] updated in
             self?.transactions = updated
         }

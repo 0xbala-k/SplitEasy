@@ -6,12 +6,6 @@ struct FriendPickerView: View {
     let onSuccess: (String, Decimal) -> Void
     @EnvironmentObject private var newTransactionsVM: NewTransactionsViewModel
 
-    private static let currencyFormatter: NumberFormatter = {
-        let f = NumberFormatter()
-        f.numberStyle = .currency
-        f.currencyCode = "USD"
-        return f
-    }()
 
     init(transaction: Transaction, isPresented: Binding<Bool>, onSuccess: @escaping (String, Decimal) -> Void) {
         _vm = StateObject(wrappedValue: FriendPickerViewModel(transaction: transaction))
@@ -66,7 +60,7 @@ struct FriendPickerView: View {
                 VStack(alignment: .leading) {
                     Text(friend.name).font(.headline)
                     if isSelected, vm.amountPerPerson > 0 {
-                        Text((Self.currencyFormatter.string(from: vm.amountPerPerson as NSDecimalNumber) ?? "") + " each")
+                        Text((Formatters.currency.string(from: vm.amountPerPerson as NSDecimalNumber) ?? "") + " each")
                             .font(.caption).foregroundColor(.accentColor)
                     }
                 }
@@ -86,6 +80,13 @@ struct FriendPickerView: View {
     private var submitButton: some View {
         VStack(spacing: 0) {
             Divider()
+            if let error = vm.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+            }
             Button {
                 Task {
                     do {
@@ -94,7 +95,8 @@ struct FriendPickerView: View {
                         onSuccess(result.splitwiseExpenseId, result.amountEach)
                         isPresented = false
                     } catch {
-                        // errorMessage set in submit()
+                        print("❌ submit error: \(error)")
+                        vm.errorMessage = error.localizedDescription
                     }
                 }
             } label: {

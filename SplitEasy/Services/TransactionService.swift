@@ -64,13 +64,14 @@ final class TransactionService {
             filter: "status=eq.new"
         )
         Task {
+            // Subscribe first so we don't miss events between channel setup and subscription
+            try? await channel.subscribeWithError()
             for await _ in changes {
                 if let transactions = try? await fetchNew() {
                     await MainActor.run { onChange(transactions) }
                 }
             }
         }
-        Task { try? await channel.subscribeWithError() }
         return channel
     }
 }

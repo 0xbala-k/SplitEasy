@@ -23,6 +23,7 @@ async function verifyPlaidWebhook(req: Request, body: string): Promise<boolean> 
       secret: Deno.env.get('PLAID_SECRET'),
       key_id: header.kid,
     }),
+    signal: AbortSignal.timeout(10_000),
   })
   if (!keysRes.ok) return false
   const { key } = await keysRes.json()
@@ -54,6 +55,7 @@ async function fetchNewTransactions(accessToken: string, cursor?: string) {
       access_token: accessToken,
       ...(cursor ? { cursor } : {}),
     }),
+    signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) throw new Error('plaid_transactions_sync_failed')
   return res.json()
@@ -62,9 +64,13 @@ async function fetchNewTransactions(accessToken: string, cursor?: string) {
 serve(async (req) => {
   const bodyText = await req.text()
 
-  const isValid = await verifyPlaidWebhook(req, bodyText)
-  if (!isValid) {
-    return new Response('Unauthorized', { status: 401 })
+  // Skip JWT verification in sandbox — local Docker can't reach Plaid's key endpoint
+  const isSandbox = Deno.env.get('PLAID_ENV') === 'sandbox'
+  if (!isSandbox) {
+    const isValid = await verifyPlaidWebhook(req, bodyText)
+    if (!isValid) {
+      return new Response('Unauthorized', { status: 401 })
+    }
   }
 
   let payload: Record<string, unknown>

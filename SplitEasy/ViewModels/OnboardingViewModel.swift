@@ -60,7 +60,6 @@ final class OnboardingViewModel: ObservableObject {
             oauthURL = nil
             // Ensure we have a valid anonymous session before calling the Edge Function
             let session = try? await supabase.client.auth.session
-            print("🔐 Session before exchange — userId: \(session?.user.id.uuidString ?? "nil")")
             if session == nil {
                 try await supabase.signInAnonymously()
             }

@@ -34,8 +34,15 @@ struct Transaction: Codable, Identifiable, Equatable {
         plaidItemId = try c.decode(UUID.self, forKey: .plaidItemId)
         plaidTransactionId = try c.decode(String.self, forKey: .plaidTransactionId)
         merchantName = try c.decodeIfPresent(String.self, forKey: .merchantName)
-        let amountStr = try c.decode(String.self, forKey: .amount)
-        amount = Decimal(string: amountStr) ?? 0
+        if let amountStr = try? c.decode(String.self, forKey: .amount) {
+            guard let parsed = Decimal(string: amountStr) else {
+                throw DecodingError.dataCorruptedError(forKey: .amount, in: c,
+                    debugDescription: "Invalid decimal string: \(amountStr)")
+            }
+            amount = parsed
+        } else {
+            amount = try c.decode(Decimal.self, forKey: .amount)
+        }
         currency = try c.decode(String.self, forKey: .currency)
         date = try c.decode(String.self, forKey: .date)
         status = try c.decode(Status.self, forKey: .status)
