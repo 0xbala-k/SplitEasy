@@ -5,6 +5,9 @@ options:
     iOS: "17.0"
   xcodeVersion: "15.0"
   createIntermediateGroups: true
+configFiles:
+  Debug: SplitEasy/Config/Secrets.xcconfig
+  Release: SplitEasy/Config/Secrets.xcconfig
 targets:
   SplitEasy:
     type: application

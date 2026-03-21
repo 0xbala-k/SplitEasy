@@ -448,6 +448,7 @@
 		};
 		325F13348B589E2060B5B151 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F5C04FF6AD5B3EB5BEFA2FB7 /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -546,6 +547,7 @@
 		};
 		B5F19239A2B86139A8829F08 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F5C04FF6AD5B3EB5BEFA2FB7 /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
