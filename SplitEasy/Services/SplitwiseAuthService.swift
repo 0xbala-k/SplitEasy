@@ -39,11 +39,10 @@ final class SplitwiseAuthService: NSObject, ObservableObject, ASWebAuthenticatio
 
     // Send auth code to Edge Function for server-side token exchange
     func exchangeCodeWithBackend(code: String) async throws -> AppUser {
-        let response = try await SupabaseService.shared.client.functions.invoke(
+        return try await SupabaseService.shared.client.functions.invoke(
             "splitwise-auth-callback",
             options: .init(body: ["code": code])
         )
-        return try JSONDecoder().decode(AppUser.self, from: response)
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {

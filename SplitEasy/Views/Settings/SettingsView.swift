@@ -64,9 +64,8 @@ struct SettingsView: View {
     private func reconnectBank() async {
         isReconnecting = true
         defer { isReconnecting = false }
-        struct LinkTokenResponse: Codable { let link_token: String }
-        guard let data = try? await SupabaseService.shared.client.functions.invoke("plaid-create-link-token"),
-              let response = try? JSONDecoder().decode(LinkTokenResponse.self, from: data)
+        struct LinkTokenResponse: Decodable { let link_token: String }
+        guard let response: LinkTokenResponse = try? await SupabaseService.shared.client.functions.invoke("plaid-create-link-token")
         else {
             toast = Toast(message: "Could not start reconnection. Try again.", style: .error)
             return

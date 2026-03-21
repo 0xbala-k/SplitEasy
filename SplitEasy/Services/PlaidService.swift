@@ -29,12 +29,11 @@ final class PlaidService: ObservableObject {
 
     // Exchange public_token with backend Edge Function
     func exchangeToken(_ publicToken: String) async throws -> String {
-        struct Response: Codable { let institution_name: String }
-        let data = try await SupabaseService.shared.client.functions.invoke(
+        struct Response: Decodable { let institution_name: String }
+        let response: Response = try await SupabaseService.shared.client.functions.invoke(
             "plaid-link-exchange",
             options: .init(body: ["public_token": publicToken])
         )
-        let response = try JSONDecoder().decode(Response.self, from: data)
         return response.institution_name
     }
 }

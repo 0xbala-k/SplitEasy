@@ -59,9 +59,8 @@ struct BankConnectView: View {
     private func connectBank() async {
         isConnecting = true
         defer { isConnecting = false }
-        struct LinkTokenResponse: Codable { let link_token: String }
-        guard let data = try? await SupabaseService.shared.client.functions.invoke("plaid-create-link-token"),
-              let response = try? JSONDecoder().decode(LinkTokenResponse.self, from: data)
+        struct LinkTokenResponse: Decodable { let link_token: String }
+        guard let response: LinkTokenResponse = try? await SupabaseService.shared.client.functions.invoke("plaid-create-link-token")
         else {
             toast = Toast(message: "Could not start bank connection. Try again.", style: .error)
             return

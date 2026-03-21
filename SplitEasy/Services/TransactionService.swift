@@ -2,7 +2,7 @@ import Foundation
 import Supabase
 
 final class TransactionService {
-    private let client = SupabaseService.shared.client
+    private var client: SupabaseClient { SupabaseService.shared.client }
 
     // Fetch all "new" transactions for the current user
     func fetchNew() async throws -> [Transaction] {

@@ -3,9 +3,9 @@ import Supabase
 
 @MainActor
 final class SupabaseService: ObservableObject {
-    static let shared = SupabaseService()
+    nonisolated(unsafe) static let shared = SupabaseService()
 
-    let client: SupabaseClient
+    nonisolated let client: SupabaseClient
 
     @Published private(set) var isAuthenticated = false
 

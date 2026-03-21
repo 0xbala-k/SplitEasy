@@ -8,9 +8,8 @@ final class FriendService {
     func getFriends(refresh: Bool = false) async throws -> [SplitwiseFriend] {
         if !refresh, let cached = cachedFriends { return cached }
 
-        struct Response: Codable { let friends: [SplitwiseFriend] }
-        let data = try await SupabaseService.shared.client.functions.invoke("splitwise-get-friends")
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        struct Response: Decodable { let friends: [SplitwiseFriend] }
+        let decoded: Response = try await SupabaseService.shared.client.functions.invoke("splitwise-get-friends")
         cachedFriends = decoded.friends
         return decoded.friends
     }

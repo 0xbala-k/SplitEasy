@@ -7,7 +7,11 @@ struct SplitResult {
 
 final class SplitService {
     func createExpense(transactionId: UUID, friendIds: [String]) async throws -> SplitResult {
-        struct Response: Codable {
+        struct RequestBody: Encodable {
+            let transaction_id: String
+            let friend_ids: [String]
+        }
+        struct Response: Decodable {
             let splitwiseExpenseId: String
             let amountEach: String
             enum CodingKeys: String, CodingKey {
@@ -15,14 +19,13 @@ final class SplitService {
                 case amountEach = "amount_each"
             }
         }
-        let data = try await SupabaseService.shared.client.functions.invoke(
+        let response: Response = try await SupabaseService.shared.client.functions.invoke(
             "splitwise-create-expense",
-            options: .init(body: [
-                "transaction_id": transactionId.uuidString,
-                "friend_ids": friendIds
-            ])
+            options: .init(body: RequestBody(
+                transaction_id: transactionId.uuidString,
+                friend_ids: friendIds
+            ))
         )
-        let response = try JSONDecoder().decode(Response.self, from: data)
         return SplitResult(
             splitwiseExpenseId: response.splitwiseExpenseId,
             amountEach: Decimal(string: response.amountEach) ?? 0
