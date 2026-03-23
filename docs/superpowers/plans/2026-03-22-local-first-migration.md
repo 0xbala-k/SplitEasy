@@ -1077,6 +1077,9 @@ final class DatabaseServiceTests: XCTestCase {
 
     override func setUp() throws {
         db = try DatabaseQueue()
+        try db.write { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
         try DatabaseService.runMigrations(on: db)
     }
 
@@ -1562,7 +1565,10 @@ final class SplitwiseAPIService: SplitwiseAPIServiceProtocol {
             params["users__\(idx)__paid_share"] = "0.00"
             params["users__\(idx)__owed_share"] = shareEach
         }
-        let bodyStr = params.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
+        let bodyStr = params.map { key, value in
+            let encodedValue = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+            return "\(key)=\(encodedValue)"
+        }.joined(separator: "&")
         var req = try makeRequest("/create_expense", method: "POST",
                                    body: bodyStr.data(using: .utf8),
                                    contentType: "application/x-www-form-urlencoded")
@@ -1872,6 +1878,12 @@ Expected: FAIL
 ```swift
 import Foundation
 
+struct AppUser {
+    let userId: String
+    let displayName: String
+    let avatarURL: String?
+}
+
 @MainActor
 final class SplitwiseAuthService: ObservableObject {
     static let shared = SplitwiseAuthService()
@@ -1968,6 +1980,7 @@ final class SplitwiseAPIServiceStub: SplitwiseAPIServiceProtocol {
     func createExpense(description: String, totalAmount: Double, currency: String, currentUserId: String, friends: [(id: String, name: String)]) async throws -> String { "stub-expense-id" }
 }
 
+@MainActor
 final class FriendServiceTests: XCTestCase {
     func test_getFriends_returnsCachedResultOnSecondCall() async throws {
         var callCount = 0
@@ -2007,6 +2020,7 @@ Expected: FAIL
 ```swift
 import Foundation
 
+@MainActor
 final class FriendService {
     static let shared = FriendService()
     private var cachedFriends: [SplitwiseFriend]?
