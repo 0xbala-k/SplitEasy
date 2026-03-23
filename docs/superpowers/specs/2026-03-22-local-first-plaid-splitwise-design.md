@@ -59,7 +59,8 @@ iOS App (SwiftUI)
   ├── Cloudflare Worker (stateless — no storage, no logging of sensitive data)
   │     ├── POST /plaid/link-token       → creates Plaid link_token
   │     ├── POST /plaid/exchange         → exchanges public_token → returns access_token to iOS
-  │     └── POST /plaid/transactions     → iOS sends access_token, Worker proxies to Plaid, returns data
+  │     ├── POST /plaid/transactions     → iOS sends access_token, Worker proxies to Plaid, returns data
+  │     └── POST /splitwise/exchange     → exchanges OAuth code for access_token (requires client_secret)
   └── Splitwise API (called directly from iOS)
         ├── GET  /api/v3/get_current_user
         ├── GET  /api/v3/get_friends
@@ -74,7 +75,7 @@ iOS App (SwiftUI)
 | Supabase Vault | Stored Plaid + Splitwise tokens server-side | Removed — tokens move to iOS Keychain |
 | Supabase Realtime | Pushed transaction updates to iOS | Removed — replaced by on-demand fetch |
 | Supabase Auth | JWT for all backend calls | Removed |
-| Supabase Edge Functions (6) | plaid-webhook, plaid-link-exchange, plaid-create-link-token, splitwise-auth-callback, splitwise-get-friends, splitwise-create-expense | Removed — replaced by 3 stateless CF Worker routes |
+| Supabase Edge Functions (6) | plaid-webhook, plaid-link-exchange, plaid-create-link-token, splitwise-auth-callback, splitwise-get-friends, splitwise-create-expense | Removed — replaced by 4 stateless CF Worker routes |
 | Plaid webhooks | Server-side transaction ingestion | Removed — cursor-based sync on demand |
 | `transactions.status = 'removed'` | Soft-delete for Plaid-removed transactions | **Removed** — Plaid-removed transactions are hard-deleted from SQLite immediately. Previously removed-but-split rows remained visible in History; now they disappear entirely. The Splitwise expense is left intact. This is an intentional product simplification. |
 
@@ -158,16 +159,17 @@ The SQLite file lives within the iOS app sandbox and is protected by iOS Data Pr
 ### 1. Onboarding
 
 1. iOS opens Splitwise OAuth via `ASWebAuthenticationSession`
-2. User grants access → iOS receives `access_token` → stored in Keychain
-3. iOS calls Splitwise `GET /api/v3/get_current_user` → stores `user_id`, `display_name`, `avatar_url` in UserDefaults
-4. iOS shows Bank Connect screen
-5. iOS calls Worker `POST /plaid/link-token` (authenticated with `worker_api_key`) → Worker returns `link_token`
-6. Plaid Link SDK launches with `link_token` → user connects bank
-7. Plaid Link `onSuccess` callback returns `public_token` **and** institution metadata (`institution.name`, `institution.institution_id`) directly to iOS
-8. iOS stores institution name in UserDefaults immediately (no Worker call needed for metadata)
-9. iOS calls Worker `POST /plaid/exchange` with `{ public_token }` → Worker exchanges for `access_token` → returns `{ access_token }` to iOS
-10. iOS stores `access_token` in Keychain; clears `last_plaid_cursor` from UserDefaults (fresh sync)
-11. iOS calls Worker `POST /plaid/transactions` to fetch initial transaction set (cursor = nil)
+2. User grants access → Splitwise redirects to app's custom URL scheme with authorization `code`
+3. iOS calls Worker `POST /splitwise/exchange` with `{ code, redirect_uri }` → Worker exchanges code for `access_token` using `client_secret` (never embedded in iOS binary) → returns `{ access_token, user_id, display_name, avatar_url }`
+4. iOS stores `access_token` in Keychain; stores `user_id`, `display_name`, `avatar_url` in UserDefaults
+5. iOS shows Bank Connect screen
+6. iOS calls Worker `POST /plaid/link-token` (authenticated with `worker_api_key`) → Worker returns `link_token`
+7. Plaid Link SDK launches with `link_token` → user connects bank
+8. Plaid Link `onSuccess` callback returns `public_token` **and** institution metadata (`institution.name`, `institution.institution_id`) directly to iOS
+9. iOS stores institution name in UserDefaults immediately (no Worker call needed for metadata)
+10. iOS calls Worker `POST /plaid/exchange` with `{ public_token }` → Worker exchanges for `access_token` → returns `{ access_token }` to iOS
+11. iOS stores `access_token` in Keychain; clears `last_plaid_cursor` from UserDefaults (fresh sync)
+12. iOS calls Worker `POST /plaid/transactions` to fetch initial transaction set (cursor = nil)
 
 > **Institution logo:** Plaid's `onSuccess` does not include a logo URL. Logo is fetched by calling Plaid's `POST /institutions/get_by_id` via a separate Worker route `POST /plaid/institution` (body: `{ institution_id }`), or omitted from MVP if logos are not essential to the UI.
 
@@ -251,7 +253,7 @@ The SQLite file lives within the iOS app sandbox and is protected by iOS Data Pr
 
 ## Cloudflare Worker
 
-Three primary routes, all stateless. The Worker never reads, writes, or logs user financial data.
+Four primary routes, all stateless. The Worker never reads, writes, or logs user financial data.
 
 ### `POST /plaid/link-token`
 - Auth: `worker_api_key` in `Authorization: Bearer` header
