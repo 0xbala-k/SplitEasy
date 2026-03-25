@@ -1,0 +1,161 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const mockFetch = vi.fn();
+vi.stubGlobal('fetch', mockFetch);
+
+interface Env {
+  PLAID_CLIENT_ID: string;
+  PLAID_SECRET: string;
+  PLAID_ENV: string;
+  WORKER_API_KEY: string;
+  SPLITWISE_CLIENT_ID: string;
+  SPLITWISE_CLIENT_SECRET: string;
+}
+
+const makeEnv = (overrides: Partial<Env> = {}): Env => ({
+  PLAID_CLIENT_ID: 'test_client_id',
+  PLAID_SECRET: 'test_secret',
+  PLAID_ENV: 'sandbox',
+  WORKER_API_KEY: 'test_api_key',
+  SPLITWISE_CLIENT_ID: 'sw_client_id',
+  SPLITWISE_CLIENT_SECRET: 'sw_secret',
+  ...overrides,
+});
+
+// Import handler at module level (vitest handles mock hoisting)
+import handler from './index';
+
+beforeEach(() => { mockFetch.mockReset(); });
+
+describe('Worker auth middleware', () => {
+  it('returns 401 when Authorization header is missing', async () => {
+    const req = new Request('https://worker.example.com/plaid/link-token', { method: 'POST' });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 when API key is wrong', async () => {
+    const req = new Request('https://worker.example.com/plaid/link-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer wrong_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /plaid/link-token', () => {
+  it('returns link_token on success', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ link_token: 'link-sandbox-abc' }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/link-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { link_token: string };
+    expect(body.link_token).toBe('link-sandbox-abc');
+  });
+
+  it('uses correct plaid base URL for sandbox vs production', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ link_token: 'link-prod-abc' }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/link-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    await handler.fetch(req, makeEnv({ PLAID_ENV: 'production' }), {} as ExecutionContext);
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('production.plaid.com'),
+      expect.anything()
+    );
+  });
+});
+
+describe('POST /plaid/exchange', () => {
+  it('returns access_token on success', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'access-sandbox-xyz', item_id: 'item1' }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_token: 'public-sandbox-token' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { access_token: string };
+    expect(body.access_token).toBe('access-sandbox-xyz');
+  });
+});
+
+describe('POST /plaid/transactions', () => {
+  it('strips credits (amount <= 0) from added and modified', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        added: [
+          { transaction_id: 'tx1', amount: 25.00, merchant_name: 'Coffee' },
+          { transaction_id: 'tx2', amount: -10.00, merchant_name: 'Refund' },
+        ],
+        modified: [],
+        removed: [],
+        next_cursor: 'cursor-abc',
+        has_more: false,
+      }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/transactions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: 'access-sandbox-xyz' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { added: { transaction_id: string }[] };
+    expect(body.added).toHaveLength(1);
+    expect(body.added[0].transaction_id).toBe('tx1');
+  });
+
+  it('returns 400 with ITEM_LOGIN_REQUIRED error', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error_code: 'ITEM_LOGIN_REQUIRED' }), { status: 400 })
+    );
+    const req = new Request('https://worker.example.com/plaid/transactions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: 'access-sandbox-xyz' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('ITEM_LOGIN_REQUIRED');
+  });
+});
+
+describe('POST /splitwise/exchange', () => {
+  it('returns access_token and user profile', async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: 'sw-token-abc' }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          user: { id: 123, first_name: 'Bala', last_name: 'K', picture: { medium: 'https://img.url' } }
+        }), { status: 200 })
+      );
+    const req = new Request('https://worker.example.com/splitwise/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'auth-code-123', redirect_uri: 'spliteasy://oauth' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    // user_id is returned as a string (Worker converts Splitwise int ID to string)
+    const body = await res.json() as { access_token: string; user_id: string; display_name: string };
+    expect(body.access_token).toBe('sw-token-abc');
+    expect(body.user_id).toBe('123');         // string, not number
+    expect(body.display_name).toBe('Bala K');
+  });
+});
