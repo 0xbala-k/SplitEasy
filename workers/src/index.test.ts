@@ -1,16 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import handler, { type Env } from './index';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
-
-interface Env {
-  PLAID_CLIENT_ID: string;
-  PLAID_SECRET: string;
-  PLAID_ENV: string;
-  WORKER_API_KEY: string;
-  SPLITWISE_CLIENT_ID: string;
-  SPLITWISE_CLIENT_SECRET: string;
-}
 
 const makeEnv = (overrides: Partial<Env> = {}): Env => ({
   PLAID_CLIENT_ID: 'test_client_id',
@@ -21,9 +13,6 @@ const makeEnv = (overrides: Partial<Env> = {}): Env => ({
   SPLITWISE_CLIENT_SECRET: 'sw_secret',
   ...overrides,
 });
-
-// Import handler at module level (vitest handles mock hoisting)
-import handler from './index';
 
 beforeEach(() => { mockFetch.mockReset(); });
 
@@ -90,10 +79,25 @@ describe('POST /plaid/exchange', () => {
     const body = await res.json() as { access_token: string };
     expect(body.access_token).toBe('access-sandbox-xyz');
   });
+
+  it('returns error when Plaid rejects the public_token', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error_code: 'INVALID_PUBLIC_TOKEN' }), { status: 400 })
+    );
+    const req = new Request('https://worker.example.com/plaid/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_token: 'bad-token' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('INVALID_PUBLIC_TOKEN');
+  });
 });
 
 describe('POST /plaid/transactions', () => {
-  it('strips credits (amount <= 0) from added and modified', async () => {
+  it('strips credits (amount <= 0) from added', async () => {
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({
         added: [
@@ -118,6 +122,31 @@ describe('POST /plaid/transactions', () => {
     expect(body.added[0].transaction_id).toBe('tx1');
   });
 
+  it('strips credits (amount <= 0) from modified', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        added: [],
+        modified: [
+          { transaction_id: 'tx3', amount: 15.00, merchant_name: 'Lunch' },
+          { transaction_id: 'tx4', amount: 0.00, merchant_name: 'Zero' },
+        ],
+        removed: [],
+        next_cursor: 'cursor-xyz',
+        has_more: false,
+      }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/transactions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: 'access-sandbox-xyz' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { modified: { transaction_id: string }[] };
+    expect(body.modified).toHaveLength(1);
+    expect(body.modified[0].transaction_id).toBe('tx3');
+  });
+
   it('returns 400 with ITEM_LOGIN_REQUIRED error', async () => {
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ error_code: 'ITEM_LOGIN_REQUIRED' }), { status: 400 })
@@ -131,6 +160,18 @@ describe('POST /plaid/transactions', () => {
     expect(res.status).toBe(400);
     const body = await res.json() as { error: string };
     expect(body.error).toBe('ITEM_LOGIN_REQUIRED');
+  });
+
+  it('returns 400 when access_token is missing', async () => {
+    const req = new Request('https://worker.example.com/plaid/transactions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('MISSING_ACCESS_TOKEN');
   });
 });
 
@@ -157,5 +198,39 @@ describe('POST /splitwise/exchange', () => {
     expect(body.access_token).toBe('sw-token-abc');
     expect(body.user_id).toBe('123');         // string, not number
     expect(body.display_name).toBe('Bala K');
+  });
+
+  it('returns 400 when Splitwise token endpoint returns an error', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'bad-code', redirect_uri: 'spliteasy://oauth' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('invalid_grant');
+  });
+
+  it('returns 502 when get_current_user fails after successful token exchange', async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: 'sw-token-abc' }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
+      );
+    const req = new Request('https://worker.example.com/splitwise/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'auth-code-123', redirect_uri: 'spliteasy://oauth' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('SPLITWISE_PROFILE_ERROR');
   });
 });
