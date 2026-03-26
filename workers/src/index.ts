@@ -47,7 +47,10 @@ async function handleLinkToken(env: Env): Promise<Response> {
 }
 
 async function handleExchange(req: Request, env: Env): Promise<Response> {
-  const { public_token } = await req.json() as { public_token: string };
+  const { public_token } = await req.json() as { public_token?: string };
+  if (!public_token || typeof public_token !== 'string') {
+    return json({ error: 'MISSING_PUBLIC_TOKEN' }, 400);
+  }
   const res = await fetch(`${plaidBase(env)}/item/public_token/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -108,7 +111,10 @@ async function handleTransactions(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleSplitwiseExchange(req: Request, env: Env): Promise<Response> {
-  const { code, redirect_uri } = await req.json() as { code: string; redirect_uri: string };
+  const { code, redirect_uri } = await req.json() as { code?: string; redirect_uri?: string };
+  if (!code || typeof code !== 'string' || !redirect_uri || typeof redirect_uri !== 'string') {
+    return json({ error: 'MISSING_REQUIRED_PARAMS' }, 400);
+  }
   const tokenRes = await fetch('https://secure.splitwise.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -142,12 +148,19 @@ async function handleSplitwiseExchange(req: Request, env: Env): Promise<Response
 
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    if (!authenticate(req, env)) return json({ error: 'Unauthorized' }, 401);
-    const path = new URL(req.url).pathname;
-    if (req.method === 'POST' && path === '/plaid/link-token') return handleLinkToken(env);
-    if (req.method === 'POST' && path === '/plaid/exchange') return handleExchange(req, env);
-    if (req.method === 'POST' && path === '/plaid/transactions') return handleTransactions(req, env);
-    if (req.method === 'POST' && path === '/splitwise/exchange') return handleSplitwiseExchange(req, env);
-    return json({ error: 'Not Found' }, 404);
+    try {
+      if (!authenticate(req, env)) return json({ error: 'Unauthorized' }, 401);
+      const path = new URL(req.url).pathname;
+      if (req.method === 'POST' && path === '/plaid/link-token') return handleLinkToken(env);
+      if (req.method === 'POST' && path === '/plaid/exchange') return handleExchange(req, env);
+      if (req.method === 'POST' && path === '/plaid/transactions') return handleTransactions(req, env);
+      if (req.method === 'POST' && path === '/splitwise/exchange') return handleSplitwiseExchange(req, env);
+      return json({ error: 'Not Found' }, 404);
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        return json({ error: 'INVALID_REQUEST_BODY' }, 400);
+      }
+      throw err;
+    }
   },
 };

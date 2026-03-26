@@ -64,6 +64,28 @@ describe('POST /plaid/link-token', () => {
   });
 });
 
+describe('Route matching', () => {
+  it('returns 404 for unknown route', async () => {
+    const req = new Request('https://worker.example.com/foo', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('Not Found');
+  });
+
+  it('returns 404 for non-POST method on valid path', async () => {
+    const req = new Request('https://worker.example.com/plaid/link-token', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('POST /plaid/exchange', () => {
   it('returns access_token on success', async () => {
     mockFetch.mockResolvedValueOnce(
@@ -78,6 +100,30 @@ describe('POST /plaid/exchange', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { access_token: string };
     expect(body.access_token).toBe('access-sandbox-xyz');
+  });
+
+  it('returns 400 when public_token is missing', async () => {
+    const req = new Request('https://worker.example.com/plaid/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('MISSING_PUBLIC_TOKEN');
+  });
+
+  it('returns 400 when request body is malformed JSON', async () => {
+    const req = new Request('https://worker.example.com/plaid/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: 'not json',
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('INVALID_REQUEST_BODY');
   });
 
   it('returns error when Plaid rejects the public_token', async () => {
@@ -162,6 +208,18 @@ describe('POST /plaid/transactions', () => {
     expect(body.error).toBe('ITEM_LOGIN_REQUIRED');
   });
 
+  it('returns 400 when request body is malformed JSON', async () => {
+    const req = new Request('https://worker.example.com/plaid/transactions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: 'not json',
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('INVALID_REQUEST_BODY');
+  });
+
   it('returns 400 when access_token is missing', async () => {
     const req = new Request('https://worker.example.com/plaid/transactions', {
       method: 'POST',
@@ -213,6 +271,42 @@ describe('POST /splitwise/exchange', () => {
     expect(res.status).toBe(400);
     const body = await res.json() as { error: string };
     expect(body.error).toBe('invalid_grant');
+  });
+
+  it('returns 400 when code is missing', async () => {
+    const req = new Request('https://worker.example.com/splitwise/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uri: 'spliteasy://oauth' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('MISSING_REQUIRED_PARAMS');
+  });
+
+  it('returns 400 when redirect_uri is missing', async () => {
+    const req = new Request('https://worker.example.com/splitwise/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'auth-code-123' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('MISSING_REQUIRED_PARAMS');
+  });
+
+  it('returns 400 when request body is malformed JSON', async () => {
+    const req = new Request('https://worker.example.com/splitwise/exchange', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: 'not json',
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('INVALID_REQUEST_BODY');
   });
 
   it('returns 502 when get_current_user fails after successful token exchange', async () => {
