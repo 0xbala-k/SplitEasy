@@ -1,6 +1,6 @@
 name = "spliteasy-worker"
 main = "src/index.ts"
-compatibility_date = "2026-03-01"
+compatibility_date = "2026-03-25"
 
 # Secrets set via `wrangler secret put`:
 # PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV (sandbox|development|production)
