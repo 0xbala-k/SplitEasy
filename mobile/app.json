@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "SplitEasy",
+    "slug": "spliteasy",
+    "version": "1.0.0",
+    "scheme": "spliteasy",
+    "platforms": ["ios", "android"],
+    "ios": {
+      "bundleIdentifier": "com.spliteasy.app",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.spliteasy.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "react-native-plaid-link-sdk",
+        { "enablePaymentInitialization": false }
+      ]
+    ]
+  }
+}
