@@ -12,12 +12,14 @@
     "android": {
       "package": "com.spliteasy.app",
       "adaptiveIcon": {
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/adaptive-icon.png"
       }
     },
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      "expo-splash-screen",
       [
         "react-native-plaid-link-sdk",
         { "enablePaymentInitialization": false }
