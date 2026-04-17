@@ -38,7 +38,7 @@
   },
   "jest": {
     "preset": "jest-expo",
-    "setupFilesAfterFramework": ["./jest.setup.ts"],
+    "setupFilesAfterEnv": ["./jest.setup.ts"],
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1"
     },
