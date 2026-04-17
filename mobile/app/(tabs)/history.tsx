@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useState, useCallback } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { getHistoryTransactions } from '@/lib/db';
 import { TransactionWithSplit } from '@/lib/types';
 
 export default function HistoryScreen() {
   const [rows, setRows] = useState<TransactionWithSplit[]>([]);
 
-  useEffect(() => {
-    getHistoryTransactions().then(setRows);
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      getHistoryTransactions().then(setRows);
+    }, [])
+  );
 
   if (rows.length === 0) {
     return (

@@ -92,7 +92,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         } else {
           toast.show('Failed to add expense. Please try again.', 'error');
         }
-      } finally {
         setSubmitting(false);
         setSelected(new Set());
       }

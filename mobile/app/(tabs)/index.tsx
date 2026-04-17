@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
+import { useRouter } from 'expo-router';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { TransactionRow } from '@/components/TransactionRow';
@@ -12,6 +13,7 @@ import { Transaction } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 
 export default function NewTransactionsScreen() {
+  const router = useRouter();
   const { transactions, isLoading, load, refresh, skip } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -37,7 +39,7 @@ export default function NewTransactionsScreen() {
   }
 
   async function handleReauth() {
-    // TODO: launch Plaid update mode
+    router.push('/(auth)/bank-connect');
   }
 
   if (isLoading && transactions.length === 0) {

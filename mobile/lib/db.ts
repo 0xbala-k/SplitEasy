@@ -128,7 +128,7 @@ export async function getSplitDecision(transactionId: string): Promise<SplitDeci
 }
 
 export async function insertSplitDecision(
-  decision: Omit<SplitDecision, never>
+  decision: SplitDecision
 ): Promise<void> {
   await db().runAsync(
     `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at)

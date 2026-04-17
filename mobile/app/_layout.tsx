@@ -31,11 +31,11 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={styles.flex}>
-      <BottomSheetModalProvider>
-        <ToastProvider>
+      <ToastProvider>
+        <BottomSheetModalProvider>
           <Slot />
-        </ToastProvider>
-      </BottomSheetModalProvider>
+        </BottomSheetModalProvider>
+      </ToastProvider>
     </GestureHandlerRootView>
   );
 }
