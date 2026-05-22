@@ -1,12 +1,11 @@
 import { Alert, Image, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 
 export default function SettingsScreen() {
-  const insets = useSafeAreaInsets();
   const { display_name, avatar_url, signOut } = useAuthStore();
   const { institution_name, isLinked, disconnect } = usePlaidStore();
 
@@ -37,7 +36,7 @@ export default function SettingsScreen() {
     : '?';
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: Constants.statusBarHeight }]}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
 
       <View style={styles.header}>

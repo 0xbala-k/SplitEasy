@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import NetInfo from '@react-native-community/netinfo';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,7 +17,7 @@ import { Colors, Spacing, Radius } from '@/lib/theme';
 
 export default function NewTransactionsScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
+  const topInset = Constants.statusBarHeight;
   const { transactions, isLoading, load, refresh, skip } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -49,7 +49,7 @@ export default function NewTransactionsScreen() {
   const isEmptyAndLoaded = !isLoading && transactions.length === 0;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: topInset }]}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
 
       {/* Header */}

@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { FlatList, StatusBar, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { getHistoryTransactions } from '@/lib/db';
@@ -8,7 +8,6 @@ import { TransactionWithSplit } from '@/lib/types';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
 export default function HistoryScreen() {
-  const insets = useSafeAreaInsets();
   const [rows, setRows] = useState<TransactionWithSplit[]>([]);
 
   useFocusEffect(
@@ -18,7 +17,7 @@ export default function HistoryScreen() {
   );
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: Constants.statusBarHeight }]}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
       <View style={styles.header}>
         <Text style={styles.headerTitle}>History</Text>
