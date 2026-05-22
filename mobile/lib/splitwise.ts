@@ -59,29 +59,38 @@ export async function createExpense(params: {
   currency: string;
   currentUserId: string;
   friendIds: string[];
+  includeMe: boolean;
 }): Promise<{ expense_id: string; amount_each: number }> {
-  const n = params.friendIds.length + 1;
-  const friendShareCents = Math.floor((params.amount * 100) / n);
+  const { amount, description, currency, currentUserId, friendIds, includeMe } = params;
+
+  // n is the total number of people sharing the cost
+  const n = friendIds.length + (includeMe ? 1 : 0);
+  const friendShareCents = Math.floor((amount * 100) / n);
   const friendShare = (friendShareCents / 100).toFixed(2);
-  const ownerOwedCents = Math.round(params.amount * 100) - friendShareCents * params.friendIds.length;
+
+  // When includeMe=false, owner paid but owes nothing — friends cover the full amount
+  const ownerOwedCents = includeMe
+    ? Math.round(amount * 100) - friendShareCents * friendIds.length
+    : 0;
   const ownerShare = (ownerOwedCents / 100).toFixed(2);
 
   const body: Record<string, string> = {
-    cost: params.amount.toFixed(2),
-    description: params.description,
-    currency_code: params.currency,
-    'users__0__user_id': params.currentUserId,
-    'users__0__paid_share': params.amount.toFixed(2),
+    cost: amount.toFixed(2),
+    description,
+    currency_code: currency,
+    'users__0__user_id': currentUserId,
+    'users__0__paid_share': amount.toFixed(2),
     'users__0__owed_share': ownerShare,
   };
-  params.friendIds.forEach((id, i) => {
+  friendIds.forEach((id, i) => {
     body[`users__${i + 1}__user_id`] = id;
     body[`users__${i + 1}__paid_share`] = '0.00';
     body[`users__${i + 1}__owed_share`] = friendShare;
   });
+
   const data = await swPost<{ expenses: [{ id: number }] }>('/create_expense', body);
   return {
     expense_id: String(data.expenses[0].id),
-    amount_each: ownerOwedCents / 100,
+    amount_each: friendShareCents / 100,
   };
 }
