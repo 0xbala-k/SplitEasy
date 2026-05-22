@@ -39,6 +39,8 @@ async function handleLinkToken(env: Env): Promise<Response> {
       language: 'en',
       user: { client_user_id: 'spliteasy-user' }, // TODO(phase-2): accept user_id from request body for per-user Plaid identity
       products: ['transactions'],
+      // Required for Link on Android; include for mobile tokens (see Plaid link/token/create).
+      android_package_name: 'com.spliteasy.app',
     }),
   });
   const data = await res.json() as { link_token?: string; error_code?: string };

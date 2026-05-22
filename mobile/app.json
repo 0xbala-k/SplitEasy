@@ -4,10 +4,21 @@
     "slug": "spliteasy",
     "version": "1.0.0",
     "scheme": "spliteasy",
+    "newArchEnabled": true,
+    "extra": {
+      "eas": {
+        "projectId": "8b2b8bc5-b15d-492a-ba24-d7c554959c46"
+      }
+    },
     "platforms": ["ios", "android"],
+    "splash": {
+      "backgroundColor": "#5C7AEA",
+      "resizeMode": "native"
+    },
     "ios": {
       "bundleIdentifier": "com.spliteasy.app",
-      "supportsTablet": false
+      "supportsTablet": false,
+      "deploymentTarget": "16.0"
     },
     "android": {
       "package": "com.spliteasy.app",
@@ -19,11 +30,7 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-splash-screen",
-      [
-        "react-native-plaid-link-sdk",
-        { "enablePaymentInitialization": false }
-      ]
+      "expo-splash-screen"
     ]
   }
 }

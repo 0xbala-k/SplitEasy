@@ -3,10 +3,26 @@ node_modules/
 
 .superpowers/
 .worktrees/
-supabase/.env.local
-SplitEasy/Config/Secrets.xcconfig
+*/.env.local
 
-# Xcode
+# Expo / React Native (app lives in mobile/)
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+expo-env.d.ts
+
+# Native build artifacts (prebuild / local runs)
+**/ios/Pods/
+**/ios/build/
+**/android/.gradle/
+**/android/app/build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Xcode (if native ios/ exists locally)
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
@@ -19,22 +35,18 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 
-# Swift Package Manager
+# SwiftPM / legacy
 .build/
 /.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .swiftpm/config/registries.json
 .swiftpm/plugins/outputs
-.build
 
-# CocoaPods (if used in future)
+# CocoaPods / Carthage / fastlane (optional tooling)
 Pods/
-
-# Carthage (if used in future)
 Carthage/Build/
-
-# fastlane (if used in future)
 fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
 supabase/functions/.env
