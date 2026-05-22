@@ -1,5 +1,5 @@
 // mobile/components/FriendPickerSheet.tsx
-import { forwardRef, useState } from 'react';
+import { forwardRef, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { BottomSheetModal, BottomSheetView } from '@gorhom/bottom-sheet';
+import { BottomSheetModal, BottomSheetView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -29,11 +29,18 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
+
     const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [query, setQuery] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const toast = useToast();
 
     if (!transaction) return null;
+
+    const filtered = useMemo(() => {
+      const q = query.trim().toLowerCase();
+      return q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
+    }, [friends, query]);
 
     const n = selected.size + 1;
     const amountEach = transaction.amount / n;
@@ -107,6 +114,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
         backgroundStyle={styles.sheetBg}
+        keyboardBehavior="interactive"
+        keyboardBlurBehavior="restore"
       >
         <BottomSheetView style={styles.container}>
           {/* Transaction summary */}
@@ -130,8 +139,28 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             </View>
           )}
 
+          {/* Search bar */}
+          <View style={styles.searchRow}>
+            <Ionicons name="search-outline" size={16} color={Colors.textTertiary} style={styles.searchIcon} />
+            <BottomSheetTextInput
+              style={styles.searchInput}
+              placeholder="Search friends…"
+              placeholderTextColor={Colors.textTertiary}
+              value={query}
+              onChangeText={setQuery}
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+              returnKeyType="search"
+              accessibilityLabel="Search friends"
+            />
+          </View>
+
           {/* Section label */}
-          <Text style={styles.sectionLabel}>Select friends to split with</Text>
+          <Text style={styles.sectionLabel}>
+            {query !== '' && filtered.length === 0
+              ? `No results for "${query}"`
+              : 'Select friends to split with'}
+          </Text>
 
           {/* Friends list */}
           {isLoading ? (
@@ -143,9 +172,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             </View>
           ) : (
             <FlatList
-              data={friends}
+              data={filtered}
               keyExtractor={(f) => f.id}
               style={styles.friendList}
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => (
                 <FriendRow
                   friend={item}
@@ -272,6 +302,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.primary,
     fontWeight: '600',
+  },
+
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    height: 40,
+  },
+  searchIcon: { marginRight: Spacing.sm },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: Colors.textPrimary,
+    height: 40,
   },
 
   sectionLabel: {
