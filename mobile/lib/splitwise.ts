@@ -59,12 +59,11 @@ export async function createExpense(params: {
   currency: string;
   currentUserId: string;
   friendIds: string[];
+  // When provided, each entry overrides the equal-split share for that friend.
+  // owner's owed_share is derived as amount - sum(friendShares).
+  friendShares?: Record<string, number>;
 }): Promise<{ expense_id: string; amount_each: number }> {
-  const n = params.friendIds.length + 1;
-  const friendShareCents = Math.floor((params.amount * 100) / n);
-  const friendShare = (friendShareCents / 100).toFixed(2);
-  const ownerOwedCents = Math.round(params.amount * 100) - friendShareCents * params.friendIds.length;
-  const ownerShare = (ownerOwedCents / 100).toFixed(2);
+  let ownerOwedCents: number;
 
   const body: Record<string, string> = {
     cost: params.amount.toFixed(2),
@@ -72,13 +71,31 @@ export async function createExpense(params: {
     currency_code: params.currency,
     'users__0__user_id': params.currentUserId,
     'users__0__paid_share': params.amount.toFixed(2),
-    'users__0__owed_share': ownerShare,
   };
-  params.friendIds.forEach((id, i) => {
-    body[`users__${i + 1}__user_id`] = id;
-    body[`users__${i + 1}__paid_share`] = '0.00';
-    body[`users__${i + 1}__owed_share`] = friendShare;
-  });
+
+  if (params.friendShares) {
+    let friendTotalCents = 0;
+    params.friendIds.forEach((id, i) => {
+      const shareCents = Math.round((params.friendShares![id] ?? 0) * 100);
+      friendTotalCents += shareCents;
+      body[`users__${i + 1}__user_id`] = id;
+      body[`users__${i + 1}__paid_share`] = '0.00';
+      body[`users__${i + 1}__owed_share`] = (shareCents / 100).toFixed(2);
+    });
+    ownerOwedCents = Math.round(params.amount * 100) - friendTotalCents;
+  } else {
+    const n = params.friendIds.length + 1;
+    const friendShareCents = Math.floor((params.amount * 100) / n);
+    ownerOwedCents = Math.round(params.amount * 100) - friendShareCents * params.friendIds.length;
+    params.friendIds.forEach((id, i) => {
+      body[`users__${i + 1}__user_id`] = id;
+      body[`users__${i + 1}__paid_share`] = '0.00';
+      body[`users__${i + 1}__owed_share`] = (friendShareCents / 100).toFixed(2);
+    });
+  }
+
+  body['users__0__owed_share'] = (ownerOwedCents / 100).toFixed(2);
+
   const data = await swPost<{ expenses: [{ id: number }] }>('/create_expense', body);
   return {
     expense_id: String(data.expenses[0].id),
