@@ -1,5 +1,5 @@
 // mobile/components/FriendPickerSheet.tsx
-import { forwardRef, useMemo, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -19,6 +19,9 @@ import { SplitwiseFriend, Transaction } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
+type SplitMode = 'equal' | 'custom';
+const STEP = 0.5;
+
 interface Props {
   transaction: Transaction | null;
   onSuccess: (amountEach: number) => void;
@@ -33,6 +36,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [query, setQuery] = useState('');
     const [submitting, setSubmitting] = useState(false);
+    const [splitMode, setSplitMode] = useState<SplitMode>('equal');
+    const [customAmounts, setCustomAmounts] = useState<Record<string, number>>({});
     const toast = useToast();
 
     const filtered = useMemo(() => {
@@ -40,10 +45,28 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       return q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
     }, [friends, query]);
 
+    const selectedFriends = useMemo(
+      () => friends.filter((f) => selected.has(f.id)),
+      [friends, selected]
+    );
+
     if (!transaction) return null;
 
+    const totalCents = Math.round(transaction.amount * 100);
     const n = selected.size + 1;
-    const amountEach = transaction.amount / n;
+    const equalShareCents = selected.size > 0 ? Math.floor(totalCents / n) : 0;
+
+    const friendTotalCents =
+      splitMode === 'custom'
+        ? selectedFriends.reduce(
+            (sum, f) => sum + Math.round((customAmounts[f.id] ?? 0) * 100),
+            0
+          )
+        : equalShareCents * selected.size;
+
+    const ownerShareCents = totalCents - friendTotalCents;
+    const isOverBudget = ownerShareCents < -1;
+    const ctaDisabled = selected.size === 0 || submitting || isOverBudget;
 
     function toggle(id: string) {
       setSelected((prev) => {
@@ -53,8 +76,30 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       });
     }
 
+    function switchToCustom() {
+      const baseShareCents = Math.floor(totalCents / n);
+      const amounts: Record<string, number> = {};
+      selectedFriends.forEach((f) => {
+        amounts[f.id] = baseShareCents / 100;
+      });
+      setCustomAmounts(amounts);
+      setSplitMode('custom');
+    }
+
+    function adjustAmount(id: string, delta: number) {
+      setCustomAmounts((prev) => {
+        const current = prev[id] ?? 0;
+        const next = Math.max(0, Math.round((current + delta) * 100) / 100);
+        return { ...prev, [id]: next };
+      });
+    }
+
+    function commitAmount(id: string, value: number) {
+      setCustomAmounts((prev) => ({ ...prev, [id]: value }));
+    }
+
     async function handleAddToSplitwise() {
-      if (selected.size === 0 || submitting) return;
+      if (ctaDisabled) return;
       setSubmitting(true);
       try {
         const existing = await getSplitDecision(transaction!.id);
@@ -65,13 +110,13 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           return;
         }
 
-        const selectedFriends = friends.filter((f) => selected.has(f.id));
         const { expense_id, amount_each } = await createExpense({
           amount: transaction!.amount,
           description: transaction!.merchant_name,
           currency: transaction!.currency,
           currentUserId: user_id!,
           friendIds: selectedFriends.map((f) => f.id),
+          ...(splitMode === 'custom' && { friendShares: customAmounts }),
         });
 
         for (let attempt = 1; attempt <= 3; attempt++) {
@@ -100,7 +145,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           toast.show('Failed to add expense. Please try again.', 'error');
         }
         setSubmitting(false);
-        setSelected(new Set());
       }
     }
 
@@ -110,7 +154,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     return (
       <BottomSheetModal
         ref={ref}
-        snapPoints={['55%', '85%']}
+        snapPoints={['55%', '90%']}
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
         backgroundStyle={styles.sheetBg}
@@ -124,77 +168,152 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
               <Text style={[styles.txAvatarText, { color: merchantBg }]}>{merchantInitial}</Text>
             </View>
             <View style={styles.txInfo}>
-              <Text style={styles.txMerchant} numberOfLines={1}>{transaction.merchant_name}</Text>
+              <Text style={styles.txMerchant} numberOfLines={1}>
+                {transaction.merchant_name}
+              </Text>
               <Text style={styles.txTotal}>${transaction.amount.toFixed(2)}</Text>
             </View>
           </View>
 
-          {/* Split preview */}
+          {/* Equal / Custom segmented control */}
           {selected.size > 0 && (
-            <View style={styles.splitPreview}>
-              <Ionicons name="people-outline" size={16} color={Colors.primary} style={{ marginRight: 6 }} />
-              <Text style={styles.splitPreviewText}>
-                ${amountEach.toFixed(2)} each · {n} people
-              </Text>
+            <View style={styles.segmented}>
+              <Pressable
+                style={[styles.segBtn, splitMode === 'equal' && styles.segBtnActive]}
+                onPress={() => setSplitMode('equal')}
+                accessibilityRole="button"
+                accessibilityState={{ selected: splitMode === 'equal' }}
+              >
+                <Text style={[styles.segText, splitMode === 'equal' && styles.segTextActive]}>
+                  Equal
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.segBtn, splitMode === 'custom' && styles.segBtnActive]}
+                onPress={switchToCustom}
+                accessibilityRole="button"
+                accessibilityState={{ selected: splitMode === 'custom' }}
+              >
+                <Text style={[styles.segText, splitMode === 'custom' && styles.segTextActive]}>
+                  Custom
+                </Text>
+              </Pressable>
             </View>
           )}
 
-          {/* Search bar */}
-          <View style={styles.searchRow}>
-            <Ionicons name="search-outline" size={16} color={Colors.textTertiary} style={styles.searchIcon} />
-            <BottomSheetTextInput
-              style={styles.searchInput}
-              placeholder="Search friends…"
-              placeholderTextColor={Colors.textTertiary}
-              value={query}
-              onChangeText={setQuery}
-              autoCorrect={false}
-              clearButtonMode="while-editing"
-              returnKeyType="search"
-              accessibilityLabel="Search friends"
-            />
-          </View>
+          {splitMode === 'equal' ? (
+            <>
+              {/* Equal split preview */}
+              {selected.size > 0 && (
+                <View style={styles.splitPreview}>
+                  <Ionicons
+                    name="people-outline"
+                    size={16}
+                    color={Colors.primary}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={styles.splitPreviewText}>
+                    ${(ownerShareCents / 100).toFixed(2)} each · {n} people
+                  </Text>
+                </View>
+              )}
 
-          {/* Section label */}
-          <Text style={styles.sectionLabel}>
-            {query !== '' && filtered.length === 0
-              ? `No results for "${query}"`
-              : 'Select friends to split with'}
-          </Text>
+              {/* Search */}
+              <View style={styles.searchRow}>
+                <Ionicons
+                  name="search-outline"
+                  size={16}
+                  color={Colors.textTertiary}
+                  style={styles.searchIcon}
+                />
+                <BottomSheetTextInput
+                  style={styles.searchInput}
+                  placeholder="Search friends…"
+                  placeholderTextColor={Colors.textTertiary}
+                  value={query}
+                  onChangeText={setQuery}
+                  autoCorrect={false}
+                  clearButtonMode="while-editing"
+                  returnKeyType="search"
+                  accessibilityLabel="Search friends"
+                />
+              </View>
 
-          {/* Friends list */}
-          {isLoading ? (
-            <ActivityIndicator color={Colors.primary} style={styles.spinner} />
-          ) : friends.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Ionicons name="people-outline" size={32} color={Colors.textTertiary} />
-              <Text style={styles.emptyText}>No Splitwise friends found.</Text>
-            </View>
-          ) : (
-            <FlatList
-              data={filtered}
-              keyExtractor={(f) => f.id}
-              style={styles.friendList}
-              keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => (
-                <FriendRow
-                  friend={item}
-                  isSelected={selected.has(item.id)}
-                  onToggle={() => toggle(item.id)}
+              <Text style={styles.sectionLabel}>
+                {query !== '' && filtered.length === 0
+                  ? `No results for "${query}"`
+                  : 'Select friends to split with'}
+              </Text>
+
+              {isLoading ? (
+                <ActivityIndicator color={Colors.primary} style={styles.spinner} />
+              ) : friends.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="people-outline" size={32} color={Colors.textTertiary} />
+                  <Text style={styles.emptyText}>No Splitwise friends found.</Text>
+                </View>
+              ) : (
+                <FlatList
+                  data={filtered}
+                  keyExtractor={(f) => f.id}
+                  style={styles.list}
+                  keyboardShouldPersistTaps="handled"
+                  renderItem={({ item }) => (
+                    <EqualRow
+                      friend={item}
+                      isSelected={selected.has(item.id)}
+                      onToggle={() => toggle(item.id)}
+                    />
+                  )}
                 />
               )}
-            />
+            </>
+          ) : (
+            <>
+              {/* Owner share card */}
+              <View style={[styles.ownerCard, isOverBudget && styles.ownerCardError]}>
+                <View>
+                  <Text style={[styles.ownerLabel, isOverBudget && styles.ownerLabelError]}>
+                    Your share
+                  </Text>
+                  {isOverBudget && (
+                    <Text style={styles.ownerHint}>Reduce friend amounts to balance</Text>
+                  )}
+                </View>
+                <Text style={[styles.ownerAmount, isOverBudget && styles.ownerAmountError]}>
+                  {isOverBudget ? '—' : `$${(ownerShareCents / 100).toFixed(2)}`}
+                </Text>
+              </View>
+
+              <Text style={styles.sectionLabel}>Custom amounts</Text>
+
+              <FlatList
+                data={selectedFriends}
+                keyExtractor={(f) => f.id}
+                style={styles.list}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => (
+                  <CustomRow
+                    friend={item}
+                    amount={customAmounts[item.id] ?? 0}
+                    onDecrease={() => adjustAmount(item.id, -STEP)}
+                    onIncrease={() => adjustAmount(item.id, STEP)}
+                    onCommit={(v) => commitAmount(item.id, v)}
+                  />
+                )}
+              />
+            </>
           )}
 
           {/* CTA */}
           <Pressable
             style={({ pressed }) => [
               styles.addBtn,
-              (selected.size === 0 || submitting) && styles.addBtnDisabled,
-              pressed && selected.size > 0 && !submitting && styles.addBtnPressed,
+              ctaDisabled && styles.addBtnDisabled,
+              pressed && !ctaDisabled && styles.addBtnPressed,
             ]}
             onPress={handleAddToSplitwise}
-            disabled={selected.size === 0 || submitting}
+            disabled={ctaDisabled}
             accessibilityRole="button"
             accessibilityLabel="Add split to Splitwise"
           >
@@ -205,10 +324,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                 <Ionicons
                   name="checkmark-circle-outline"
                   size={18}
-                  color={selected.size === 0 ? Colors.textTertiary : Colors.textInverse}
+                  color={ctaDisabled ? Colors.textTertiary : Colors.textInverse}
                   style={{ marginRight: 6 }}
                 />
-                <Text style={[styles.addBtnText, selected.size === 0 && styles.addBtnTextDisabled]}>
+                <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
                   Add to Splitwise
                 </Text>
               </>
@@ -220,7 +339,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
   }
 );
 
-function FriendRow({
+function EqualRow({
   friend,
   isSelected,
   onToggle,
@@ -244,8 +363,8 @@ function FriendRow({
       accessibilityState={{ checked: isSelected }}
       accessibilityLabel={friend.display_name}
     >
-      <View style={[styles.friendAvatar, { backgroundColor: avatarColor + '18' }]}>
-        <Text style={[styles.friendAvatarText, { color: avatarColor }]}>{initial}</Text>
+      <View style={[styles.avatar, { backgroundColor: avatarColor + '18' }]}>
+        <Text style={[styles.avatarText, { color: avatarColor }]}>{initial}</Text>
       </View>
       <Text style={[styles.friendName, isSelected && styles.friendNameSelected]}>
         {friend.display_name}
@@ -254,6 +373,82 @@ function FriendRow({
         {isSelected && <Ionicons name="checkmark" size={13} color={Colors.textInverse} />}
       </View>
     </Pressable>
+  );
+}
+
+function CustomRow({
+  friend,
+  amount,
+  onDecrease,
+  onIncrease,
+  onCommit,
+}: {
+  friend: SplitwiseFriend;
+  amount: number;
+  onDecrease: () => void;
+  onIncrease: () => void;
+  onCommit: (value: number) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [text, setText] = useState(amount.toFixed(2));
+
+  useEffect(() => {
+    if (!focused) setText(amount.toFixed(2));
+  }, [amount, focused]);
+
+  function handleBlur() {
+    setFocused(false);
+    const parsed = parseFloat(text);
+    if (!isNaN(parsed) && parsed >= 0) {
+      const rounded = Math.round(parsed * 100) / 100;
+      onCommit(rounded);
+      setText(rounded.toFixed(2));
+    } else {
+      setText(amount.toFixed(2));
+    }
+  }
+
+  const initial = friend.display_name[0].toUpperCase();
+  const avatarColor = merchantColor(friend.display_name);
+
+  return (
+    <View style={styles.customRow}>
+      <View style={[styles.avatar, { backgroundColor: avatarColor + '18' }]}>
+        <Text style={[styles.avatarText, { color: avatarColor }]}>{initial}</Text>
+      </View>
+      <Text style={styles.customName} numberOfLines={1}>
+        {friend.display_name}
+      </Text>
+      <View style={styles.stepper}>
+        <Pressable
+          style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+          onPress={onDecrease}
+          accessibilityLabel={`Decrease ${friend.display_name}'s share`}
+        >
+          <Ionicons name="remove" size={18} color={Colors.textPrimary} />
+        </Pressable>
+        <View style={styles.stepAmountWrap}>
+          <Text style={styles.stepDollar}>$</Text>
+          <BottomSheetTextInput
+            style={styles.stepInput}
+            value={text}
+            onChangeText={setText}
+            onFocus={() => setFocused(true)}
+            onBlur={handleBlur}
+            keyboardType="decimal-pad"
+            selectTextOnFocus
+            accessibilityLabel={`${friend.display_name}'s share amount`}
+          />
+        </View>
+        <Pressable
+          style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+          onPress={onIncrease}
+          accessibilityLabel={`Increase ${friend.display_name}'s share`}
+        >
+          <Ionicons name="add" size={18} color={Colors.textPrimary} />
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -277,17 +472,30 @@ const styles = StyleSheet.create({
   },
   txAvatarText: { fontSize: 20, fontWeight: '700' },
   txInfo: { flex: 1 },
-  txMerchant: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
+  txMerchant: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   txTotal: {
     fontSize: 24,
     fontWeight: '800',
     color: Colors.textPrimary,
     letterSpacing: -0.5,
   },
+
+  segmented: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: Radius.md,
+    padding: 3,
+    marginBottom: Spacing.md,
+  },
+  segBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+  },
+  segBtnActive: { backgroundColor: Colors.surface, ...Shadow.sm },
+  segText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
+  segTextActive: { color: Colors.textPrimary },
 
   splitPreview: {
     flexDirection: 'row',
@@ -298,11 +506,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     marginBottom: Spacing.md,
   },
-  splitPreviewText: {
-    fontSize: 14,
-    color: Colors.primary,
-    fontWeight: '600',
+  splitPreviewText: { fontSize: 14, color: Colors.primary, fontWeight: '600' },
+
+  ownerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Colors.primaryMuted,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
   },
+  ownerCardError: { backgroundColor: Colors.errorLight },
+  ownerLabel: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  ownerLabelError: { color: Colors.error },
+  ownerHint: { fontSize: 11, color: Colors.error, marginTop: 2 },
+  ownerAmount: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: Colors.primary,
+    fontVariant: ['tabular-nums'],
+  },
+  ownerAmountError: { color: Colors.error },
 
   searchRow: {
     flexDirection: 'row',
@@ -314,12 +540,7 @@ const styles = StyleSheet.create({
     height: 40,
   },
   searchIcon: { marginRight: Spacing.sm },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    color: Colors.textPrimary,
-    height: 40,
-  },
+  searchInput: { flex: 1, fontSize: 15, color: Colors.textPrimary, height: 40 },
 
   sectionLabel: {
     fontSize: 12,
@@ -331,17 +552,11 @@ const styles = StyleSheet.create({
   },
 
   spinner: { marginTop: 40 },
-  emptyContainer: {
-    alignItems: 'center',
-    paddingTop: 40,
-    gap: Spacing.md,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
+  emptyContainer: { alignItems: 'center', paddingTop: 40, gap: Spacing.md },
+  emptyText: { fontSize: 14, color: Colors.textSecondary },
 
-  friendList: { flex: 1 },
+  list: { flex: 1 },
+
   friendRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -353,7 +568,8 @@ const styles = StyleSheet.create({
   },
   friendRowSelected: { backgroundColor: Colors.primaryMuted },
   friendRowPressed: { backgroundColor: Colors.border },
-  friendAvatar: {
+
+  avatar: {
     width: 36,
     height: 36,
     borderRadius: Radius.sm,
@@ -361,14 +577,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: Spacing.md,
   },
-  friendAvatarText: { fontSize: 14, fontWeight: '700' },
-  friendName: {
-    flex: 1,
-    fontSize: 15,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-  },
+  avatarText: { fontSize: 14, fontWeight: '700' },
+
+  friendName: { flex: 1, fontSize: 15, color: Colors.textPrimary, fontWeight: '500' },
   friendNameSelected: { fontWeight: '600', color: Colors.primary },
+
   checkbox: {
     width: 22,
     height: 22,
@@ -379,9 +592,58 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: Colors.surface,
   },
-  checkboxSelected: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
+  checkboxSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+
+  customRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+    marginBottom: Spacing.xs,
+    backgroundColor: Colors.surfaceMuted,
+    minHeight: 60,
+  },
+  customName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+    color: Colors.textPrimary,
+    marginRight: Spacing.sm,
+  },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+  },
+  stepBtn: {
+    width: 36,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepBtnPressed: { backgroundColor: Colors.surfaceMuted },
+  stepAmountWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xs,
+    minWidth: 72,
+    justifyContent: 'center',
+  },
+  stepDollar: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' },
+  stepInput: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    fontVariant: ['tabular-nums'],
+    minWidth: 52,
+    textAlign: 'center',
+    height: 44,
+    paddingHorizontal: 2,
   },
 
   addBtn: {
