@@ -35,12 +35,12 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [submitting, setSubmitting] = useState(false);
     const toast = useToast();
 
-    if (!transaction) return null;
-
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();
       return q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
     }, [friends, query]);
+
+    if (!transaction) return null;
 
     const n = selected.size + 1;
     const amountEach = transaction.amount / n;
