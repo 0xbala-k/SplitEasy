@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, Text, View, ActivityIndicator } from 'react-nati
 import { useState } from 'react';
 import Constants from 'expo-constants';
 import { useAuthStore } from '@/stores/authStore';
+import { usePlaidStore } from '@/stores/plaidStore';
 
 const REDIRECT_URI = 'spliteasy://oauth/callback';
 const CLIENT_ID: string = Constants.expoConfig?.extra?.splitwiseClientId ?? '';
@@ -29,6 +30,9 @@ export default function WelcomeScreen() {
       if (!code) return;
 
       await signIn(code, REDIRECT_URI);
+
+      const isLinked = usePlaidStore.getState().isLinked;
+      router.replace(isLinked ? '/(tabs)/' : '/(auth)/bank-connect');
     } catch (err) {
       console.error('Sign in failed', err);
     } finally {

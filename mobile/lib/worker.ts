@@ -18,7 +18,12 @@ export class WorkerError extends Error {
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
   const { baseUrl, apiKey } = getConfig();
-  const res = await fetch(`${baseUrl}${path}`, {
+  if (!baseUrl.trim() || !apiKey.trim()) {
+    throw new Error(
+      'Missing WORKER_BASE_URL or WORKER_API_KEY. Add them to .env and restart Expo so app.config.js can embed them.'
+    );
+  }
+  const res = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
