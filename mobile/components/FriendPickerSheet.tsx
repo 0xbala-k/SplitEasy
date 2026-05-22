@@ -3,7 +3,6 @@ import { forwardRef, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -28,11 +27,10 @@ interface Props {
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
   ({ transaction, onSuccess }, ref) => {
     const { friends, isLoading } = useFriendStore();
-    const { user_id, display_name, avatar_url } = useAuthStore();
+    const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
-    const [includeMe, setIncludeMe] = useState(true);
     const [query, setQuery] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const toast = useToast();
@@ -44,8 +42,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       return q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
     }, [friends, query]);
 
-    const participantCount = selected.size + (includeMe ? 1 : 0);
-    const amountEach = participantCount > 0 ? transaction.amount / participantCount : 0;
+    const n = selected.size + 1;
+    const amountEach = transaction.amount / n;
 
     function toggle(id: string) {
       setSelected((prev) => {
@@ -74,7 +72,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           currency: transaction!.currency,
           currentUserId: user_id!,
           friendIds: selectedFriends.map((f) => f.id),
-          includeMe,
         });
 
         for (let attempt = 1; attempt <= 3; attempt++) {
@@ -109,13 +106,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
     const merchantInitial = (transaction.merchant_name ?? '?')[0].toUpperCase();
     const merchantBg = merchantColor(transaction.merchant_name ?? '?');
-    const meInitial = (display_name ?? 'Me')[0].toUpperCase();
-    const meColor = merchantColor(display_name ?? 'Me');
 
     return (
       <BottomSheetModal
         ref={ref}
-        snapPoints={['60%', '90%']}
+        snapPoints={['55%', '85%']}
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
         backgroundStyle={styles.sheetBg}
@@ -135,11 +130,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           </View>
 
           {/* Split preview */}
-          {participantCount > 0 && selected.size > 0 && (
+          {selected.size > 0 && (
             <View style={styles.splitPreview}>
               <Ionicons name="people-outline" size={16} color={Colors.primary} style={{ marginRight: 6 }} />
               <Text style={styles.splitPreviewText}>
-                ${amountEach.toFixed(2)} each · {participantCount} {participantCount === 1 ? 'person' : 'people'}
+                ${amountEach.toFixed(2)} each · {n} people
               </Text>
             </View>
           )}
@@ -160,43 +155,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             />
           </View>
 
-          {/* "Include me" row — only shown when no search query */}
-          {query === '' && (
-            <Pressable
-              style={({ pressed }) => [
-                styles.meRow,
-                includeMe && styles.meRowSelected,
-                pressed && styles.meRowPressed,
-              ]}
-              onPress={() => setIncludeMe((v) => !v)}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: includeMe }}
-              accessibilityLabel="Include myself in the split"
-            >
-              {avatar_url ? (
-                <Image source={{ uri: avatar_url }} style={styles.meAvatar} />
-              ) : (
-                <View style={[styles.meAvatar, styles.meAvatarFallback, { backgroundColor: meColor + '18' }]}>
-                  <Text style={[styles.meAvatarText, { color: meColor }]}>{meInitial}</Text>
-                </View>
-              )}
-              <View style={styles.meInfo}>
-                <Text style={[styles.meName, includeMe && styles.meNameSelected]}>
-                  {display_name ?? 'Me'} <Text style={styles.meTag}>(you)</Text>
-                </Text>
-                {includeMe && amountEach > 0 && (
-                  <Text style={styles.meShare}>${amountEach.toFixed(2)} your share</Text>
-                )}
-              </View>
-              <View style={[styles.checkbox, includeMe && styles.checkboxSelected]}>
-                {includeMe && <Ionicons name="checkmark" size={13} color={Colors.textInverse} />}
-              </View>
-            </Pressable>
-          )}
-
           {/* Section label */}
           <Text style={styles.sectionLabel}>
-            {query !== '' && filtered.length === 0 ? `No results for "${query}"` : 'Friends'}
+            {query !== '' && filtered.length === 0
+              ? `No results for "${query}"`
+              : 'Select friends to split with'}
           </Text>
 
           {/* Friends list */}
@@ -217,7 +180,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                 <FriendRow
                   friend={item}
                   isSelected={selected.has(item.id)}
-                  amountEach={selected.size > 0 ? amountEach : 0}
                   onToggle={() => toggle(item.id)}
                 />
               )}
@@ -261,12 +223,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 function FriendRow({
   friend,
   isSelected,
-  amountEach,
   onToggle,
 }: {
   friend: SplitwiseFriend;
   isSelected: boolean;
-  amountEach: number;
   onToggle: () => void;
 }) {
   const initial = friend.display_name[0].toUpperCase();
@@ -287,14 +247,9 @@ function FriendRow({
       <View style={[styles.friendAvatar, { backgroundColor: avatarColor + '18' }]}>
         <Text style={[styles.friendAvatarText, { color: avatarColor }]}>{initial}</Text>
       </View>
-      <View style={styles.friendInfo}>
-        <Text style={[styles.friendName, isSelected && styles.friendNameSelected]}>
-          {friend.display_name}
-        </Text>
-        {isSelected && amountEach > 0 && (
-          <Text style={styles.friendShare}>${amountEach.toFixed(2)} their share</Text>
-        )}
-      </View>
+      <Text style={[styles.friendName, isSelected && styles.friendNameSelected]}>
+        {friend.display_name}
+      </Text>
       <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
         {isSelected && <Ionicons name="checkmark" size={13} color={Colors.textInverse} />}
       </View>
@@ -366,46 +321,6 @@ const styles = StyleSheet.create({
     height: 40,
   },
 
-  meRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.md,
-    marginBottom: Spacing.xs,
-    backgroundColor: Colors.surfaceMuted,
-  },
-  meRowSelected: { backgroundColor: Colors.primaryMuted },
-  meRowPressed: { backgroundColor: Colors.border },
-  meAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.full,
-    marginRight: Spacing.md,
-  },
-  meAvatarFallback: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  meAvatarText: { fontSize: 14, fontWeight: '700' },
-  meInfo: { flex: 1 },
-  meName: {
-    fontSize: 15,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-  },
-  meNameSelected: { fontWeight: '600', color: Colors.primary },
-  meTag: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    fontWeight: '400',
-  },
-  meShare: {
-    fontSize: 12,
-    color: Colors.primary,
-    marginTop: 1,
-  },
-
   sectionLabel: {
     fontSize: 12,
     fontWeight: '600',
@@ -413,7 +328,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: Spacing.sm,
-    marginTop: Spacing.xs,
   },
 
   spinner: { marginTop: 40 },
@@ -448,18 +362,13 @@ const styles = StyleSheet.create({
     marginRight: Spacing.md,
   },
   friendAvatarText: { fontSize: 14, fontWeight: '700' },
-  friendInfo: { flex: 1 },
   friendName: {
+    flex: 1,
     fontSize: 15,
     color: Colors.textPrimary,
     fontWeight: '500',
   },
   friendNameSelected: { fontWeight: '600', color: Colors.primary },
-  friendShare: {
-    fontSize: 12,
-    color: Colors.primary,
-    marginTop: 1,
-  },
   checkbox: {
     width: 22,
     height: 22,
