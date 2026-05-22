@@ -1,6 +1,8 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Transaction } from '@/lib/types';
+import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
 interface Props {
   transaction: Transaction;
@@ -14,19 +16,42 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
     month: 'short',
     day: 'numeric',
   });
+  const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
+  const avatarBg = merchantColor(transaction.merchant_name ?? '?');
 
   return (
     <View style={styles.card}>
+      {/* Merchant avatar */}
+      <View style={[styles.avatar, { backgroundColor: avatarBg + '18' }]}>
+        <Text style={[styles.avatarText, { color: avatarBg }]}>{initial}</Text>
+      </View>
+
+      {/* Info */}
       <View style={styles.info}>
         <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
         <Text style={styles.date}>{date}</Text>
       </View>
+
+      {/* Amount */}
       <Text style={styles.amount}>{amount}</Text>
+
+      {/* Actions */}
       <View style={styles.actions}>
-        <Pressable style={[styles.btn, styles.skip]} onPress={onSkip}>
-          <Text style={styles.skipText}>Skip</Text>
+        <Pressable
+          style={({ pressed }) => [styles.btn, styles.skipBtn, pressed && styles.skipBtnPressed]}
+          onPress={onSkip}
+          accessibilityRole="button"
+          accessibilityLabel={`Skip ${transaction.merchant_name}`}
+        >
+          <Ionicons name="close-outline" size={14} color={Colors.textSecondary} />
         </Pressable>
-        <Pressable style={[styles.btn, styles.split]} onPress={onSplit}>
+        <Pressable
+          style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}
+          onPress={onSplit}
+          accessibilityRole="button"
+          accessibilityLabel={`Split ${transaction.merchant_name}`}
+        >
+          <Ionicons name="people-outline" size={14} color={Colors.textInverse} style={{ marginRight: 3 }} />
           <Text style={styles.splitText}>Split</Text>
         </Pressable>
       </View>
@@ -36,25 +61,59 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    ...Shadow.sm,
   },
-  info: { flex: 1, marginRight: 8 },
-  merchant: { fontSize: 15, fontWeight: '600', color: '#111' },
-  date: { fontSize: 12, color: '#888', marginTop: 2 },
-  amount: { fontSize: 15, fontWeight: '700', color: '#111', marginRight: 12 },
-  actions: { flexDirection: 'row', gap: 8 },
-  btn: { borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
-  skip: { backgroundColor: '#f0f0f0' },
-  split: { backgroundColor: '#007AFF' },
-  skipText: { fontSize: 13, color: '#555' },
-  splitText: { fontSize: 13, color: '#fff', fontWeight: '600' },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  avatarText: {
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  info: { flex: 1, marginRight: Spacing.sm },
+  merchant: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+    marginBottom: 2,
+  },
+  date: {
+    fontSize: 12,
+    color: Colors.textTertiary,
+  },
+  amount: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginRight: Spacing.md,
+  },
+  actions: { flexDirection: 'row', gap: 6 },
+  btn: {
+    borderRadius: Radius.md,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 34,
+  },
+  skipBtn: { backgroundColor: Colors.surfaceMuted },
+  skipBtnPressed: { backgroundColor: Colors.border },
+  splitBtn: { backgroundColor: Colors.primary },
+  splitBtnPressed: { backgroundColor: Colors.primaryDark },
+  splitText: {
+    fontSize: 13,
+    color: Colors.textInverse,
+    fontWeight: '600',
+  },
 });

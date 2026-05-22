@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { FlatList, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NetInfo from '@react-native-community/netinfo';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { TransactionRow } from '@/components/TransactionRow';
@@ -11,9 +13,11 @@ import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { Transaction } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
+import { Colors, Spacing, Radius } from '@/lib/theme';
 
 export default function NewTransactionsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { transactions, isLoading, load, refresh, skip } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -38,35 +42,52 @@ export default function NewTransactionsScreen() {
     toast.show(`Added! Others owe you $${amountEach.toFixed(2)}`, 'success');
   }
 
-  async function handleReauth() {
+  function handleReauth() {
     router.push('/(auth)/bank-connect');
   }
 
-  if (isLoading && transactions.length === 0) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.empty}>Loading transactions…</Text>
-      </View>
-    );
-  }
+  const isEmptyAndLoaded = !isLoading && transactions.length === 0;
 
   return (
-    <View style={styles.flex}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
+
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>Transactions</Text>
+          {transactions.length > 0 && (
+            <Text style={styles.headerSub}>
+              {transactions.length} pending split{transactions.length !== 1 ? 's' : ''}
+            </Text>
+          )}
+        </View>
+        {transactions.length > 0 && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{transactions.length}</Text>
+          </View>
+        )}
+      </View>
+
       {needsReauth && <ReauthBanner onPress={handleReauth} />}
       {!isConnected && <OfflineBanner />}
 
-      {transactions.length === 0 ? (
-        <View style={styles.center}>
-          <Text style={styles.emptyIcon}>🪣</Text>
-          <Text style={styles.emptyTitle}>No new transactions</Text>
-          <Text style={styles.emptySubtitle}>New transactions will appear here.</Text>
-        </View>
+      {isLoading && transactions.length === 0 ? (
+        <LoadingSkeleton />
+      ) : isEmptyAndLoaded ? (
+        <EmptyState />
       ) : (
         <FlatList
           data={transactions}
           keyExtractor={(t) => t.id}
           contentContainerStyle={styles.list}
-          refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refresh} />}
+          refreshControl={
+            <RefreshControl
+              refreshing={isLoading}
+              onRefresh={refresh}
+              tintColor={Colors.primary}
+            />
+          }
           renderItem={({ item }) => (
             <TransactionRow
               transaction={item}
@@ -86,12 +107,125 @@ export default function NewTransactionsScreen() {
   );
 }
 
+function EmptyState() {
+  return (
+    <View style={styles.emptyContainer}>
+      <View style={styles.emptyIcon}>
+        <Ionicons name="checkmark-done-circle-outline" size={48} color={Colors.success} />
+      </View>
+      <Text style={styles.emptyTitle}>All caught up!</Text>
+      <Text style={styles.emptySubtitle}>
+        New transactions from your connected bank will appear here.
+      </Text>
+    </View>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <View style={styles.list}>
+      {[1, 2, 3].map((i) => (
+        <View key={i} style={styles.skeletonCard}>
+          <View style={styles.skeletonAvatar} />
+          <View style={styles.skeletonLines}>
+            <View style={[styles.skeletonLine, { width: '55%' }]} />
+            <View style={[styles.skeletonLine, { width: '30%', marginTop: 6 }]} />
+          </View>
+          <View style={[styles.skeletonLine, { width: 52, height: 20 }]} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: '#f5f5f5' },
-  list: { padding: 16, gap: 12 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
-  emptyIcon: { fontSize: 48, marginBottom: 12 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: '#111' },
-  emptySubtitle: { fontSize: 14, color: '#888', marginTop: 4 },
-  empty: { color: '#888' },
+  root: { flex: 1, backgroundColor: Colors.bg },
+
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.md,
+    backgroundColor: Colors.bg,
+  },
+  headerTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: Colors.textPrimary,
+    letterSpacing: -0.5,
+  },
+  headerSub: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  badge: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    minWidth: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.sm,
+  },
+  badgeText: {
+    color: Colors.textInverse,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+
+  list: { padding: Spacing.lg, gap: 10 },
+
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.xxxl,
+  },
+  emptyIcon: {
+    width: 80,
+    height: 80,
+    borderRadius: Radius.xxl,
+    backgroundColor: Colors.successLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: Spacing.xl,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginBottom: Spacing.sm,
+  },
+  emptySubtitle: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 21,
+  },
+
+  skeletonCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  skeletonAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceMuted,
+    marginRight: Spacing.md,
+  },
+  skeletonLines: { flex: 1, marginRight: Spacing.md },
+  skeletonLine: {
+    height: 14,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.surfaceMuted,
+  },
 });

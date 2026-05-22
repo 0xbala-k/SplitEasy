@@ -1,9 +1,12 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors, Spacing } from '@/lib/theme';
 
 export function OfflineBanner() {
   return (
     <View style={styles.banner}>
+      <Ionicons name="cloud-offline-outline" size={14} color={Colors.textInverse} style={styles.icon} />
       <Text style={styles.text}>No internet connection</Text>
     </View>
   );
@@ -11,9 +14,16 @@ export function OfflineBanner() {
 
 const styles = StyleSheet.create({
   banner: {
-    backgroundColor: '#c0392b',
-    paddingVertical: 8,
+    backgroundColor: Colors.textPrimary,
+    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
+    paddingVertical: Spacing.sm,
   },
-  text: { color: '#fff', fontSize: 13 },
+  icon: { marginRight: Spacing.xs },
+  text: {
+    color: Colors.textInverse,
+    fontSize: 13,
+    fontWeight: '500',
+  },
 });

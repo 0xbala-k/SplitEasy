@@ -9,6 +9,7 @@
     "test": "jest --watchAll=false"
   },
   "dependencies": {
+    "@expo/vector-icons": "~14.0.4",
     "@gorhom/bottom-sheet": "^4.6.0",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@react-native-community/netinfo": "11.4.1",
