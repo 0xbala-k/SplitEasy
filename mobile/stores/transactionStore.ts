@@ -1,8 +1,5 @@
 // mobile/stores/transactionStore.ts
 import { create } from 'zustand';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as SecureStore from 'expo-secure-store';
-import { KEYS } from '@/lib/secure';
 import { fetchTransactions, WorkerError } from '@/lib/worker';
 import {
   getNewTransactions,
@@ -35,12 +32,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   refresh: async () => {
     set({ isLoading: true });
     try {
-      const accessToken = await SecureStore.getItemAsync(KEYS.PLAID_ACCESS_TOKEN);
-      const cursor = await AsyncStorage.getItem('last_plaid_cursor');
-      const res = await fetchTransactions(accessToken!, cursor ?? undefined);
-      await upsertTransactions([...res.added, ...res.modified]);
-      await deleteTransactionsByPlaidIds(res.removed.map((r) => r.transaction_id));
-      await AsyncStorage.setItem('last_plaid_cursor', res.next_cursor);
+      const tokensAndCursors = await usePlaidStore.getState().getTokensAndCursors();
+      for (const { id, access_token, cursor } of tokensAndCursors) {
+        if (!access_token) continue;
+        const res = await fetchTransactions(access_token, cursor ?? undefined);
+        await upsertTransactions([...res.added, ...res.modified]);
+        await deleteTransactionsByPlaidIds(res.removed.map((r) => r.transaction_id));
+        await usePlaidStore.getState().saveCursor(id, res.next_cursor);
+      }
       await get().load();
     } catch (err) {
       if (err instanceof WorkerError && err.code === 'ITEM_LOGIN_REQUIRED') {

@@ -1,13 +1,15 @@
-import { Alert, Image, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/stores/authStore';
-import { usePlaidStore } from '@/stores/plaidStore';
+import { usePlaidStore, PlaidAccount } from '@/stores/plaidStore';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 
 export default function SettingsScreen() {
   const { display_name, avatar_url, signOut } = useAuthStore();
-  const { institution_name, isLinked, disconnect } = usePlaidStore();
+  const { accounts, isLinked, disconnect } = usePlaidStore();
+  const router = useRouter();
 
   function confirmSignOut() {
     Alert.alert(
@@ -15,18 +17,35 @@ export default function SettingsScreen() {
       'This will remove all local data from this device. Your Splitwise data is safe.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign Out', style: 'destructive', onPress: signOut },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            await signOut();
+            router.replace('/(auth)/');
+          },
+        },
       ]
     );
   }
 
-  function confirmDisconnect() {
+  function confirmDisconnect(account: PlaidAccount) {
+    const isLast = accounts.length === 1;
     Alert.alert(
-      'Disconnect Bank',
-      'This will remove your bank connection and all local transactions.',
+      `Disconnect ${account.institution_name}`,
+      isLast
+        ? 'This will remove your bank connection and all local transactions.'
+        : 'This will remove this bank connection. Other connected accounts remain.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Disconnect', style: 'destructive', onPress: disconnect },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            await disconnect(account.id);
+            if (isLast) router.replace('/(auth)/bank-connect');
+          },
+        },
       ]
     );
   }
@@ -36,7 +55,10 @@ export default function SettingsScreen() {
     : '?';
 
   return (
-    <View style={[styles.root, { paddingTop: Constants.statusBarHeight }]}>
+    <ScrollView
+      style={[styles.root, { paddingTop: Constants.statusBarHeight }]}
+      contentContainerStyle={styles.scrollContent}
+    >
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
 
       <View style={styles.header}>
@@ -62,47 +84,80 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* Settings sections */}
-      <Text style={styles.sectionLabel}>Bank Account</Text>
+      {/* Bank Accounts */}
+      <Text style={styles.sectionLabel}>Bank Accounts</Text>
       <View style={styles.settingsCard}>
         {isLinked ? (
           <>
-            <View style={styles.settingRow}>
-              <View style={styles.settingIcon}>
-                <Ionicons name="business-outline" size={18} color={Colors.primary} />
+            {accounts.map((acct, i) => (
+              <View key={acct.id}>
+                {i > 0 && <View style={styles.divider} />}
+                <View style={styles.settingRow}>
+                  <View style={styles.settingIcon}>
+                    <Ionicons name="business-outline" size={18} color={Colors.primary} />
+                  </View>
+                  <View style={styles.settingContent}>
+                    <Text style={styles.settingTitle}>{acct.institution_name}</Text>
+                    <Text style={styles.settingDesc}>Synced via Plaid</Text>
+                  </View>
+                  <Pressable
+                    style={({ pressed }) => [styles.disconnectBtn, pressed && styles.disconnectBtnPressed]}
+                    onPress={() => confirmDisconnect(acct)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Disconnect ${acct.institution_name}`}
+                  >
+                    <Ionicons name="unlink-outline" size={15} color={Colors.error} />
+                  </Pressable>
+                </View>
               </View>
-              <View style={styles.settingContent}>
-                <Text style={styles.settingTitle}>{institution_name ?? 'Connected bank'}</Text>
-                <Text style={styles.settingDesc}>Transactions synced via Plaid</Text>
-              </View>
-              <View style={styles.connectedDot} />
-            </View>
+            ))}
             <View style={styles.divider} />
             <Pressable
               style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
-              onPress={confirmDisconnect}
+              onPress={() => router.push('/(auth)/bank-connect')}
               accessibilityRole="button"
             >
-              <View style={[styles.settingIcon, styles.settingIconDanger]}>
-                <Ionicons name="unlink-outline" size={18} color={Colors.error} />
+              <View style={[styles.settingIcon, { backgroundColor: Colors.successLight }]}>
+                <Ionicons name="add-circle-outline" size={18} color={Colors.success} />
               </View>
-              <Text style={[styles.settingTitle, styles.dangerText]}>Disconnect bank</Text>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>Add card / account</Text>
+                <Text style={styles.settingDesc}>Connect another bank or card via Plaid</Text>
+              </View>
               <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
             </Pressable>
           </>
         ) : (
-          <View style={styles.settingRow}>
-            <View style={[styles.settingIcon, { backgroundColor: Colors.surfaceMuted }]}>
-              <Ionicons name="business-outline" size={18} color={Colors.textTertiary} />
+          <>
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIcon, { backgroundColor: Colors.surfaceMuted }]}>
+                <Ionicons name="business-outline" size={18} color={Colors.textTertiary} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>No bank connected</Text>
+                <Text style={styles.settingDesc}>Connect a bank to import transactions</Text>
+              </View>
             </View>
-            <View style={styles.settingContent}>
-              <Text style={styles.settingTitle}>No bank connected</Text>
-              <Text style={styles.settingDesc}>Connect a bank to import transactions</Text>
-            </View>
-          </View>
+            <View style={styles.divider} />
+            <Pressable
+              style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
+              onPress={() => router.push('/(auth)/bank-connect')}
+              accessibilityRole="button"
+            >
+              <View style={[styles.settingIcon, { backgroundColor: Colors.primaryMuted }]}>
+                <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>Add card / account</Text>
+                <Text style={styles.settingDesc}>Connect a bank or card via Plaid</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+            </Pressable>
+          </>
         )}
       </View>
 
+      {/* Account */}
       <Text style={styles.sectionLabel}>Account</Text>
       <View style={styles.settingsCard}>
         <Pressable
@@ -117,12 +172,13 @@ export default function SettingsScreen() {
           <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
         </Pressable>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bg },
+  scrollContent: { paddingBottom: Spacing.xxxl },
 
   header: {
     paddingHorizontal: Spacing.xl,
@@ -233,12 +289,15 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   dangerText: { color: Colors.error, flex: 1 },
-  connectedDot: {
-    width: 8,
-    height: 8,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.success,
+  disconnectBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.errorLight,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
+  disconnectBtnPressed: { backgroundColor: '#FCA5A5' },
   divider: {
     height: 1,
     backgroundColor: Colors.divider,
