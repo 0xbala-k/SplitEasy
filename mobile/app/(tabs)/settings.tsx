@@ -1,5 +1,6 @@
 import { Alert, Image, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
@@ -8,6 +9,7 @@ import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 export default function SettingsScreen() {
   const { display_name, avatar_url, signOut } = useAuthStore();
   const { institution_name, isLinked, disconnect } = usePlaidStore();
+  const router = useRouter();
 
   function confirmSignOut() {
     Alert.alert(
@@ -15,7 +17,14 @@ export default function SettingsScreen() {
       'This will remove all local data from this device. Your Splitwise data is safe.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign Out', style: 'destructive', onPress: signOut },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            await signOut();
+            router.replace('/(auth)/');
+          },
+        },
       ]
     );
   }
@@ -26,7 +35,14 @@ export default function SettingsScreen() {
       'This will remove your bank connection and all local transactions.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Disconnect', style: 'destructive', onPress: disconnect },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            await disconnect();
+            router.replace('/(auth)/bank-connect');
+          },
+        },
       ]
     );
   }
@@ -80,6 +96,21 @@ export default function SettingsScreen() {
             <View style={styles.divider} />
             <Pressable
               style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
+              onPress={() => router.push('/(auth)/bank-connect')}
+              accessibilityRole="button"
+            >
+              <View style={[styles.settingIcon, { backgroundColor: Colors.successLight }]}>
+                <Ionicons name="add-circle-outline" size={18} color={Colors.success} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>Add card / account</Text>
+                <Text style={styles.settingDesc}>Connect another bank or card via Plaid</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+            </Pressable>
+            <View style={styles.divider} />
+            <Pressable
+              style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
               onPress={confirmDisconnect}
               accessibilityRole="button"
             >
@@ -91,15 +122,32 @@ export default function SettingsScreen() {
             </Pressable>
           </>
         ) : (
-          <View style={styles.settingRow}>
-            <View style={[styles.settingIcon, { backgroundColor: Colors.surfaceMuted }]}>
-              <Ionicons name="business-outline" size={18} color={Colors.textTertiary} />
+          <>
+            <View style={styles.settingRow}>
+              <View style={[styles.settingIcon, { backgroundColor: Colors.surfaceMuted }]}>
+                <Ionicons name="business-outline" size={18} color={Colors.textTertiary} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>No bank connected</Text>
+                <Text style={styles.settingDesc}>Connect a bank to import transactions</Text>
+              </View>
             </View>
-            <View style={styles.settingContent}>
-              <Text style={styles.settingTitle}>No bank connected</Text>
-              <Text style={styles.settingDesc}>Connect a bank to import transactions</Text>
-            </View>
-          </View>
+            <View style={styles.divider} />
+            <Pressable
+              style={({ pressed }) => [styles.settingRow, pressed && styles.rowPressed]}
+              onPress={() => router.push('/(auth)/bank-connect')}
+              accessibilityRole="button"
+            >
+              <View style={[styles.settingIcon, { backgroundColor: Colors.primaryMuted }]}>
+                <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>Add card / account</Text>
+                <Text style={styles.settingDesc}>Connect a bank or card via Plaid</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+            </Pressable>
+          </>
         )}
       </View>
 

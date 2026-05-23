@@ -21,6 +21,7 @@ export default function BankConnectScreen() {
   const [loading, setLoading] = useState(false);
   const linkBank = usePlaidStore((s) => s.linkBank);
   const router = useRouter();
+  const canGoBack = router.canGoBack();
 
   useEffect(() => {
     return () => {
@@ -82,6 +83,17 @@ export default function BankConnectScreen() {
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.hero} />
+
+      {canGoBack && (
+        <Pressable
+          style={styles.backBtn}
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+        >
+          <Ionicons name="chevron-back" size={24} color={Colors.textInverse} />
+        </Pressable>
+      )}
 
       {/* Hero */}
       <View style={styles.hero}>
@@ -146,6 +158,17 @@ function SecurityItem({ icon, text }: { icon: keyof typeof Ionicons.glyphMap; te
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.hero },
+
+  backBtn: {
+    position: 'absolute',
+    top: 56,
+    left: Spacing.lg,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
   hero: {
     flex: 1,
