@@ -11,19 +11,20 @@
       }
     },
     "platforms": ["ios", "android"],
+    "icon": "./assets/icon.png",
     "splash": {
       "backgroundColor": "#5C7AEA",
       "resizeMode": "native"
     },
     "ios": {
-      "bundleIdentifier": "com.spliteasy.app",
+      "bundleIdentifier": "com.0xmuralik.spliteasy",
       "supportsTablet": false,
       "deploymentTarget": "16.0"
     },
     "android": {
       "package": "com.spliteasy.app",
       "adaptiveIcon": {
-        "backgroundColor": "#ffffff",
+        "backgroundColor": "#5C7AEA",
         "foregroundImage": "./assets/adaptive-icon.png"
       }
     },
