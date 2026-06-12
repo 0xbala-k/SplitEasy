@@ -18,52 +18,97 @@ const mockDeleteItem = SecureStore.deleteItemAsync as jest.Mock;
 const mockExchange = worker.exchangePublicToken as jest.Mock;
 const mockDeleteAll = db.deleteAllTransactions as jest.Mock;
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
+  await AsyncStorage.clear();
+  mockGetItem.mockResolvedValue(null);
   usePlaidStore.setState({
-    institution_name: null,
+    accounts: [],
     needs_reauth: false,
     isLinked: false,
     isHydrated: false,
   });
 });
 
-test('hydrate sets isLinked true when token exists', async () => {
-  mockGetItem.mockResolvedValue('access-sandbox-xyz');
-  await AsyncStorage.setItem('plaid_institution_name', 'Chase');
+test('hydrate sets isLinked true when stored accounts exist', async () => {
+  await AsyncStorage.setItem(
+    'plaid_accounts',
+    JSON.stringify([{ id: 'acct_1', institution_name: 'Chase' }])
+  );
   await usePlaidStore.getState().hydrate();
   expect(usePlaidStore.getState().isLinked).toBe(true);
-  expect(usePlaidStore.getState().institution_name).toBe('Chase');
+  expect(usePlaidStore.getState().accounts).toEqual([{ id: 'acct_1', institution_name: 'Chase' }]);
   expect(usePlaidStore.getState().isHydrated).toBe(true);
 });
 
-test('linkBank exchanges token, stores it, saves institution name', async () => {
+test('hydrate migrates legacy single-account token to accounts format', async () => {
+  mockGetItem.mockImplementation((key: string) =>
+    Promise.resolve(key === 'plaid_access_token' ? 'access-sandbox-xyz' : null)
+  );
+  await AsyncStorage.setItem('plaid_institution_name', 'Chase');
+  await usePlaidStore.getState().hydrate();
+
+  const { accounts, isLinked, isHydrated } = usePlaidStore.getState();
+  expect(isLinked).toBe(true);
+  expect(isHydrated).toBe(true);
+  expect(accounts).toHaveLength(1);
+  expect(accounts[0].institution_name).toBe('Chase');
+  expect(mockSetItem).toHaveBeenCalledWith(`plaid_token_${accounts[0].id}`, 'access-sandbox-xyz');
+  expect(mockDeleteItem).toHaveBeenCalledWith('plaid_access_token');
+  expect(await AsyncStorage.getItem('plaid_accounts')).toBe(JSON.stringify(accounts));
+  expect(await AsyncStorage.getItem('plaid_institution_name')).toBeNull();
+});
+
+test('linkBank exchanges token, stores it, adds account', async () => {
   mockExchange.mockResolvedValue({ access_token: 'access-sandbox-new' });
   mockSetItem.mockResolvedValue(undefined);
 
   await usePlaidStore.getState().linkBank('public-sandbox-abc', 'Chase');
 
+  const { accounts, isLinked } = usePlaidStore.getState();
   expect(mockExchange).toHaveBeenCalledWith('public-sandbox-abc');
-  expect(mockSetItem).toHaveBeenCalledWith('plaid_access_token', 'access-sandbox-new');
-  expect(await AsyncStorage.getItem('plaid_institution_name')).toBe('Chase');
-  expect(await AsyncStorage.getItem('last_plaid_cursor')).toBeNull();
-  expect(usePlaidStore.getState().isLinked).toBe(true);
-  expect(usePlaidStore.getState().institution_name).toBe('Chase');
+  expect(accounts).toHaveLength(1);
+  expect(accounts[0].institution_name).toBe('Chase');
+  expect(mockSetItem).toHaveBeenCalledWith(`plaid_token_${accounts[0].id}`, 'access-sandbox-new');
+  expect(await AsyncStorage.getItem('plaid_accounts')).toBe(JSON.stringify(accounts));
+  expect(isLinked).toBe(true);
 });
 
-test('disconnect clears token, AsyncStorage, all transactions, sets isLinked false', async () => {
+test('disconnect clears tokens, storage, all transactions, sets isLinked false', async () => {
   mockDeleteItem.mockResolvedValue(undefined);
   mockDeleteAll.mockResolvedValue(undefined);
-  usePlaidStore.setState({ isLinked: true, institution_name: 'Chase' });
-  await AsyncStorage.setItem('plaid_institution_name', 'Chase');
+  usePlaidStore.setState({
+    isLinked: true,
+    accounts: [{ id: 'acct_1', institution_name: 'Chase' }],
+  });
+  await AsyncStorage.setItem('plaid_accounts', JSON.stringify([{ id: 'acct_1', institution_name: 'Chase' }]));
 
   await usePlaidStore.getState().disconnect();
 
-  expect(mockDeleteItem).toHaveBeenCalledWith('plaid_access_token');
+  expect(mockDeleteItem).toHaveBeenCalledWith('plaid_token_acct_1');
   expect(mockDeleteAll).toHaveBeenCalled();
-  expect(await AsyncStorage.getItem('plaid_institution_name')).toBeNull();
+  expect(await AsyncStorage.getItem('plaid_accounts')).toBeNull();
   expect(usePlaidStore.getState().isLinked).toBe(false);
-  expect(usePlaidStore.getState().institution_name).toBeNull();
+  expect(usePlaidStore.getState().accounts).toEqual([]);
+});
+
+test('disconnect of one account keeps the others linked', async () => {
+  mockDeleteItem.mockResolvedValue(undefined);
+  mockDeleteAll.mockResolvedValue(undefined);
+  usePlaidStore.setState({
+    isLinked: true,
+    accounts: [
+      { id: 'acct_1', institution_name: 'Chase' },
+      { id: 'acct_2', institution_name: 'Ally' },
+    ],
+  });
+
+  await usePlaidStore.getState().disconnect('acct_1');
+
+  expect(mockDeleteItem).toHaveBeenCalledWith('plaid_token_acct_1');
+  expect(mockDeleteAll).not.toHaveBeenCalled();
+  expect(usePlaidStore.getState().accounts).toEqual([{ id: 'acct_2', institution_name: 'Ally' }]);
+  expect(usePlaidStore.getState().isLinked).toBe(true);
 });
 
 test('setNeedsReauth saves to AsyncStorage and updates store', async () => {
