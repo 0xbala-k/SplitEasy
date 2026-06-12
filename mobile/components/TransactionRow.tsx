@@ -1,5 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Ionicons } from '@expo/vector-icons';
 import { Transaction } from '@/lib/types';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
@@ -19,43 +20,65 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
   const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
   const avatarBg = merchantColor(transaction.merchant_name ?? '?');
 
+  const renderSkipUnderlay = () => (
+    <Pressable
+      style={styles.skipUnderlay}
+      onPress={onSkip}
+      accessibilityRole="button"
+      accessibilityLabel={`Skip ${transaction.merchant_name}`}
+    >
+      <Ionicons name="close-circle-outline" size={22} color={Colors.textSecondary} />
+      <Text style={styles.skipUnderlayText}>Skip</Text>
+    </Pressable>
+  );
+
   return (
-    <View style={styles.card}>
-      {/* Merchant avatar */}
-      <View style={[styles.avatar, { backgroundColor: avatarBg + '18' }]}>
-        <Text style={[styles.avatarText, { color: avatarBg }]}>{initial}</Text>
-      </View>
+    <ReanimatedSwipeable
+      renderLeftActions={renderSkipUnderlay}
+      onSwipeableOpen={(direction) => {
+        // 'left' = the left underlay opened, i.e. the user swiped right
+        if (direction === 'left') onSkip();
+      }}
+      leftThreshold={72}
+      friction={1.5}
+    >
+      <View style={styles.card}>
+        {/* Merchant avatar */}
+        <View style={[styles.avatar, { backgroundColor: avatarBg + '18' }]}>
+          <Text style={[styles.avatarText, { color: avatarBg }]}>{initial}</Text>
+        </View>
 
-      {/* Info */}
-      <View style={styles.info}>
-        <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
-        <Text style={styles.date}>{date}</Text>
-      </View>
+        {/* Info */}
+        <View style={styles.info}>
+          <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
+          <Text style={styles.date}>{date}</Text>
+        </View>
 
-      {/* Amount */}
-      <Text style={styles.amount}>{amount}</Text>
+        {/* Amount */}
+        <Text style={styles.amount}>{amount}</Text>
 
-      {/* Actions */}
-      <View style={styles.actions}>
-        <Pressable
-          style={({ pressed }) => [styles.btn, styles.skipBtn, pressed && styles.skipBtnPressed]}
-          onPress={onSkip}
-          accessibilityRole="button"
-          accessibilityLabel={`Skip ${transaction.merchant_name}`}
-        >
-          <Ionicons name="close-outline" size={14} color={Colors.textSecondary} />
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}
-          onPress={onSplit}
-          accessibilityRole="button"
-          accessibilityLabel={`Split ${transaction.merchant_name}`}
-        >
-          <Ionicons name="people-outline" size={14} color={Colors.textInverse} style={{ marginRight: 3 }} />
-          <Text style={styles.splitText}>Split</Text>
-        </Pressable>
+        {/* Actions */}
+        <View style={styles.actions}>
+          <Pressable
+            style={({ pressed }) => [styles.btn, styles.skipBtn, pressed && styles.skipBtnPressed]}
+            onPress={onSkip}
+            accessibilityRole="button"
+            accessibilityLabel={`Skip ${transaction.merchant_name}`}
+          >
+            <Ionicons name="close-outline" size={14} color={Colors.textSecondary} />
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}
+            onPress={onSplit}
+            accessibilityRole="button"
+            accessibilityLabel={`Split ${transaction.merchant_name}`}
+          >
+            <Ionicons name="people-outline" size={14} color={Colors.textInverse} style={{ marginRight: 3 }} />
+            <Text style={styles.splitText}>Split</Text>
+          </Pressable>
+        </View>
       </View>
-    </View>
+    </ReanimatedSwipeable>
   );
 }
 
@@ -106,6 +129,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 34,
+  },
+  skipUnderlay: {
+    width: 96,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surfaceMuted,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginRight: Spacing.sm,
+  },
+  skipUnderlayText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontWeight: '600',
   },
   skipBtn: { backgroundColor: Colors.surfaceMuted },
   skipBtnPressed: { backgroundColor: Colors.border },
