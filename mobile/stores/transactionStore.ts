@@ -35,10 +35,24 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
       const tokensAndCursors = await usePlaidStore.getState().getTokensAndCursors();
       for (const { id, access_token, cursor } of tokensAndCursors) {
         if (!access_token) continue;
-        const res = await fetchTransactions(access_token, cursor ?? undefined);
-        await upsertTransactions([...res.added, ...res.modified]);
-        await deleteTransactionsByPlaidIds(res.removed.map((r) => r.transaction_id));
-        await usePlaidStore.getState().saveCursor(id, res.next_cursor);
+        // First sync (no cursor): drain Plaid's historical backlog without
+        // storing it, so only transactions made after connecting appear.
+        const isFirstSync = cursor == null;
+        let pageCursor = cursor ?? undefined;
+        let hasMore = true;
+        while (hasMore) {
+          const res = await fetchTransactions(access_token, pageCursor);
+          if (!isFirstSync) {
+            await upsertTransactions([...res.added, ...res.modified]);
+            await deleteTransactionsByPlaidIds(res.removed.map((r) => r.transaction_id));
+            await usePlaidStore.getState().saveCursor(id, res.next_cursor);
+          }
+          pageCursor = res.next_cursor;
+          hasMore = res.has_more;
+        }
+        if (isFirstSync && pageCursor) {
+          await usePlaidStore.getState().saveCursor(id, pageCursor);
+        }
       }
       await get().load();
     } catch (err) {
