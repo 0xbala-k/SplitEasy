@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — SplitEasy</title>
+  <meta name="description" content="SplitEasy Privacy Policy — how we collect, use, and protect your data." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --primary: #5C7AEA;
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+      --bg: #F8FAFC;
+      --surface: #FFFFFF;
+      --border: #E2E8F0;
+    }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text-primary);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 60px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo { font-size: 18px; font-weight: 800; color: var(--primary); text-decoration: none; }
+    .nav-logo span { color: var(--text-primary); }
+    .nav-back { font-size: 14px; font-weight: 500; color: var(--text-secondary); text-decoration: none; }
+    .nav-back:hover { color: var(--primary); }
+    .page-header {
+      background: linear-gradient(135deg, #3B55C8 0%, #5C7AEA 100%);
+      padding: 60px 24px 48px;
+      text-align: center;
+      color: #fff;
+    }
+    .page-header h1 { font-size: 36px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
+    .page-header p { font-size: 15px; color: rgba(255,255,255,.7); }
+    .content { max-width: 720px; margin: 0 auto; padding: 60px 24px 80px; }
+    h2 { font-size: 18px; font-weight: 700; color: var(--text-primary); margin: 36px 0 10px; }
+    p { font-size: 15px; color: var(--text-secondary); margin-bottom: 14px; }
+    ul { margin: 10px 0 14px 20px; }
+    li { font-size: 15px; color: var(--text-secondary); margin-bottom: 6px; line-height: 1.6; }
+    a { color: var(--primary); }
+    .last-updated {
+      font-size: 13px; color: #94A3B8;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 16px; margin-bottom: 36px;
+      display: inline-block;
+    }
+    footer {
+      background: #0F172A; color: #64748B;
+      text-align: center; padding: 28px 24px;
+      font-size: 13px;
+    }
+    footer a { color: #5C7AEA; text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-logo">Split<span>Easy</span></a>
+  <a href="index.html" class="nav-back">← Back to home</a>
+</nav>
+
+<div class="page-header">
+  <h1>Privacy Policy</h1>
+  <p>We keep it simple: your data is yours.</p>
+</div>
+
+<div class="content">
+  <span class="last-updated">Last updated: June 12, 2026</span>
+
+  <p>SplitEasy ("we", "our", or "us") is committed to protecting your privacy. This policy explains what information we collect, how we use it, and your rights regarding your data.</p>
+
+  <h2>1. Information We Collect</h2>
+  <p><strong>Bank transaction data.</strong> When you connect a bank account via Plaid, we receive read-only access to your transaction history. This data is stored locally on your device using SQLite and is never transmitted to or stored on our servers beyond the initial Plaid token exchange.</p>
+  <p><strong>Plaid access tokens.</strong> After you authorize a bank connection, Plaid issues an access token. This token is stored securely in the iOS Secure Enclave on your device (via expo-secure-store) and is used solely to fetch your transactions.</p>
+  <p><strong>Splitwise account data.</strong> SplitEasy reads your Splitwise friend list and creates expenses on your behalf using the Splitwise OAuth API. We do not store your Splitwise credentials; only the OAuth access token is retained locally on your device.</p>
+  <p><strong>Usage data.</strong> We do not collect analytics, crash reports, or behavioral tracking data. SplitEasy has no analytics SDK.</p>
+
+  <h2>2. How We Use Your Information</h2>
+  <ul>
+    <li>To display your recent transactions within the app</li>
+    <li>To create Splitwise expenses when you initiate a split</li>
+    <li>To maintain a local history of transactions you have split or skipped</li>
+  </ul>
+  <p>We do not use your data for advertising, profiling, or any purpose beyond providing the core features of SplitEasy.</p>
+
+  <h2>3. Data Storage and Security</h2>
+  <p>All personal and financial data is stored locally on your device. We do not operate a user database or cloud storage for transaction data. Our Cloudflare Worker backend acts as a lightweight proxy for Plaid and Splitwise API calls and does not persist any user data.</p>
+  <p>Security measures include:</p>
+  <ul>
+    <li>Plaid and Splitwise tokens stored in the iOS Secure Enclave</li>
+    <li>All API communication encrypted via TLS 1.2+</li>
+    <li>Read-only Plaid access — we cannot initiate transfers or payments</li>
+    <li>No server-side storage of credentials or transaction data</li>
+  </ul>
+
+  <h2>4. Data Sharing</h2>
+  <p>We do not sell, trade, or share your personal information with third parties, except as required to provide the service:</p>
+  <ul>
+    <li><strong>Plaid Inc.</strong> — for bank account connection and transaction retrieval. Plaid's privacy policy applies to their handling of your bank credentials.</li>
+    <li><strong>Splitwise Inc.</strong> — to create and manage shared expenses on your behalf.</li>
+    <li><strong>Cloudflare, Inc.</strong> — our serverless infrastructure provider. Requests are proxied through Cloudflare Workers; no data is stored.</li>
+  </ul>
+
+  <h2>5. Data Retention</h2>
+  <p>Transaction data and access tokens are retained on your device until you explicitly disconnect a bank account or sign out of the app. Upon disconnection or sign-out:</p>
+  <ul>
+    <li>All Plaid access tokens are deleted from the Secure Enclave</li>
+    <li>All locally cached transactions are deleted from the on-device SQLite database</li>
+    <li>Plaid item cursors are removed from AsyncStorage</li>
+  </ul>
+  <p>We do not retain copies of your data on our infrastructure after you remove the connection.</p>
+
+  <h2>6. Your Rights</h2>
+  <p>You have the right to:</p>
+  <ul>
+    <li><strong>Access</strong> — view what data the app holds by using the app interface</li>
+    <li><strong>Deletion</strong> — delete all local data by disconnecting your bank and signing out</li>
+    <li><strong>Revoke access</strong> — disconnect your Plaid link at any time from the Settings screen</li>
+    <li><strong>Data portability</strong> — your Splitwise expense history is available directly through Splitwise</li>
+  </ul>
+
+  <h2>7. Children's Privacy</h2>
+  <p>SplitEasy is not intended for children under 13 years of age. We do not knowingly collect personal information from children under 13.</p>
+
+  <h2>8. Changes to This Policy</h2>
+  <p>We may update this Privacy Policy from time to time. We will notify users of material changes by updating the "Last updated" date above. Continued use of the app after changes constitutes acceptance of the revised policy.</p>
+
+  <h2>9. Contact Us</h2>
+  <p>If you have questions or concerns about this Privacy Policy or how your data is handled, please contact us:</p>
+  <p><strong>Email:</strong> <a href="mailto:krishna192reddy@gmail.com">krishna192reddy@gmail.com</a></p>
+</div>
+
+<footer>
+  <p>© 2026 SplitEasy. <a href="index.html">Home</a> · <a href="mailto:krishna192reddy@gmail.com">Contact</a></p>
+</footer>
+
+</body>
+</html>
