@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B55C8"/>
+      <stop offset="55%" stop-color="#5C7AEA"/>
+      <stop offset="100%" stop-color="#7B93F0"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="38%" cy="22%" r="62%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.20)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#shine)"/>
+
+  <!--
+    Fork icon — stem from (512,780) up to junction (512,480),
+    then two arms fanning out to upper-left (280,280) and upper-right (744,280).
+
+    Arrowhead wings calculated from perpendicular unit vectors:
+      Left arm  d=(-0.757,-0.653): wings at (398,296) and (313,395)
+      Right arm d=(+0.757,-0.653): wings at (711,395) and (626,296)
+  -->
+
+  <!-- Stem + arms -->
+  <path
+    d="M512 780 L512 480 L280 280 M512 480 L744 280"
+    fill="none"
+    stroke="white"
+    stroke-width="76"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Left arrowhead chevron -->
+  <path
+    d="M398 296 L280 280 L313 395"
+    fill="none"
+    stroke="white"
+    stroke-width="76"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Right arrowhead chevron -->
+  <path
+    d="M711 395 L744 280 L626 296"
+    fill="none"
+    stroke="white"
+    stroke-width="76"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
