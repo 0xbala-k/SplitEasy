@@ -11,6 +11,8 @@ import {
   updateTransactionStatus,
   getSplitDecision,
   insertSplitDecision,
+  upsertSplitDecision,
+  deleteSplitDecision,
   pruneOldTransactions,
   deleteAllTransactions,
 } from '@/lib/db';
@@ -148,5 +150,31 @@ test('deleteAllTransactions deletes all rows', async () => {
   expect(mockDb.runAsync).toHaveBeenCalledWith(
     expect.stringContaining('DELETE FROM transactions'),
     []
+  );
+});
+
+test('upsertSplitDecision upserts on transaction_id conflict', async () => {
+  await initDb();
+  await upsertSplitDecision({
+    id: 'sd1',
+    transaction_id: 'tx1',
+    splitwise_expense_id: 'exp1',
+    friend_ids: ['2'],
+    friend_names: ['Sam'],
+    amount_each: 10,
+    created_at: '2026-06-12T00:00:00Z',
+  });
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ON CONFLICT(transaction_id)'),
+    expect.arrayContaining(['sd1', 'tx1', 'exp1', '["2"]', '["Sam"]', 10, '2026-06-12T00:00:00Z'])
+  );
+});
+
+test('deleteSplitDecision deletes by transaction_id', async () => {
+  await initDb();
+  await deleteSplitDecision('tx1');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('DELETE FROM split_decisions'),
+    ['tx1']
   );
 });
