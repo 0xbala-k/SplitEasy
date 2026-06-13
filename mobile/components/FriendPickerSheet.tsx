@@ -13,9 +13,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { getSplitDecision, insertSplitDecision, updateTransactionStatus } from '@/lib/db';
-import { createExpense, SplitwiseAuthError } from '@/lib/splitwise';
-import { SplitwiseFriend, Transaction } from '@/lib/types';
+import { getSplitDecision, insertSplitDecision, upsertSplitDecision, updateTransactionStatus } from '@/lib/db';
+import { createExpense, updateExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
@@ -24,11 +24,13 @@ const STEP = 0.5;
 
 interface Props {
   transaction: Transaction | null;
+  mode?: 'create' | 'edit';
+  editDecision?: SplitDecision | null;
   onSuccess: (amountEach: number) => void;
 }
 
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, onSuccess }, ref) => {
+  ({ transaction, mode = 'create', editDecision, onSuccess }, ref) => {
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
@@ -39,6 +41,29 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [splitMode, setSplitMode] = useState<SplitMode>('equal');
     const [customAmounts, setCustomAmounts] = useState<Record<string, number>>({});
     const toast = useToast();
+
+    useEffect(() => {
+      if (mode !== 'edit' || !editDecision) return;
+      setSelected(new Set(editDecision.friend_ids));
+      (async () => {
+        try {
+          const shares = await getExpense(editDecision.splitwise_expense_id);
+          const amounts: Record<string, number> = {};
+          editDecision.friend_ids.forEach((fid) => {
+            amounts[fid] = shares[fid] ?? 0;
+          });
+          setCustomAmounts(amounts);
+          const vals = Object.values(amounts);
+          const allEqual = vals.every((v) => Math.abs(v - vals[0]) < 0.005);
+          setSplitMode(allEqual ? 'equal' : 'custom');
+        } catch {
+          // Network/auth failure: keep friends selected, default to equal split.
+          setSplitMode('equal');
+        }
+      })();
+      // Re-run only when the edited transaction changes.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mode, editDecision?.transaction_id]);
 
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();
@@ -102,6 +127,28 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       if (ctaDisabled) return;
       setSubmitting(true);
       try {
+        if (mode === 'edit' && editDecision) {
+          const { amount_each } = await updateExpense(editDecision.splitwise_expense_id, {
+            amount: transaction!.amount,
+            description: transaction!.merchant_name,
+            currency: transaction!.currency,
+            currentUserId: user_id!,
+            friendIds: selectedFriends.map((f) => f.id),
+            ...(splitMode === 'custom' && { friendShares: customAmounts }),
+          });
+          await upsertSplitDecision({
+            id: editDecision.id,
+            transaction_id: transaction!.id,
+            splitwise_expense_id: editDecision.splitwise_expense_id,
+            friend_ids: selectedFriends.map((f) => f.id),
+            friend_names: selectedFriends.map((f) => f.display_name),
+            amount_each,
+            created_at: editDecision.created_at,
+          });
+          onSuccess(amount_each);
+          return;
+        }
+
         const existing = await getSplitDecision(transaction!.id);
         if (existing) {
           await updateTransactionStatus(transaction!.id, 'split');
@@ -328,7 +375,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                   style={{ marginRight: 6 }}
                 />
                 <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
-                  Add to Splitwise
+                  {mode === 'edit' ? 'Save changes' : 'Add to Splitwise'}
                 </Text>
               </>
             )}
