@@ -23,6 +23,7 @@ export async function initDb(): Promise<void> {
         currency TEXT DEFAULT 'USD',
         date TEXT,
         status TEXT DEFAULT 'new',
+        pending INTEGER DEFAULT 0,
         created_at TEXT
       );
       CREATE TABLE IF NOT EXISTS split_decisions (
@@ -34,16 +35,22 @@ export async function initDb(): Promise<void> {
         amount_each REAL,
         created_at TEXT
       );
-      PRAGMA user_version = 1;
+      PRAGMA user_version = 2;
+    `);
+  } else if (version < 2) {
+    await _db.execAsync(`
+      ALTER TABLE transactions ADD COLUMN pending INTEGER DEFAULT 0;
+      PRAGMA user_version = 2;
     `);
   }
 }
 
 export async function getNewTransactions(): Promise<Transaction[]> {
-  return db().getAllAsync<Transaction>(
+  const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
     `SELECT * FROM transactions WHERE status = 'new' ORDER BY date DESC`,
     []
   );
+  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
 }
 
 export async function getHistoryTransactions(): Promise<TransactionWithSplit[]> {
@@ -75,17 +82,18 @@ export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void>
   for (const tx of txs) {
     const name = tx.merchant_name ?? tx.name;
     const currency = tx.iso_currency_code ?? 'USD';
+    const pending = tx.pending ? 1 : 0;
     // INSERT OR IGNORE preserves status for already-split/skipped rows
     await d.runAsync(
-      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'new', ?)`,
-      [tx.transaction_id, name, tx.amount, currency, tx.date, now]
+      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at)
+       VALUES (?, ?, ?, ?, ?, 'new', ?, ?)`,
+      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now]
     );
     // UPDATE only if still 'new' (don't overwrite user decisions)
     await d.runAsync(
-      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?
+      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?
        WHERE id = ? AND status = 'new'`,
-      [name, tx.amount, tx.date, tx.transaction_id]
+      [name, tx.amount, tx.date, pending, tx.transaction_id]
     );
   }
 }
