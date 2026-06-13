@@ -11,6 +11,7 @@ jest.mock('@/lib/worker', () => ({
   exchangeSplitwiseCode: jest.fn(),
 }));
 jest.mock('@/stores/plaidStore');
+jest.mock('@/lib/splitwise');
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
@@ -21,6 +22,7 @@ import * as SecureStore from 'expo-secure-store';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { WorkerError } from '@/lib/worker';
+import * as splitwise from '@/lib/splitwise';
 
 const mockGetNew = db.getNewTransactions as jest.Mock;
 const mockUpsert = db.upsertTransactions as jest.Mock;
@@ -31,6 +33,8 @@ const mockSecureGet = SecureStore.getItemAsync as jest.Mock;
 const mockSetNeedsReauth = jest.fn();
 const mockGetTokensAndCursors = jest.fn();
 const mockSaveCursor = jest.fn();
+const mockDeleteExpense = splitwise.deleteExpense as jest.Mock;
+const mockDeleteSplitDecision = db.deleteSplitDecision as jest.Mock;
 
 function syncPage(overrides: Partial<{
   added: unknown[];
@@ -59,6 +63,8 @@ beforeEach(() => {
   mockUpdateStatus.mockResolvedValue(undefined);
   mockGetTokensAndCursors.mockResolvedValue([{ id: 'acct_1', access_token: 'access-token', cursor: 'cur-0' }]);
   mockSaveCursor.mockResolvedValue(undefined);
+  mockDeleteExpense.mockResolvedValue(undefined);
+  mockDeleteSplitDecision.mockResolvedValue(undefined);
 });
 
 test('load fetches new transactions from DB and updates store', async () => {
@@ -148,4 +154,21 @@ test('markSplit updates DB status and removes from in-memory list', async () => 
   await useTransactionStore.getState().markSplit('tx1');
   expect(mockUpdateStatus).toHaveBeenCalledWith('tx1', 'split');
   expect(useTransactionStore.getState().transactions).toHaveLength(0);
+});
+
+test('deleteSplit removes the Splitwise expense, clears the decision, reverts to new, reloads', async () => {
+  await useTransactionStore.getState().deleteSplit('tx1', 'exp99');
+  expect(mockDeleteExpense).toHaveBeenCalledWith('exp99');
+  expect(mockDeleteSplitDecision).toHaveBeenCalledWith('tx1');
+  expect(mockUpdateStatus).toHaveBeenCalledWith('tx1', 'new');
+  expect(mockGetNew).toHaveBeenCalled(); // load() ran
+});
+
+test('deleteSplit leaves local state untouched if the Splitwise delete fails', async () => {
+  mockDeleteExpense.mockRejectedValue(new Error('SPLITWISE_ERROR'));
+  await expect(
+    useTransactionStore.getState().deleteSplit('tx1', 'exp99')
+  ).rejects.toThrow();
+  expect(mockDeleteSplitDecision).not.toHaveBeenCalled();
+  expect(mockUpdateStatus).not.toHaveBeenCalled();
 });
