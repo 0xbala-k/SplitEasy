@@ -70,6 +70,7 @@ async function handleExchange(req: Request, env: Env): Promise<Response> {
 interface PlaidTransaction {
   transaction_id: string;
   amount: number;
+  pending?: boolean;
   [key: string]: unknown;
 }
 

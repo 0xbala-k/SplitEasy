@@ -51,7 +51,14 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
         {/* Info */}
         <View style={styles.info}>
           <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
-          <Text style={styles.date}>{date}</Text>
+          <View style={styles.dateRow}>
+            <Text style={styles.date}>{date}</Text>
+            {transaction.pending && (
+              <View style={styles.pendingBadge}>
+                <Text style={styles.pendingText}>Pending</Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* Amount */}
@@ -108,11 +115,27 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: Colors.textPrimary,
-    marginBottom: 2,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
   },
   date: {
     fontSize: 12,
     color: Colors.textTertiary,
+  },
+  pendingBadge: {
+    backgroundColor: Colors.warningLight,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  pendingText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: Colors.warning,
   },
   amount: {
     fontSize: 16,

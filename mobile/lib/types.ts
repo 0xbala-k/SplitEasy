@@ -9,6 +9,7 @@ export interface Transaction {
   currency: string;
   date: string;          // ISO-8601 date e.g. "2026-04-15"
   status: TransactionStatus;
+  pending: boolean;
   created_at: string;    // ISO-8601 datetime; used for 6-month prune
 }
 
@@ -40,6 +41,7 @@ export interface PlaidTransaction {
   amount: number;         // always > 0 after Worker filters credits
   iso_currency_code: string | null;
   date: string;
+  pending: boolean;
 }
 
 export interface PlaidTransactionsResponse {
