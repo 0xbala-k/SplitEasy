@@ -43,24 +43,35 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const toast = useToast();
 
     useEffect(() => {
-      if (mode !== 'edit' || !editDecision) return;
+      if (mode !== 'edit' || !editDecision) {
+        // Reset so an edit session's pre-fill never leaks into a later create.
+        setSelected(new Set());
+        setCustomAmounts({});
+        setSplitMode('equal');
+        return;
+      }
       setSelected(new Set(editDecision.friend_ids));
+      let ignored = false;
       (async () => {
         try {
           const shares = await getExpense(editDecision.splitwise_expense_id);
+          if (ignored) return;
           const amounts: Record<string, number> = {};
           editDecision.friend_ids.forEach((fid) => {
             amounts[fid] = shares[fid] ?? 0;
           });
           setCustomAmounts(amounts);
           const vals = Object.values(amounts);
-          const allEqual = vals.every((v) => Math.abs(v - vals[0]) < 0.005);
+          const allEqual = vals.length === 0 || vals.every((v) => Math.abs(v - vals[0]) < 0.005);
           setSplitMode(allEqual ? 'equal' : 'custom');
         } catch {
           // Network/auth failure: keep friends selected, default to equal split.
-          setSplitMode('equal');
+          if (!ignored) setSplitMode('equal');
         }
       })();
+      return () => {
+        ignored = true;
+      };
       // Re-run only when the edited transaction changes.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mode, editDecision?.transaction_id]);
