@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { getHistoryTransactions, getSplitDecision } from '@/lib/db';
-import { TransactionWithSplit, SplitDecision, Transaction } from '@/lib/types';
+import { TransactionWithSplit, SplitDecision } from '@/lib/types';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { HistoryActionSheet } from '@/components/HistoryActionSheet';
@@ -14,16 +14,17 @@ import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
 export default function HistoryScreen() {
   const [rows, setRows] = useState<TransactionWithSplit[]>([]);
-  const [selected, setSelected] = useState<Transaction | null>(null);
+  const [selected, setSelected] = useState<TransactionWithSplit | null>(null);
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
   const [pickerMode, setPickerMode] = useState<'create' | 'edit'>('create');
+  const [pending, setPending] = useState<null | 'picker' | 'action'>(null);
   const pickerRef = useRef<BottomSheetModal>(null);
   const actionRef = useRef<BottomSheetModal>(null);
   const deleteSplit = useTransactionStore((s) => s.deleteSplit);
   const toast = useToast();
 
   const refreshHistory = useCallback(() => {
-    getHistoryTransactions().then(setRows);
+    getHistoryTransactions().then(setRows).catch(console.error);
   }, []);
 
   useFocusEffect(
@@ -32,17 +33,29 @@ export default function HistoryScreen() {
     }, [refreshHistory])
   );
 
-  async function handleRowPress(item: TransactionWithSplit) {
+  // Present sheets from an effect (after the modal has mounted), not synchronously
+  // in the tap handler — on the first tap the modal ref is still null otherwise.
+  useEffect(() => {
+    if (pending === 'picker') {
+      pickerRef.current?.present();
+      setPending(null);
+    } else if (pending === 'action') {
+      actionRef.current?.present();
+      setPending(null);
+    }
+  }, [pending]);
+
+  function handleRowPress(item: TransactionWithSplit) {
     if (item.status === 'skipped') {
       // Split a previously-skipped transaction (create mode).
       setEditDecision(null);
       setPickerMode('create');
       setSelected(item);
-      pickerRef.current?.present();
+      setPending('picker');
     } else {
       // Split row: offer edit/delete.
       setSelected(item);
-      actionRef.current?.present();
+      setPending('action');
     }
   }
 
@@ -56,7 +69,7 @@ export default function HistoryScreen() {
     actionRef.current?.dismiss();
     setEditDecision(decision);
     setPickerMode('edit');
-    pickerRef.current?.present();
+    setPending('picker');
   }
 
   function handleDelete() {
@@ -129,7 +142,7 @@ export default function HistoryScreen() {
       />
       <HistoryActionSheet
         ref={actionRef}
-        transaction={selected as TransactionWithSplit | null}
+        transaction={selected}
         onEdit={handleEdit}
         onDelete={handleDelete}
       />
