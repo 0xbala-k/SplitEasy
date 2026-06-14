@@ -202,6 +202,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         } else {
           toast.show('Failed to add expense. Please try again.', 'error');
         }
+      } finally {
+        // Re-enable the CTA on every path. The sheet stays mounted (History
+        // reuses it across actions), so a stuck `submitting` would block the
+        // next edit/split.
         setSubmitting(false);
       }
     }
