@@ -26,11 +26,15 @@ interface Props {
   transaction: Transaction | null;
   mode?: 'create' | 'edit';
   editDecision?: SplitDecision | null;
+  // Changes each time the host presents the sheet, so the pre-fill effect
+  // re-runs on every open — even when re-editing the same transaction after
+  // dismissing without saving (otherwise stale uncommitted edits would linger).
+  openToken?: number;
   onSuccess: (amountEach: number) => void;
 }
 
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, mode = 'create', editDecision, onSuccess }, ref) => {
+  ({ transaction, mode = 'create', editDecision, openToken, onSuccess }, ref) => {
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
@@ -61,6 +65,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             amounts[fid] = shares[fid] ?? 0;
           });
           setCustomAmounts(amounts);
+          // Equal vs. custom is decided from the friends' shares only; the owner
+          // absorbs any rounding remainder, so an equal split where the owner's
+          // share differs by cents is still correctly detected as equal. The
+          // tradeoff: a custom split whose friend shares happen to be equal
+          // (unequal owner share) reads as equal and re-equalizes on a no-op save.
           const vals = Object.values(amounts);
           const allEqual = vals.length === 0 || vals.every((v) => Math.abs(v - vals[0]) < 0.005);
           setSplitMode(allEqual ? 'equal' : 'custom');
@@ -72,9 +81,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       return () => {
         ignored = true;
       };
-      // Re-run only when the edited transaction changes.
+      // Re-run on every open (openToken) and when the edited transaction changes.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [mode, editDecision?.transaction_id]);
+    }, [mode, editDecision?.transaction_id, openToken]);
 
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();

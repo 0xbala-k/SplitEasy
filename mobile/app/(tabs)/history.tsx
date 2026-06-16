@@ -18,6 +18,7 @@ export default function HistoryScreen() {
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
   const [pickerMode, setPickerMode] = useState<'create' | 'edit'>('create');
   const [pending, setPending] = useState<null | 'picker' | 'action'>(null);
+  const [pickerToken, setPickerToken] = useState(0);
   const pickerRef = useRef<BottomSheetModal>(null);
   const actionRef = useRef<BottomSheetModal>(null);
   const deleteSplit = useTransactionStore((s) => s.deleteSplit);
@@ -51,6 +52,7 @@ export default function HistoryScreen() {
       setEditDecision(null);
       setPickerMode('create');
       setSelected(item);
+      setPickerToken((t) => t + 1);
       setPending('picker');
     } else {
       // Split row: offer edit/delete.
@@ -69,6 +71,7 @@ export default function HistoryScreen() {
     actionRef.current?.dismiss();
     setEditDecision(decision);
     setPickerMode('edit');
+    setPickerToken((t) => t + 1);
     setPending('picker');
   }
 
@@ -103,12 +106,9 @@ export default function HistoryScreen() {
     );
   }
 
-  function handlePickerSuccess(amountEach: number) {
+  function handlePickerSuccess(_amountEach: number) {
     pickerRef.current?.dismiss();
-    toast.show(
-      pickerMode === 'edit' ? 'Split updated' : `Added! Others owe you $${amountEach.toFixed(2)}`,
-      'success'
-    );
+    toast.show(pickerMode === 'edit' ? 'Split updated' : 'Split added', 'success');
     refreshHistory();
   }
 
@@ -138,6 +138,7 @@ export default function HistoryScreen() {
         transaction={selected}
         mode={pickerMode}
         editDecision={editDecision}
+        openToken={pickerToken}
         onSuccess={handlePickerSuccess}
       />
       <HistoryActionSheet
