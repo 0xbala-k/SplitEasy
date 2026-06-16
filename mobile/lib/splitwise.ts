@@ -116,22 +116,23 @@ export async function updateExpense(
   params: ExpenseParams
 ): Promise<{ amount_each: number }> {
   const { body, ownerOwedCents } = buildExpenseBody(params);
-  await swPost(`/update_expense/${expenseId}`, body);
+  await swPost(`/update_expense/${encodeURIComponent(expenseId)}`, body);
   return { amount_each: ownerOwedCents / 100 };
 }
 
 export async function deleteExpense(expenseId: string): Promise<void> {
-  await swPost(`/delete_expense/${expenseId}`, {});
+  await swPost(`/delete_expense/${encodeURIComponent(expenseId)}`, {});
 }
 
 // Returns each participant's owed_share (in dollars) keyed by Splitwise user id.
 export async function getExpense(expenseId: string): Promise<Record<string, number>> {
   const data = await swGet<{
     expense: { users: { user: { id: number }; owed_share: string }[] };
-  }>(`/get_expense/${expenseId}`);
+  }>(`/get_expense/${encodeURIComponent(expenseId)}`);
   const shares: Record<string, number> = {};
   for (const u of data.expense.users) {
-    shares[String(u.user.id)] = parseFloat(u.owed_share);
+    const owed = parseFloat(u.owed_share);
+    shares[String(u.user.id)] = Number.isNaN(owed) ? 0 : owed;
   }
   return shares;
 }

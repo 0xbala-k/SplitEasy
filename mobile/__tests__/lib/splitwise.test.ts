@@ -169,3 +169,36 @@ test('getExpense throws SplitwiseAuthError on 401', async () => {
   mockResponse({}, 401);
   await expect(getExpense('555')).rejects.toThrow(SplitwiseAuthError);
 });
+
+test('getExpense coerces a malformed owed_share to 0', async () => {
+  mockResponse({ expense: { users: [{ user: { id: 2 }, owed_share: '' }] } });
+  const shares = await getExpense('5');
+  expect(shares).toEqual({ '2': 0 });
+});
+
+test('updateExpense URL-encodes the expense id', async () => {
+  mockResponse({ expenses: [{ id: 1 }] });
+  await updateExpense('a/b 1', {
+    amount: 10,
+    description: 'x',
+    currency: 'USD',
+    currentUserId: '1',
+    friendIds: ['2'],
+  });
+  const [url] = mockFetch.mock.calls[0];
+  expect(url).toContain('/update_expense/a%2Fb%201');
+});
+
+test('deleteExpense URL-encodes the expense id', async () => {
+  mockResponse({ success: true });
+  await deleteExpense('a/b');
+  const [url] = mockFetch.mock.calls[0];
+  expect(url).toContain('/delete_expense/a%2Fb');
+});
+
+test('getExpense URL-encodes the expense id', async () => {
+  mockResponse({ expense: { users: [] } });
+  await getExpense('a/b');
+  const [url] = mockFetch.mock.calls[0];
+  expect(url).toContain('/get_expense/a%2Fb');
+});
