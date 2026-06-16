@@ -13,9 +13,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { getSplitDecision, insertSplitDecision, updateTransactionStatus } from '@/lib/db';
-import { createExpense, SplitwiseAuthError } from '@/lib/splitwise';
-import { SplitwiseFriend, Transaction } from '@/lib/types';
+import { getSplitDecision, insertSplitDecision, upsertSplitDecision, updateTransactionStatus } from '@/lib/db';
+import { createExpense, updateExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
@@ -24,11 +24,17 @@ const STEP = 0.5;
 
 interface Props {
   transaction: Transaction | null;
+  mode?: 'create' | 'edit';
+  editDecision?: SplitDecision | null;
+  // Changes each time the host presents the sheet, so the pre-fill effect
+  // re-runs on every open — even when re-editing the same transaction after
+  // dismissing without saving (otherwise stale uncommitted edits would linger).
+  openToken?: number;
   onSuccess: (amountEach: number) => void;
 }
 
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, onSuccess }, ref) => {
+  ({ transaction, mode = 'create', editDecision, openToken, onSuccess }, ref) => {
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
@@ -39,6 +45,45 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [splitMode, setSplitMode] = useState<SplitMode>('equal');
     const [customAmounts, setCustomAmounts] = useState<Record<string, number>>({});
     const toast = useToast();
+
+    useEffect(() => {
+      if (mode !== 'edit' || !editDecision) {
+        // Reset so an edit session's pre-fill never leaks into a later create.
+        setSelected(new Set());
+        setCustomAmounts({});
+        setSplitMode('equal');
+        return;
+      }
+      setSelected(new Set(editDecision.friend_ids));
+      let ignored = false;
+      (async () => {
+        try {
+          const shares = await getExpense(editDecision.splitwise_expense_id);
+          if (ignored) return;
+          const amounts: Record<string, number> = {};
+          editDecision.friend_ids.forEach((fid) => {
+            amounts[fid] = shares[fid] ?? 0;
+          });
+          setCustomAmounts(amounts);
+          // Equal vs. custom is decided from the friends' shares only; the owner
+          // absorbs any rounding remainder, so an equal split where the owner's
+          // share differs by cents is still correctly detected as equal. The
+          // tradeoff: a custom split whose friend shares happen to be equal
+          // (unequal owner share) reads as equal and re-equalizes on a no-op save.
+          const vals = Object.values(amounts);
+          const allEqual = vals.length === 0 || vals.every((v) => Math.abs(v - vals[0]) < 0.005);
+          setSplitMode(allEqual ? 'equal' : 'custom');
+        } catch {
+          // Network/auth failure: keep friends selected, default to equal split.
+          if (!ignored) setSplitMode('equal');
+        }
+      })();
+      return () => {
+        ignored = true;
+      };
+      // Re-run on every open (openToken) and when the edited transaction changes.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mode, editDecision?.transaction_id, openToken]);
 
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();
@@ -102,6 +147,28 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       if (ctaDisabled) return;
       setSubmitting(true);
       try {
+        if (mode === 'edit' && editDecision) {
+          const { amount_each } = await updateExpense(editDecision.splitwise_expense_id, {
+            amount: transaction!.amount,
+            description: transaction!.merchant_name,
+            currency: transaction!.currency,
+            currentUserId: user_id!,
+            friendIds: selectedFriends.map((f) => f.id),
+            ...(splitMode === 'custom' && { friendShares: customAmounts }),
+          });
+          await upsertSplitDecision({
+            id: editDecision.id,
+            transaction_id: transaction!.id,
+            splitwise_expense_id: editDecision.splitwise_expense_id,
+            friend_ids: selectedFriends.map((f) => f.id),
+            friend_names: selectedFriends.map((f) => f.display_name),
+            amount_each,
+            created_at: editDecision.created_at,
+          });
+          onSuccess(amount_each);
+          return;
+        }
+
         const existing = await getSplitDecision(transaction!.id);
         if (existing) {
           await updateTransactionStatus(transaction!.id, 'split');
@@ -144,6 +211,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         } else {
           toast.show('Failed to add expense. Please try again.', 'error');
         }
+      } finally {
+        // Re-enable the CTA on every path. The sheet stays mounted (History
+        // reuses it across actions), so a stuck `submitting` would block the
+        // next edit/split.
         setSubmitting(false);
       }
     }
@@ -328,7 +399,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                   style={{ marginRight: 6 }}
                 />
                 <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
-                  Add to Splitwise
+                  {mode === 'edit' ? 'Save changes' : 'Add to Splitwise'}
                 </Text>
               </>
             )}

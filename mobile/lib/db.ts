@@ -153,6 +153,34 @@ export async function insertSplitDecision(
   );
 }
 
+export async function upsertSplitDecision(decision: SplitDecision): Promise<void> {
+  await db().runAsync(
+    `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(transaction_id) DO UPDATE SET
+       splitwise_expense_id = excluded.splitwise_expense_id,
+       friend_ids = excluded.friend_ids,
+       friend_names = excluded.friend_names,
+       amount_each = excluded.amount_each`,
+    [
+      decision.id,
+      decision.transaction_id,
+      decision.splitwise_expense_id,
+      JSON.stringify(decision.friend_ids),
+      JSON.stringify(decision.friend_names),
+      decision.amount_each,
+      decision.created_at,
+    ]
+  );
+}
+
+export async function deleteSplitDecision(transactionId: string): Promise<void> {
+  await db().runAsync(
+    `DELETE FROM split_decisions WHERE transaction_id = ?`,
+    [transactionId]
+  );
+}
+
 export async function pruneOldTransactions(): Promise<void> {
   await db().runAsync(
     `DELETE FROM transactions WHERE created_at < datetime('now', '-6 months')`,

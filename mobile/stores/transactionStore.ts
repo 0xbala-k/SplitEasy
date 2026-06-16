@@ -1,11 +1,13 @@
 // mobile/stores/transactionStore.ts
 import { create } from 'zustand';
 import { fetchTransactions, WorkerError } from '@/lib/worker';
+import { deleteExpense } from '@/lib/splitwise';
 import {
   getNewTransactions,
   upsertTransactions,
   deleteTransactionsByPlaidIds,
   updateTransactionStatus,
+  deleteSplitDecision,
 } from '@/lib/db';
 import { Transaction } from '@/lib/types';
 import { usePlaidStore } from '@/stores/plaidStore';
@@ -17,6 +19,7 @@ interface TransactionState {
   refresh: () => Promise<void>;
   skip: (id: string) => Promise<void>;
   markSplit: (id: string) => Promise<void>;
+  deleteSplit: (transactionId: string, splitwiseExpenseId: string) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -71,5 +74,13 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   markSplit: async (id) => {
     await updateTransactionStatus(id, 'split');
     set((s) => ({ transactions: s.transactions.filter((t) => t.id !== id) }));
+  },
+
+  deleteSplit: async (transactionId, splitwiseExpenseId) => {
+    // Splitwise first: if it fails we make no local change, so the two stay in sync.
+    await deleteExpense(splitwiseExpenseId);
+    await deleteSplitDecision(transactionId);
+    await updateTransactionStatus(transactionId, 'new');
+    await get().load();
   },
 }));

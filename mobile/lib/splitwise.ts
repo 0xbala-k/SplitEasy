@@ -53,7 +53,7 @@ export async function getFriends(): Promise<SplitwiseFriend[]> {
   }));
 }
 
-export async function createExpense(params: {
+interface ExpenseParams {
   amount: number;
   description: string;
   currency: string;
@@ -62,7 +62,11 @@ export async function createExpense(params: {
   // When provided, each entry overrides the equal-split share for that friend.
   // owner's owed_share is derived as amount - sum(friendShares).
   friendShares?: Record<string, number>;
-}): Promise<{ expense_id: string; amount_each: number }> {
+}
+
+// Builds the Splitwise indexed user body shared by create_expense and update_expense.
+// Returns the body plus the owner's owed share in cents (the "amount each" surfaced to the UI).
+function buildExpenseBody(params: ExpenseParams): { body: Record<string, string>; ownerOwedCents: number } {
   let ownerOwedCents: number;
 
   const body: Record<string, string> = {
@@ -95,10 +99,40 @@ export async function createExpense(params: {
   }
 
   body['users__0__owed_share'] = (ownerOwedCents / 100).toFixed(2);
+  return { body, ownerOwedCents };
+}
 
+export async function createExpense(params: ExpenseParams): Promise<{ expense_id: string; amount_each: number }> {
+  const { body, ownerOwedCents } = buildExpenseBody(params);
   const data = await swPost<{ expenses: [{ id: number }] }>('/create_expense', body);
   return {
     expense_id: String(data.expenses[0].id),
     amount_each: ownerOwedCents / 100,
   };
+}
+
+export async function updateExpense(
+  expenseId: string,
+  params: ExpenseParams
+): Promise<{ amount_each: number }> {
+  const { body, ownerOwedCents } = buildExpenseBody(params);
+  await swPost(`/update_expense/${encodeURIComponent(expenseId)}`, body);
+  return { amount_each: ownerOwedCents / 100 };
+}
+
+export async function deleteExpense(expenseId: string): Promise<void> {
+  await swPost(`/delete_expense/${encodeURIComponent(expenseId)}`, {});
+}
+
+// Returns each participant's owed_share (in dollars) keyed by Splitwise user id.
+export async function getExpense(expenseId: string): Promise<Record<string, number>> {
+  const data = await swGet<{
+    expense: { users: { user: { id: number }; owed_share: string }[] };
+  }>(`/get_expense/${encodeURIComponent(expenseId)}`);
+  const shares: Record<string, number> = {};
+  for (const u of data.expense.users) {
+    const owed = parseFloat(u.owed_share);
+    shares[String(u.user.id)] = Number.isNaN(owed) ? 0 : owed;
+  }
+  return shares;
 }
