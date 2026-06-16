@@ -7,3 +7,7 @@ jest.mock('expo-secure-store', () => ({
   setItemAsync: jest.fn(),
   deleteItemAsync: jest.fn(),
 }));
+
+// Render icon families as no-op components so component tests don't pull in
+// expo-font's native font loader (which throws in the jest-expo environment).
+jest.mock('@expo/vector-icons', () => new Proxy({}, { get: () => () => null }));
