@@ -1,14 +1,18 @@
 // mobile/components/FriendPickerSheet.tsx
-import { forwardRef, useEffect, useMemo, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { BottomSheetModal, BottomSheetView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
+import {
+  BottomSheetModal,
+  BottomSheetView,
+  BottomSheetTextInput,
+  BottomSheetFlatList,
+} from '@gorhom/bottom-sheet';
 import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -113,13 +117,14 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const isOverBudget = ownerShareCents < -1;
     const ctaDisabled = selected.size === 0 || submitting || isOverBudget;
 
-    function toggle(id: string) {
+    // Stable so memoized EqualRows only re-render when their own selection flips.
+    const toggle = useCallback((id: string) => {
       setSelected((prev) => {
         const next = new Set(prev);
         next.has(id) ? next.delete(id) : next.add(id);
         return next;
       });
-    }
+    }, []);
 
     function switchToCustom() {
       const baseShareCents = Math.floor(totalCents / n);
@@ -324,7 +329,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                   <Text style={styles.emptyText}>No Splitwise friends found.</Text>
                 </View>
               ) : (
-                <FlatList
+                <BottomSheetFlatList
                   data={filtered}
                   keyExtractor={(f) => f.id}
                   style={styles.list}
@@ -333,7 +338,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                     <EqualRow
                       friend={item}
                       isSelected={selected.has(item.id)}
-                      onToggle={() => toggle(item.id)}
+                      onToggle={toggle}
                     />
                   )}
                 />
@@ -358,7 +363,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
               <Text style={styles.sectionLabel}>Custom amounts</Text>
 
-              <FlatList
+              <BottomSheetFlatList
                 data={selectedFriends}
                 keyExtractor={(f) => f.id}
                 style={styles.list}
@@ -410,14 +415,14 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
   }
 );
 
-function EqualRow({
+const EqualRow = memo(function EqualRow({
   friend,
   isSelected,
   onToggle,
 }: {
   friend: SplitwiseFriend;
   isSelected: boolean;
-  onToggle: () => void;
+  onToggle: (id: string) => void;
 }) {
   const initial = friend.display_name[0].toUpperCase();
   const avatarColor = merchantColor(friend.display_name);
@@ -429,7 +434,7 @@ function EqualRow({
         isSelected && styles.friendRowSelected,
         pressed && !isSelected && styles.friendRowPressed,
       ]}
-      onPress={onToggle}
+      onPress={() => onToggle(friend.id)}
       accessibilityRole="checkbox"
       accessibilityState={{ checked: isSelected }}
       accessibilityLabel={friend.display_name}
@@ -445,7 +450,7 @@ function EqualRow({
       </View>
     </Pressable>
   );
-}
+});
 
 function CustomRow({
   friend,
