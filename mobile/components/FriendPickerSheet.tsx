@@ -26,8 +26,15 @@ import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 type SplitMode = 'equal' | 'custom';
 const STEP = 0.5;
 
+function summarizeMerchants(members: Transaction[]): string {
+  const names = members.map((m) => m.merchant_name);
+  if (names.length <= 2) return names.join(', ');
+  return `${names[0]}, ${names[1]} +${names.length - 2}`;
+}
+
 interface Props {
   transaction: Transaction | null;
+  combineTransactions?: Transaction[]; // when present, this is a combined split
   mode?: 'create' | 'edit';
   editDecision?: SplitDecision | null;
   // Changes each time the host presents the sheet, so the pre-fill effect
@@ -38,10 +45,25 @@ interface Props {
 }
 
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, mode = 'create', editDecision, openToken, onSuccess }, ref) => {
+  ({ transaction, combineTransactions, mode = 'create', editDecision, openToken, onSuccess }, ref) => {
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
+
+    const members = useMemo(
+      () =>
+        combineTransactions && combineTransactions.length > 0
+          ? combineTransactions
+          : transaction
+          ? [transaction]
+          : [],
+      [combineTransactions, transaction]
+    );
+    const isCombine = (combineTransactions?.length ?? 0) > 0;
+    const totalAmount = useMemo(() => members.reduce((s, t) => s + t.amount, 0), [members]);
+    const currency = members[0]?.currency ?? 'USD';
+
+    const [title, setTitle] = useState('');
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [query, setQuery] = useState('');
@@ -89,6 +111,19 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mode, editDecision?.transaction_id, openToken]);
 
+    // Pre-fill the title on every open: stored description for edits, a merchant
+    // summary for combined splits, otherwise the single transaction's merchant.
+    useEffect(() => {
+      if (mode === 'edit' && editDecision) {
+        setTitle(editDecision.description || members[0]?.merchant_name || '');
+      } else if (isCombine) {
+        setTitle(summarizeMerchants(members));
+      } else {
+        setTitle(members[0]?.merchant_name || '');
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openToken]);
+
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();
       return q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
@@ -99,9 +134,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       [friends, selected]
     );
 
-    if (!transaction) return null;
+    if (members.length === 0) return null;
 
-    const totalCents = Math.round(transaction.amount * 100);
+    const totalCents = Math.round(totalAmount * 100);
     const n = selected.size + 1;
     const equalShareCents = selected.size > 0 ? Math.floor(totalCents / n) : 0;
 
@@ -115,7 +150,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
     const ownerShareCents = totalCents - friendTotalCents;
     const isOverBudget = ownerShareCents < -1;
-    const ctaDisabled = selected.size === 0 || submitting || isOverBudget;
+    const ctaDisabled = selected.size === 0 || submitting || isOverBudget || title.trim() === '';
 
     // Stable so memoized EqualRows only re-render when their own selection flips.
     const toggle = useCallback((id: string) => {
@@ -148,67 +183,86 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       setCustomAmounts((prev) => ({ ...prev, [id]: value }));
     }
 
+    async function insertWithRetry(decision: SplitDecision) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await insertSplitDecision(decision);
+          return;
+        } catch {
+          if (attempt === 3) throw new Error('DB_WRITE_FAILED');
+        }
+      }
+    }
+
     async function handleAddToSplitwise() {
       if (ctaDisabled) return;
       setSubmitting(true);
+      const friendIds = selectedFriends.map((f) => f.id);
+      const friendNames = selectedFriends.map((f) => f.display_name);
+      const desc = title.trim();
+      const shares = splitMode === 'custom' ? { friendShares: customAmounts } : {};
       try {
         if (mode === 'edit' && editDecision) {
           const { amount_each } = await updateExpense(editDecision.splitwise_expense_id, {
-            amount: transaction!.amount,
-            description: transaction!.merchant_name,
-            currency: transaction!.currency,
+            amount: totalAmount,
+            description: desc,
+            currency,
             currentUserId: user_id!,
-            friendIds: selectedFriends.map((f) => f.id),
-            ...(splitMode === 'custom' && { friendShares: customAmounts }),
+            friendIds,
+            ...shares,
           });
-          await upsertSplitDecision({
-            id: editDecision.id,
-            transaction_id: transaction!.id,
-            splitwise_expense_id: editDecision.splitwise_expense_id,
-            friend_ids: selectedFriends.map((f) => f.id),
-            friend_names: selectedFriends.map((f) => f.display_name),
-            amount_each,
-            created_at: editDecision.created_at,
-          });
+          for (const t of members) {
+            await upsertSplitDecision({
+              // Reuse the loaded decision's id for its own row; other members
+              // conflict on transaction_id so their generated id is ignored.
+              id: t.id === editDecision.transaction_id ? editDecision.id : `${t.id}-${Date.now()}`,
+              transaction_id: t.id,
+              splitwise_expense_id: editDecision.splitwise_expense_id,
+              friend_ids: friendIds,
+              friend_names: friendNames,
+              amount_each,
+              created_at: editDecision.created_at,
+              description: desc,
+            });
+          }
           onSuccess(amount_each);
           return;
         }
 
-        const existing = await getSplitDecision(transaction!.id);
-        if (existing) {
-          await updateTransactionStatus(transaction!.id, 'split');
-          await markSplit(transaction!.id);
-          onSuccess(existing.amount_each);
-          return;
-        }
-
-        const { expense_id, amount_each } = await createExpense({
-          amount: transaction!.amount,
-          description: transaction!.merchant_name,
-          currency: transaction!.currency,
-          currentUserId: user_id!,
-          friendIds: selectedFriends.map((f) => f.id),
-          ...(splitMode === 'custom' && { friendShares: customAmounts }),
-        });
-
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            await insertSplitDecision({
-              id: `${transaction!.id}-${Date.now()}`,
-              transaction_id: transaction!.id,
-              splitwise_expense_id: expense_id,
-              friend_ids: selectedFriends.map((f) => f.id),
-              friend_names: selectedFriends.map((f) => f.display_name),
-              amount_each,
-              created_at: new Date().toISOString(),
-            });
-            break;
-          } catch {
-            if (attempt === 3) throw new Error('DB_WRITE_FAILED');
+        // Create. Idempotency check only applies to a single transaction.
+        if (!isCombine) {
+          const existing = await getSplitDecision(members[0].id);
+          if (existing) {
+            await updateTransactionStatus(members[0].id, 'split');
+            await markSplit(members[0].id);
+            onSuccess(existing.amount_each);
+            return;
           }
         }
 
-        await markSplit(transaction!.id);
+        const { expense_id, amount_each } = await createExpense({
+          amount: totalAmount,
+          description: desc,
+          currency,
+          currentUserId: user_id!,
+          friendIds,
+          ...shares,
+        });
+
+        const ts = Date.now();
+        for (const t of members) {
+          await insertWithRetry({
+            id: `${t.id}-${ts}`,
+            transaction_id: t.id,
+            splitwise_expense_id: expense_id,
+            friend_ids: friendIds,
+            friend_names: friendNames,
+            amount_each,
+            created_at: new Date().toISOString(),
+            description: desc,
+          });
+          await markSplit(t.id);
+        }
         onSuccess(amount_each);
       } catch (err) {
         if (err instanceof SplitwiseAuthError) {
@@ -217,15 +271,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           toast.show('Failed to add expense. Please try again.', 'error');
         }
       } finally {
-        // Re-enable the CTA on every path. The sheet stays mounted (History
-        // reuses it across actions), so a stuck `submitting` would block the
-        // next edit/split.
         setSubmitting(false);
       }
     }
-
-    const merchantInitial = (transaction.merchant_name ?? '?')[0].toUpperCase();
-    const merchantBg = merchantColor(transaction.merchant_name ?? '?');
 
     return (
       <BottomSheetModal
@@ -238,16 +286,24 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         keyboardBlurBehavior="restore"
       >
         <BottomSheetView style={styles.container}>
-          {/* Transaction summary */}
+          {/* Title + total */}
           <View style={styles.txSummary}>
-            <View style={[styles.txAvatar, { backgroundColor: merchantBg + '18' }]}>
-              <Text style={[styles.txAvatarText, { color: merchantBg }]}>{merchantInitial}</Text>
+            <View style={[styles.txAvatar, { backgroundColor: merchantColor(title || '?') + '18' }]}>
+              <Text style={[styles.txAvatarText, { color: merchantColor(title || '?') }]}>
+                {(title || '?')[0].toUpperCase()}
+              </Text>
             </View>
             <View style={styles.txInfo}>
-              <Text style={styles.txMerchant} numberOfLines={1}>
-                {transaction.merchant_name}
-              </Text>
-              <Text style={styles.txTotal}>${transaction.amount.toFixed(2)}</Text>
+              <BottomSheetTextInput
+                style={styles.titleInput}
+                value={title}
+                onChangeText={setTitle}
+                placeholder="Split title"
+                placeholderTextColor={Colors.textTertiary}
+                accessibilityLabel="Split title"
+                returnKeyType="done"
+              />
+              <Text style={styles.txTotal}>${totalAmount.toFixed(2)}</Text>
             </View>
           </View>
 
@@ -549,6 +605,12 @@ const styles = StyleSheet.create({
   txAvatarText: { fontSize: 20, fontWeight: '700' },
   txInfo: { flex: 1 },
   txMerchant: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
+  titleInput: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    paddingVertical: 2,
+  },
   txTotal: {
     fontSize: 24,
     fontWeight: '800',
