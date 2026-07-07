@@ -9,9 +9,13 @@ interface Props {
   transaction: Transaction;
   onSkip: () => void;
   onSplit: () => void;
+  onLongPress?: () => void;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }
 
-export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
+export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, selectMode, selected, onToggleSelect }: Props) {
   const amount = `$${transaction.amount.toFixed(2)}`;
   const date = new Date(transaction.date).toLocaleDateString('en-US', {
     month: 'short',
@@ -19,6 +23,30 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
   });
   const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
   const avatarBg = merchantColor(transaction.merchant_name ?? '?');
+
+  if (selectMode) {
+    return (
+      <Pressable
+        style={[styles.card, selected && styles.cardSelected]}
+        onPress={onToggleSelect}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: !!selected }}
+        accessibilityLabel={`Select ${transaction.merchant_name}`}
+      >
+        <View style={[styles.checkbox, selected && styles.checkboxSelected]}>
+          {selected && <Ionicons name="checkmark" size={14} color={Colors.textInverse} />}
+        </View>
+        <View style={[styles.avatar, { backgroundColor: avatarBg + '18' }]}>
+          <Text style={[styles.avatarText, { color: avatarBg }]}>{initial}</Text>
+        </View>
+        <View style={styles.info}>
+          <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
+          <Text style={styles.date}>{date}</Text>
+        </View>
+        <Text style={styles.amount}>{amount}</Text>
+      </Pressable>
+    );
+  }
 
   const renderSkipUnderlay = () => (
     <Pressable
@@ -42,7 +70,7 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
       leftThreshold={72}
       friction={1.5}
     >
-      <View style={styles.card}>
+      <Pressable style={styles.card} onLongPress={onLongPress} delayLongPress={300}>
         {/* Merchant avatar */}
         <View style={[styles.avatar, { backgroundColor: avatarBg + '18' }]}>
           <Text style={[styles.avatarText, { color: avatarBg }]}>{initial}</Text>
@@ -77,6 +105,8 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
           <Pressable
             style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}
             onPress={onSplit}
+            onLongPress={onLongPress}
+            delayLongPress={300}
             accessibilityRole="button"
             accessibilityLabel={`Split ${transaction.merchant_name}`}
           >
@@ -84,7 +114,7 @@ export function TransactionRow({ transaction, onSkip, onSplit }: Props) {
             <Text style={styles.splitText}>Split</Text>
           </Pressable>
         </View>
-      </View>
+      </Pressable>
     </ReanimatedSwipeable>
   );
 }
@@ -177,4 +207,17 @@ const styles = StyleSheet.create({
     color: Colors.textInverse,
     fontWeight: '600',
   },
+  cardSelected: { backgroundColor: Colors.primaryMuted },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: Radius.sm,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    marginRight: Spacing.md,
+  },
+  checkboxSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },
 });
