@@ -4,24 +4,43 @@ import Constants from 'expo-constants';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
-import { getHistoryTransactions, getSplitDecision } from '@/lib/db';
-import { TransactionWithSplit, SplitDecision } from '@/lib/types';
+import { getHistoryTransactions, getSplitDecision, getTransactionsByIds } from '@/lib/db';
+import { HistoryItem, SplitDecision, Transaction } from '@/lib/types';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { HistoryActionSheet } from '@/components/HistoryActionSheet';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
+// Adapt a single-split HistoryItem back to a Transaction for the picker's
+// single-edit flow. The picker reloads real friend shares/description from the
+// DB via editDecision + getExpense, so the currency default only affects the
+// Splitwise currency_code on re-save (see plan: multi-currency out of scope v1).
+function asTransaction(item: HistoryItem): Transaction {
+  return {
+    id: item.id,
+    merchant_name: item.merchant_name,
+    amount: item.amount,
+    currency: 'USD',
+    date: item.date,
+    status: item.status,
+    pending: false,
+    created_at: item.date,
+  };
+}
+
 export default function HistoryScreen() {
-  const [rows, setRows] = useState<TransactionWithSplit[]>([]);
-  const [selected, setSelected] = useState<TransactionWithSplit | null>(null);
+  const [rows, setRows] = useState<HistoryItem[]>([]);
+  const [selected, setSelected] = useState<HistoryItem | null>(null);
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
+  const [combineTxs, setCombineTxs] = useState<Transaction[] | null>(null);
   const [pickerMode, setPickerMode] = useState<'create' | 'edit'>('create');
   const [pending, setPending] = useState<null | 'picker' | 'action'>(null);
   const [pickerToken, setPickerToken] = useState(0);
   const pickerRef = useRef<BottomSheetModal>(null);
   const actionRef = useRef<BottomSheetModal>(null);
   const deleteSplit = useTransactionStore((s) => s.deleteSplit);
+  const deleteCombinedSplit = useTransactionStore((s) => s.deleteCombinedSplit);
   const toast = useToast();
 
   const refreshHistory = useCallback(() => {
@@ -46,16 +65,17 @@ export default function HistoryScreen() {
     }
   }, [pending]);
 
-  function handleRowPress(item: TransactionWithSplit) {
+  function handleRowPress(item: HistoryItem) {
     if (item.status === 'skipped') {
       // Split a previously-skipped transaction (create mode).
       setEditDecision(null);
+      setCombineTxs(null);
       setPickerMode('create');
       setSelected(item);
       setPickerToken((t) => t + 1);
       setPending('picker');
     } else {
-      // Split row: offer edit/delete.
+      // Split row (single or combined): offer edit/delete.
       setSelected(item);
       setPending('action');
     }
@@ -63,12 +83,30 @@ export default function HistoryScreen() {
 
   async function handleEdit() {
     if (!selected) return;
+    if (selected.combined) {
+      // Combined split: load all member transactions + the shared decision
+      // (any member's row carries the shared expense id, friends, description).
+      const members = await getTransactionsByIds(selected.combined.transaction_ids);
+      const decision = await getSplitDecision(selected.combined.transaction_ids[0]);
+      if (!decision || members.length === 0) {
+        toast.show('Could not load this split. Please try again.', 'error');
+        return;
+      }
+      actionRef.current?.dismiss();
+      setCombineTxs(members);
+      setEditDecision(decision);
+      setPickerMode('edit');
+      setPickerToken((t) => t + 1);
+      setPending('picker');
+      return;
+    }
     const decision = await getSplitDecision(selected.id);
     if (!decision) {
       toast.show('Could not load this split. Please try again.', 'error');
       return;
     }
     actionRef.current?.dismiss();
+    setCombineTxs(null);
     setEditDecision(decision);
     setPickerMode('edit');
     setPickerToken((t) => t + 1);
@@ -77,24 +115,29 @@ export default function HistoryScreen() {
 
   function handleDelete() {
     if (!selected) return;
-    const tx = selected;
+    const item = selected;
     actionRef.current?.dismiss();
+    const label = item.combined ? `${item.combined.count} transactions` : item.merchant_name;
     Alert.alert(
       'Delete split?',
-      `This removes the Splitwise expense for ${tx.merchant_name} and moves it back to your transactions.`,
+      `This removes the Splitwise expense for ${label} and moves ${item.combined ? 'them' : 'it'} back to your transactions.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            const decision = await getSplitDecision(tx.id);
-            if (!decision) {
-              toast.show('Could not load this split. Please try again.', 'error');
-              return;
-            }
             try {
-              await deleteSplit(tx.id, decision.splitwise_expense_id);
+              if (item.combined) {
+                await deleteCombinedSplit(item.combined.transaction_ids, item.combined.expense_id);
+              } else {
+                const decision = await getSplitDecision(item.id);
+                if (!decision) {
+                  toast.show('Could not load this split. Please try again.', 'error');
+                  return;
+                }
+                await deleteSplit(item.id, decision.splitwise_expense_id);
+              }
               toast.show('Split deleted', 'success');
               refreshHistory();
             } catch {
@@ -135,7 +178,8 @@ export default function HistoryScreen() {
 
       <FriendPickerSheet
         ref={pickerRef}
-        transaction={selected}
+        transaction={combineTxs ? null : selected ? asTransaction(selected) : null}
+        combineTransactions={combineTxs ?? undefined}
         mode={pickerMode}
         editDecision={editDecision}
         openToken={pickerToken}
@@ -165,7 +209,7 @@ function EmptyState() {
   );
 }
 
-function HistoryRow({ item, onPress }: { item: TransactionWithSplit; onPress: () => void }) {
+function HistoryRow({ item, onPress }: { item: HistoryItem; onPress: () => void }) {
   const date = new Date(item.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const isSplit = item.status === 'split' && item.split;
   const initial = (item.merchant_name ?? '?')[0].toUpperCase();
@@ -187,7 +231,10 @@ function HistoryRow({ item, onPress }: { item: TransactionWithSplit; onPress: ()
       </View>
       <View style={styles.info}>
         <Text style={styles.merchant} numberOfLines={1}>{item.merchant_name}</Text>
-        <Text style={styles.date}>{date}</Text>
+        <Text style={styles.date}>
+          {date}
+          {item.combined ? ` · ${item.combined.count} transactions` : ''}
+        </Text>
         {isSplit ? (
           <View style={styles.splitBadge}>
             <Ionicons name="people-outline" size={11} color={Colors.success} style={{ marginRight: 3 }} />
