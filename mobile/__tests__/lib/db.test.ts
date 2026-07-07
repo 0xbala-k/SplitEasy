@@ -260,3 +260,48 @@ test('getTransactionsByIds queries by id list and maps pending', async () => {
   );
   expect(result[0].pending).toBe(true);
 });
+
+test('getHistoryTransactions returns single split rows keyed by transaction id', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-07-01', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: 'exp1', description: 'Books', friend_names: '["Sam"]', amount_each: 10 },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe('tx1');
+  expect(items[0].merchant_name).toBe('Books');          // description wins
+  expect(items[0].combined).toBeUndefined();
+  expect(items[0].split?.friend_names).toEqual(['Sam']);
+});
+
+test('getHistoryTransactions collapses shared-expense rows into one combined item', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-07-02', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 15 },
+    { id: 'tx2', merchant_name: 'Uber', amount: 10, currency: 'USD', date: '2026-07-01', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 15 },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe('expShared');
+  expect(items[0].amount).toBe(30);                        // summed
+  expect(items[0].combined).toEqual({ expense_id: 'expShared', transaction_ids: ['tx1', 'tx2'], count: 2 });
+});
+
+test('getHistoryTransactions keeps skipped rows individual', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx9', merchant_name: 'Netflix', amount: 12, currency: 'USD', date: '2026-07-01', status: 'skipped', pending: 0, created_at: 'x',
+      splitwise_expense_id: null, description: null, friend_names: null, amount_each: null },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe('tx9');
+  expect(items[0].status).toBe('skipped');
+  expect(items[0].split).toBeUndefined();
+});
