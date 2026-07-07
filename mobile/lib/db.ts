@@ -57,6 +57,16 @@ export async function getNewTransactions(): Promise<Transaction[]> {
   return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
 }
 
+export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
+    `SELECT * FROM transactions WHERE id IN (${placeholders})`,
+    ids
+  );
+  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
+}
+
 export async function getHistoryTransactions(): Promise<TransactionWithSplit[]> {
   const rows = await db().getAllAsync<Transaction & {
     friend_names: string | null;

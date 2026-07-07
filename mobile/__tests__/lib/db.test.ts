@@ -15,6 +15,7 @@ import {
   deleteSplitDecision,
   pruneOldTransactions,
   deleteAllTransactions,
+  getTransactionsByIds,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 
@@ -237,4 +238,25 @@ test('getSplitDecision returns the description', async () => {
   });
   const result = await getSplitDecision('tx1');
   expect(result?.description).toBe('Team lunch');
+});
+
+test('getTransactionsByIds returns empty for no ids without querying', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockClear();
+  const result = await getTransactionsByIds([]);
+  expect(result).toEqual([]);
+  expect(mockDb.getAllAsync).not.toHaveBeenCalled();
+});
+
+test('getTransactionsByIds queries by id list and maps pending', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'A', amount: 5, currency: 'USD', date: '2026-07-01', status: 'split', pending: 1, created_at: '2026-07-01T00:00:00Z' },
+  ]);
+  const result = await getTransactionsByIds(['tx1', 'tx2']);
+  expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+    expect.stringContaining('WHERE id IN (?,?)'),
+    ['tx1', 'tx2']
+  );
+  expect(result[0].pending).toBe(true);
 });
