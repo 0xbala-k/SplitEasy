@@ -178,3 +178,63 @@ test('deleteSplitDecision deletes by transaction_id', async () => {
     ['tx1']
   );
 });
+
+test('initDb migrates a v1 install by adding both pending and description columns', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 1 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE transactions ADD COLUMN pending')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('user_version = 3')
+  );
+});
+
+test('initDb migrates an existing v2 install by adding the description column', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 2 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('user_version = 3')
+  );
+});
+
+test('insertSplitDecision persists the description', async () => {
+  await initDb();
+  await insertSplitDecision({
+    id: 'sd1',
+    transaction_id: 'tx1',
+    splitwise_expense_id: 'exp1',
+    friend_ids: ['2'],
+    friend_names: ['Sam'],
+    amount_each: 10,
+    created_at: '2026-07-06T00:00:00Z',
+    description: 'Team lunch',
+  });
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('description'),
+    expect.arrayContaining(['sd1', 'tx1', 'exp1', '["2"]', '["Sam"]', 10, '2026-07-06T00:00:00Z', 'Team lunch'])
+  );
+});
+
+test('getSplitDecision returns the description', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({
+    id: 'sd1',
+    transaction_id: 'tx1',
+    splitwise_expense_id: 'exp1',
+    friend_ids: '["2"]',
+    friend_names: '["Sam"]',
+    amount_each: 10,
+    created_at: '2026-07-06T00:00:00Z',
+    description: 'Team lunch',
+  });
+  const result = await getSplitDecision('tx1');
+  expect(result?.description).toBe('Team lunch');
+});

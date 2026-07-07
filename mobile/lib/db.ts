@@ -33,16 +33,20 @@ export async function initDb(): Promise<void> {
         friend_ids TEXT,
         friend_names TEXT,
         amount_each REAL,
-        created_at TEXT
+        created_at TEXT,
+        description TEXT
       );
-      PRAGMA user_version = 2;
-    `);
-  } else if (version < 2) {
-    await _db.execAsync(`
-      ALTER TABLE transactions ADD COLUMN pending INTEGER DEFAULT 0;
-      PRAGMA user_version = 2;
     `);
   }
+  if (version >= 1 && version < 2) {
+    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN pending INTEGER DEFAULT 0;`);
+  }
+  if (version >= 1 && version < 3) {
+    await _db.execAsync(`ALTER TABLE split_decisions ADD COLUMN description TEXT;`);
+  }
+  // NOTE: keep this stamp in sync with the highest migration version above.
+  // When adding a new `version < N` block, bump this to N.
+  await _db.execAsync(`PRAGMA user_version = 3;`);
 }
 
 export async function getNewTransactions(): Promise<Transaction[]> {
@@ -123,6 +127,7 @@ export async function getSplitDecision(transactionId: string): Promise<SplitDeci
     friend_names: string;
     amount_each: number;
     created_at: string;
+    description: string | null;
   }>(
     `SELECT * FROM split_decisions WHERE transaction_id = ?`,
     [transactionId]
@@ -132,6 +137,7 @@ export async function getSplitDecision(transactionId: string): Promise<SplitDeci
     ...row,
     friend_ids: JSON.parse(row.friend_ids),
     friend_names: JSON.parse(row.friend_names),
+    description: row.description ?? undefined,
   };
 }
 
@@ -139,8 +145,8 @@ export async function insertSplitDecision(
   decision: SplitDecision
 ): Promise<void> {
   await db().runAsync(
-    `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at, description)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       decision.id,
       decision.transaction_id,
@@ -149,19 +155,21 @@ export async function insertSplitDecision(
       JSON.stringify(decision.friend_names),
       decision.amount_each,
       decision.created_at,
+      decision.description ?? null,
     ]
   );
 }
 
 export async function upsertSplitDecision(decision: SplitDecision): Promise<void> {
   await db().runAsync(
-    `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at, description)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(transaction_id) DO UPDATE SET
        splitwise_expense_id = excluded.splitwise_expense_id,
        friend_ids = excluded.friend_ids,
        friend_names = excluded.friend_names,
-       amount_each = excluded.amount_each`,
+       amount_each = excluded.amount_each,
+       description = excluded.description`,
     [
       decision.id,
       decision.transaction_id,
@@ -170,6 +178,7 @@ export async function upsertSplitDecision(decision: SplitDecision): Promise<void
       JSON.stringify(decision.friend_names),
       decision.amount_each,
       decision.created_at,
+      decision.description ?? null,
     ]
   );
 }
