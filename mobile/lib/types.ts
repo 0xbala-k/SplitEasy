@@ -66,6 +66,7 @@ export interface HistoryItem {
   id: string;                 // transaction id for single rows; expense id for combined rows
   merchant_name: string;      // display title (description ?? merchant_name)
   amount: number;             // total (summed across members for combined rows)
+  currency: string;           // from the (first) member transaction
   date: string;
   status: TransactionStatus;
   split?: { friend_names: string[]; amount_each: number };

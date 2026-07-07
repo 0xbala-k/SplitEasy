@@ -249,7 +249,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           ...shares,
         });
 
+        // Persist every member row before flipping any status, so a mid-loop DB
+        // failure never leaves the list half-marked (some members removed, some not).
         const ts = Date.now();
+        const createdAt = new Date().toISOString();
         for (const t of members) {
           await insertWithRetry({
             id: `${t.id}-${ts}`,
@@ -258,9 +261,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             friend_ids: friendIds,
             friend_names: friendNames,
             amount_each,
-            created_at: new Date().toISOString(),
+            created_at: createdAt,
             description: desc,
           });
+        }
+        for (const t of members) {
           await markSplit(t.id);
         }
         onSuccess(amount_each);
@@ -275,6 +280,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       }
     }
 
+    const titleColor = merchantColor(title || '?');
+    const titleInitial = (title || '?')[0].toUpperCase();
+
     return (
       <BottomSheetModal
         ref={ref}
@@ -288,10 +296,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         <BottomSheetView style={styles.container}>
           {/* Title + total */}
           <View style={styles.txSummary}>
-            <View style={[styles.txAvatar, { backgroundColor: merchantColor(title || '?') + '18' }]}>
-              <Text style={[styles.txAvatarText, { color: merchantColor(title || '?') }]}>
-                {(title || '?')[0].toUpperCase()}
-              </Text>
+            <View style={[styles.txAvatar, { backgroundColor: titleColor + '18' }]}>
+              <Text style={[styles.txAvatarText, { color: titleColor }]}>{titleInitial}</Text>
             </View>
             <View style={styles.txInfo}>
               <BottomSheetTextInput
@@ -604,7 +610,6 @@ const styles = StyleSheet.create({
   },
   txAvatarText: { fontSize: 20, fontWeight: '700' },
   txInfo: { flex: 1 },
-  txMerchant: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   titleInput: {
     fontSize: 17,
     fontWeight: '700',

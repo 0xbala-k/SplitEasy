@@ -13,15 +13,15 @@ import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
 // Adapt a single-split HistoryItem back to a Transaction for the picker's
-// single-edit flow. The picker reloads real friend shares/description from the
-// DB via editDecision + getExpense, so the currency default only affects the
-// Splitwise currency_code on re-save (see plan: multi-currency out of scope v1).
+// single-edit / split-from-skipped flows. Carries the real currency so re-saving
+// preserves the Splitwise currency_code. pending/created_at don't affect the
+// expense, so safe defaults are fine.
 function asTransaction(item: HistoryItem): Transaction {
   return {
     id: item.id,
     merchant_name: item.merchant_name,
     amount: item.amount,
-    currency: 'USD',
+    currency: item.currency,
     date: item.date,
     status: item.status,
     pending: false,
@@ -86,8 +86,10 @@ export default function HistoryScreen() {
     if (selected.combined) {
       // Combined split: load all member transactions + the shared decision
       // (any member's row carries the shared expense id, friends, description).
-      const members = await getTransactionsByIds(selected.combined.transaction_ids);
-      const decision = await getSplitDecision(selected.combined.transaction_ids[0]);
+      const [members, decision] = await Promise.all([
+        getTransactionsByIds(selected.combined.transaction_ids),
+        getSplitDecision(selected.combined.transaction_ids[0]),
+      ]);
       if (!decision || members.length === 0) {
         toast.show('Could not load this split. Please try again.', 'error');
         return;

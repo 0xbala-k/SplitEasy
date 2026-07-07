@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import NetInfo from '@react-native-community/netinfo';
@@ -64,6 +64,11 @@ export default function NewTransactionsScreen() {
   function openCombine() {
     const members = transactions.filter((t) => selectedIds.has(t.id));
     if (members.length === 0) return;
+    // A single Splitwise expense has one currency; block combining across currencies.
+    if (new Set(members.map((t) => t.currency)).size > 1) {
+      toast.show('Select transactions in the same currency to combine.', 'error');
+      return;
+    }
     setSelected(null);
     setCombineTxs(members);
     setPickerToken((t) => t + 1);
@@ -81,6 +86,7 @@ export default function NewTransactionsScreen() {
   }
 
   const isEmptyAndLoaded = !isLoading && transactions.length === 0;
+  const listExtraData = useMemo(() => ({ selectMode, selectedIds }), [selectMode, selectedIds]);
 
   return (
     <View style={[styles.root, { paddingTop: topInset }]}>
@@ -115,7 +121,7 @@ export default function NewTransactionsScreen() {
           data={transactions}
           keyExtractor={(t) => t.id}
           contentContainerStyle={styles.list}
-          extraData={{ selectMode, selectedIds }}
+          extraData={listExtraData}
           refreshControl={
             <RefreshControl
               refreshing={isLoading}

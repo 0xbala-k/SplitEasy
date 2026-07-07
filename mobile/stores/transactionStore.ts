@@ -87,11 +87,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
 
   deleteCombinedSplit: async (transactionIds, splitwiseExpenseId) => {
     // Delete the shared Splitwise expense once, then revert every member locally.
+    // Members are independent, so run their reversions concurrently.
     await deleteExpense(splitwiseExpenseId);
-    for (const id of transactionIds) {
-      await deleteSplitDecision(id);
-      await updateTransactionStatus(id, 'new');
-    }
+    await Promise.all(
+      transactionIds.map(async (id) => {
+        await deleteSplitDecision(id);
+        await updateTransactionStatus(id, 'new');
+      })
+    );
     await get().load();
   },
 }));

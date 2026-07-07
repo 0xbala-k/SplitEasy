@@ -9,6 +9,7 @@ const tx: HistoryItem = {
   id: 'tx1',
   merchant_name: 'Amazon',
   amount: 29.99,
+  currency: 'USD',
   date: '2026-06-10',
   status: 'split',
   split: { friend_names: ['Sam'], amount_each: 15 },

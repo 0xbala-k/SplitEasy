@@ -1,6 +1,6 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
-import { Transaction, TransactionWithSplit, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem } from '@/lib/types';
+import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem } from '@/lib/types';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 
@@ -44,9 +44,12 @@ export async function initDb(): Promise<void> {
   if (version >= 1 && version < 3) {
     await _db.execAsync(`ALTER TABLE split_decisions ADD COLUMN description TEXT;`);
   }
-  // NOTE: keep this stamp in sync with the highest migration version above.
-  // When adding a new `version < N` block, bump this to N.
-  await _db.execAsync(`PRAGMA user_version = 3;`);
+  // Only stamp when a migration actually ran, to avoid a file-header write on
+  // every cold start. Keep the literal in sync with the highest block above:
+  // when adding a `version < N` block, bump this to N.
+  if (version < 3) {
+    await _db.execAsync(`PRAGMA user_version = 3;`);
+  }
 }
 
 export async function getNewTransactions(): Promise<Transaction[]> {
@@ -100,6 +103,7 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
           id: r.id,
           merchant_name: title,
           amount: r.amount,
+          currency: r.currency,
           date: r.date,
           status: 'split',
           split: {
@@ -116,8 +120,14 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
         id: r.id,
         merchant_name: title,
         amount: r.amount,
+        currency: r.currency,
         date: r.date,
         status: r.status,
+        // A split row missing its expense id is malformed, but still surface its
+        // friends so it doesn't masquerade as a skipped row in the UI.
+        ...(r.status === 'split' && r.friend_names
+          ? { split: { friend_names: JSON.parse(r.friend_names), amount_each: r.amount_each ?? 0 } }
+          : {}),
       });
     }
   }

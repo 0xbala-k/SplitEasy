@@ -272,8 +272,23 @@ test('getHistoryTransactions returns single split rows keyed by transaction id',
   expect(items).toHaveLength(1);
   expect(items[0].id).toBe('tx1');
   expect(items[0].merchant_name).toBe('Books');          // description wins
+  expect(items[0].currency).toBe('USD');
   expect(items[0].combined).toBeUndefined();
   expect(items[0].split?.friend_names).toEqual(['Sam']);
+});
+
+test('getHistoryTransactions surfaces a split row missing its expense id (not as skipped)', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-07-01', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: null, description: 'Books', friend_names: '["Sam"]', amount_each: 10 },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].status).toBe('split');
+  expect(items[0].split?.friend_names).toEqual(['Sam']);
+  expect(items[0].combined).toBeUndefined();
 });
 
 test('getHistoryTransactions collapses shared-expense rows into one combined item', async () => {
