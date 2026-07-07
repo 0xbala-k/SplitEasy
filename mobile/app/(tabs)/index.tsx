@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import NetInfo from '@react-native-community/netinfo';
 import { useRouter } from 'expo-router';
@@ -13,7 +13,7 @@ import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { Transaction } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
-import { Colors, Spacing, Radius } from '@/lib/theme';
+import { Colors, Spacing, Radius, Shadow } from '@/lib/theme';
 
 export default function NewTransactionsScreen() {
   const router = useRouter();
@@ -24,6 +24,10 @@ export default function NewTransactionsScreen() {
   const [selected, setSelected] = useState<Transaction | null>(null);
   const sheetRef = useRef<BottomSheetModal>(null);
   const toast = useToast();
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [combineTxs, setCombineTxs] = useState<Transaction[] | null>(null);
+  const [pickerToken, setPickerToken] = useState(0);
 
   useEffect(() => {
     load();
@@ -33,12 +37,42 @@ export default function NewTransactionsScreen() {
   }, []);
 
   function openSheet(tx: Transaction) {
+    setCombineTxs(null);
     setSelected(tx);
+    setPickerToken((t) => t + 1);
+    sheetRef.current?.present();
+  }
+
+  function enterSelect(tx: Transaction) {
+    setSelectMode(true);
+    setSelectedIds(new Set([tx.id]));
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function cancelSelect() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+
+  function openCombine() {
+    const members = transactions.filter((t) => selectedIds.has(t.id));
+    if (members.length === 0) return;
+    setSelected(null);
+    setCombineTxs(members);
+    setPickerToken((t) => t + 1);
     sheetRef.current?.present();
   }
 
   function handleSplitSuccess(amountEach: number) {
     sheetRef.current?.dismiss();
+    cancelSelect();
     toast.show(`Added! Others owe you $${amountEach.toFixed(2)}`, 'success');
   }
 
@@ -81,6 +115,7 @@ export default function NewTransactionsScreen() {
           data={transactions}
           keyExtractor={(t) => t.id}
           contentContainerStyle={styles.list}
+          extraData={{ selectMode, selectedIds }}
           refreshControl={
             <RefreshControl
               refreshing={isLoading}
@@ -93,6 +128,10 @@ export default function NewTransactionsScreen() {
               transaction={item}
               onSkip={() => skip(item.id)}
               onSplit={() => openSheet(item)}
+              onLongPress={() => enterSelect(item)}
+              selectMode={selectMode}
+              selected={selectedIds.has(item.id)}
+              onToggleSelect={() => toggleSelect(item.id)}
             />
           )}
         />
@@ -101,8 +140,32 @@ export default function NewTransactionsScreen() {
       <FriendPickerSheet
         ref={sheetRef}
         transaction={selected}
+        combineTransactions={combineTxs ?? undefined}
+        openToken={pickerToken}
         onSuccess={handleSplitSuccess}
       />
+      {selectMode && (
+        <View style={styles.selectBar}>
+          <Pressable
+            style={styles.selectCancel}
+            onPress={cancelSelect}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel selection"
+          >
+            <Text style={styles.selectCancelText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.selectSplit, selectedIds.size === 0 && styles.selectSplitDisabled]}
+            onPress={openCombine}
+            disabled={selectedIds.size === 0}
+            accessibilityRole="button"
+            accessibilityLabel="Split selected together"
+          >
+            <Ionicons name="people-outline" size={16} color={Colors.textInverse} style={{ marginRight: 6 }} />
+            <Text style={styles.selectSplitText}>Split together ({selectedIds.size})</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -228,4 +291,38 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     backgroundColor: Colors.surfaceMuted,
   },
+
+  selectBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    gap: Spacing.md,
+    padding: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  selectCancel: {
+    paddingVertical: 16,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surfaceMuted,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectCancelText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
+  selectSplit: {
+    flex: 1,
+    flexDirection: 'row',
+    paddingVertical: 16,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...Shadow.sm,
+  },
+  selectSplitDisabled: { backgroundColor: Colors.surfaceMuted },
+  selectSplitText: { fontSize: 15, fontWeight: '700', color: Colors.textInverse },
 });
