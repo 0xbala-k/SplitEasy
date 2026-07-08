@@ -3,11 +3,11 @@ import { forwardRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { BottomSheetModal, BottomSheetView } from '@gorhom/bottom-sheet';
 import { Ionicons } from '@expo/vector-icons';
-import { TransactionWithSplit } from '@/lib/types';
+import { HistoryItem } from '@/lib/types';
 import { Colors, Radius, Spacing, merchantColor } from '@/lib/theme';
 
 interface Props {
-  transaction: TransactionWithSplit | null;
+  transaction: HistoryItem | null;
   onEdit: () => void;
   onDelete: () => void;
 }

@@ -20,6 +20,7 @@ interface TransactionState {
   skip: (id: string) => Promise<void>;
   markSplit: (id: string) => Promise<void>;
   deleteSplit: (transactionId: string, splitwiseExpenseId: string) => Promise<void>;
+  deleteCombinedSplit: (transactionIds: string[], splitwiseExpenseId: string) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -81,6 +82,19 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
     await deleteExpense(splitwiseExpenseId);
     await deleteSplitDecision(transactionId);
     await updateTransactionStatus(transactionId, 'new');
+    await get().load();
+  },
+
+  deleteCombinedSplit: async (transactionIds, splitwiseExpenseId) => {
+    // Delete the shared Splitwise expense once, then revert every member locally.
+    // Members are independent, so run their reversions concurrently.
+    await deleteExpense(splitwiseExpenseId);
+    await Promise.all(
+      transactionIds.map(async (id) => {
+        await deleteSplitDecision(id);
+        await updateTransactionStatus(id, 'new');
+      })
+    );
     await get().load();
   },
 }));

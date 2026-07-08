@@ -172,3 +172,14 @@ test('deleteSplit leaves local state untouched if the Splitwise delete fails', a
   expect(mockDeleteSplitDecision).not.toHaveBeenCalled();
   expect(mockUpdateStatus).not.toHaveBeenCalled();
 });
+
+test('deleteCombinedSplit deletes the expense once and reverts all members', async () => {
+  await useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared');
+
+  expect(mockDeleteExpense).toHaveBeenCalledTimes(1);
+  expect(mockDeleteExpense).toHaveBeenCalledWith('expShared');
+  expect(mockDeleteSplitDecision).toHaveBeenCalledWith('tx1');
+  expect(mockDeleteSplitDecision).toHaveBeenCalledWith('tx2');
+  expect(mockUpdateStatus).toHaveBeenCalledWith('tx1', 'new');
+  expect(mockUpdateStatus).toHaveBeenCalledWith('tx2', 'new');
+});

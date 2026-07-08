@@ -3,17 +3,15 @@ jest.mock('@gorhom/bottom-sheet', () => require('@gorhom/bottom-sheet/mock'));
 
 import { render, fireEvent, screen } from '@testing-library/react-native';
 import { HistoryActionSheet } from '@/components/HistoryActionSheet';
-import { TransactionWithSplit } from '@/lib/types';
+import { HistoryItem } from '@/lib/types';
 
-const tx: TransactionWithSplit = {
+const tx: HistoryItem = {
   id: 'tx1',
   merchant_name: 'Amazon',
   amount: 29.99,
   currency: 'USD',
   date: '2026-06-10',
   status: 'split',
-  pending: false,
-  created_at: '2026-06-10T10:00:00Z',
   split: { friend_names: ['Sam'], amount_each: 15 },
 };
 

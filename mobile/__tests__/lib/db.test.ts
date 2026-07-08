@@ -15,6 +15,7 @@ import {
   deleteSplitDecision,
   pruneOldTransactions,
   deleteAllTransactions,
+  getTransactionsByIds,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 
@@ -177,4 +178,145 @@ test('deleteSplitDecision deletes by transaction_id', async () => {
     expect.stringContaining('DELETE FROM split_decisions'),
     ['tx1']
   );
+});
+
+test('initDb migrates a v1 install by adding both pending and description columns', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 1 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE transactions ADD COLUMN pending')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('user_version = 3')
+  );
+});
+
+test('initDb migrates an existing v2 install by adding the description column', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 2 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('user_version = 3')
+  );
+});
+
+test('insertSplitDecision persists the description', async () => {
+  await initDb();
+  await insertSplitDecision({
+    id: 'sd1',
+    transaction_id: 'tx1',
+    splitwise_expense_id: 'exp1',
+    friend_ids: ['2'],
+    friend_names: ['Sam'],
+    amount_each: 10,
+    created_at: '2026-07-06T00:00:00Z',
+    description: 'Team lunch',
+  });
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('description'),
+    expect.arrayContaining(['sd1', 'tx1', 'exp1', '["2"]', '["Sam"]', 10, '2026-07-06T00:00:00Z', 'Team lunch'])
+  );
+});
+
+test('getSplitDecision returns the description', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({
+    id: 'sd1',
+    transaction_id: 'tx1',
+    splitwise_expense_id: 'exp1',
+    friend_ids: '["2"]',
+    friend_names: '["Sam"]',
+    amount_each: 10,
+    created_at: '2026-07-06T00:00:00Z',
+    description: 'Team lunch',
+  });
+  const result = await getSplitDecision('tx1');
+  expect(result?.description).toBe('Team lunch');
+});
+
+test('getTransactionsByIds returns empty for no ids without querying', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockClear();
+  const result = await getTransactionsByIds([]);
+  expect(result).toEqual([]);
+  expect(mockDb.getAllAsync).not.toHaveBeenCalled();
+});
+
+test('getTransactionsByIds queries by id list and maps pending', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'A', amount: 5, currency: 'USD', date: '2026-07-01', status: 'split', pending: 1, created_at: '2026-07-01T00:00:00Z' },
+  ]);
+  const result = await getTransactionsByIds(['tx1', 'tx2']);
+  expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+    expect.stringContaining('WHERE id IN (?,?)'),
+    ['tx1', 'tx2']
+  );
+  expect(result[0].pending).toBe(true);
+});
+
+test('getHistoryTransactions returns single split rows keyed by transaction id', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-07-01', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: 'exp1', description: 'Books', friend_names: '["Sam"]', amount_each: 10 },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe('tx1');
+  expect(items[0].merchant_name).toBe('Books');          // description wins
+  expect(items[0].currency).toBe('USD');
+  expect(items[0].combined).toBeUndefined();
+  expect(items[0].split?.friend_names).toEqual(['Sam']);
+});
+
+test('getHistoryTransactions surfaces a split row missing its expense id (not as skipped)', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-07-01', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: null, description: 'Books', friend_names: '["Sam"]', amount_each: 10 },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].status).toBe('split');
+  expect(items[0].split?.friend_names).toEqual(['Sam']);
+  expect(items[0].combined).toBeUndefined();
+});
+
+test('getHistoryTransactions collapses shared-expense rows into one combined item', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-07-02', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 15 },
+    { id: 'tx2', merchant_name: 'Uber', amount: 10, currency: 'USD', date: '2026-07-01', status: 'split', pending: 0, created_at: 'x',
+      splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 15 },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe('expShared');
+  expect(items[0].amount).toBe(30);                        // summed
+  expect(items[0].combined).toEqual({ expense_id: 'expShared', transaction_ids: ['tx1', 'tx2'], count: 2 });
+});
+
+test('getHistoryTransactions keeps skipped rows individual', async () => {
+  mockDb.getFirstAsync.mockResolvedValue({ user_version: 3 });
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx9', merchant_name: 'Netflix', amount: 12, currency: 'USD', date: '2026-07-01', status: 'skipped', pending: 0, created_at: 'x',
+      splitwise_expense_id: null, description: null, friend_names: null, amount_each: null },
+  ]);
+  const items = await getHistoryTransactions();
+  expect(items).toHaveLength(1);
+  expect(items[0].id).toBe('tx9');
+  expect(items[0].status).toBe('skipped');
+  expect(items[0].split).toBeUndefined();
 });
