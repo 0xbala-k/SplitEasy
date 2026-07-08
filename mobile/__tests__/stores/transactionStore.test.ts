@@ -35,6 +35,8 @@ const mockGetTokensAndCursors = jest.fn();
 const mockSaveCursor = jest.fn();
 const mockDeleteExpense = splitwise.deleteExpense as jest.Mock;
 const mockDeleteSplitDecision = db.deleteSplitDecision as jest.Mock;
+const mockPersistCombined = db.persistCombinedSplit as jest.Mock;
+const mockRevertCombined = db.revertCombinedSplit as jest.Mock;
 
 function syncPage(overrides: Partial<{
   added: unknown[];
@@ -65,6 +67,8 @@ beforeEach(() => {
   mockSaveCursor.mockResolvedValue(undefined);
   mockDeleteExpense.mockResolvedValue(undefined);
   mockDeleteSplitDecision.mockResolvedValue(undefined);
+  mockPersistCombined.mockResolvedValue(undefined);
+  mockRevertCombined.mockResolvedValue(undefined);
 });
 
 test('load fetches new transactions from DB and updates store', async () => {
@@ -173,13 +177,36 @@ test('deleteSplit leaves local state untouched if the Splitwise delete fails', a
   expect(mockUpdateStatus).not.toHaveBeenCalled();
 });
 
-test('deleteCombinedSplit deletes the expense once and reverts all members', async () => {
+test('deleteCombinedSplit deletes the expense once, then reverts members atomically', async () => {
   await useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared');
 
   expect(mockDeleteExpense).toHaveBeenCalledTimes(1);
   expect(mockDeleteExpense).toHaveBeenCalledWith('expShared');
-  expect(mockDeleteSplitDecision).toHaveBeenCalledWith('tx1');
-  expect(mockDeleteSplitDecision).toHaveBeenCalledWith('tx2');
-  expect(mockUpdateStatus).toHaveBeenCalledWith('tx1', 'new');
-  expect(mockUpdateStatus).toHaveBeenCalledWith('tx2', 'new');
+  expect(mockRevertCombined).toHaveBeenCalledWith(['tx1', 'tx2']);
+});
+
+test('deleteCombinedSplit makes no local change when the Splitwise delete fails', async () => {
+  mockDeleteExpense.mockRejectedValue(new Error('SPLITWISE_ERROR'));
+  await expect(
+    useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared')
+  ).rejects.toThrow();
+  expect(mockRevertCombined).not.toHaveBeenCalled();
+});
+
+test('commitCombinedSplit persists rows atomically then drops members from the list', async () => {
+  useTransactionStore.setState({
+    transactions: [
+      { id: 'txA', merchant_name: 'A', amount: 5, currency: 'USD', date: 'x', status: 'new', pending: false, created_at: 'x' },
+      { id: 'txB', merchant_name: 'B', amount: 5, currency: 'USD', date: 'x', status: 'new', pending: false, created_at: 'x' },
+      { id: 'txC', merchant_name: 'C', amount: 5, currency: 'USD', date: 'x', status: 'new', pending: false, created_at: 'x' },
+    ],
+    isLoading: false,
+  });
+  const decisions = [
+    { id: 'a', transaction_id: 'txA', splitwise_expense_id: 'exp', friend_ids: ['2'], friend_names: ['Sam'], amount_each: 5, created_at: 'x', description: 'Trip' },
+    { id: 'b', transaction_id: 'txB', splitwise_expense_id: 'exp', friend_ids: ['2'], friend_names: ['Sam'], amount_each: 5, created_at: 'x', description: 'Trip' },
+  ];
+  await useTransactionStore.getState().commitCombinedSplit(decisions);
+  expect(mockPersistCombined).toHaveBeenCalledWith(decisions);
+  expect(useTransactionStore.getState().transactions.map((t) => t.id)).toEqual(['txC']);
 });

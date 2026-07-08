@@ -6,6 +6,7 @@ jest.mock('@/lib/splitwise', () => ({
   ...jest.requireActual('@/lib/splitwise'),
   createExpense: jest.fn(),
   updateExpense: jest.fn(),
+  deleteExpense: jest.fn(),
   getExpense: jest.fn(),
 }));
 jest.mock('@/stores/friendStore', () => ({ useFriendStore: jest.fn() }));
@@ -25,8 +26,8 @@ import { SplitDecision, Transaction } from '@/lib/types';
 const mockGetExpense = splitwise.getExpense as jest.Mock;
 const mockUpdateExpense = splitwise.updateExpense as jest.Mock;
 const mockUpsert = db.upsertSplitDecision as jest.Mock;
-const mockInsert = db.insertSplitDecision as jest.Mock;
 const mockCreateExpense = splitwise.createExpense as jest.Mock;
+const mockCommitCombined = jest.fn();
 
 const tx: Transaction = {
   id: 'tx1',
@@ -68,13 +69,15 @@ beforeEach(() => {
     isLoading: false,
   });
   (useAuthStore as jest.Mock).mockImplementation((sel) => sel({ user_id: '1' }));
-  (useTransactionStore as jest.Mock).mockImplementation((sel) => sel({ markSplit: jest.fn() }));
+  mockCommitCombined.mockReset().mockResolvedValue(undefined);
+  (useTransactionStore as jest.Mock).mockImplementation((sel) =>
+    sel({ markSplit: jest.fn(), commitCombinedSplit: mockCommitCombined })
+  );
   mockGetExpense.mockResolvedValue({ '1': 10, '2': 10 });
   mockUpdateExpense.mockResolvedValue({ amount_each: 10 });
   mockUpsert.mockResolvedValue(undefined);
   mockCreateExpense.mockResolvedValue({ expense_id: 'expNew', amount_each: 10 });
   (db.getSplitDecision as jest.Mock).mockResolvedValue(null);
-  mockInsert.mockResolvedValue(undefined);
 });
 
 test('edit mode pre-fills from the existing Splitwise expense', async () => {
@@ -141,9 +144,7 @@ test('edit mode pre-fills the title from the decision description', async () => 
   await waitFor(() => expect(screen.getByDisplayValue('Weekend trip')).toBeTruthy());
 });
 
-test('combine create sums amounts, writes one row per member, and marks each split', async () => {
-  const markSplit = jest.fn();
-  (useTransactionStore as jest.Mock).mockImplementation((sel) => sel({ markSplit }));
+test('combine create sums amounts and commits one decision row per member atomically', async () => {
   const members: Transaction[] = [
     { ...tx, id: 'txA', merchant_name: 'Starbucks', amount: 5 },
     { ...tx, id: 'txB', merchant_name: 'Uber', amount: 15 },
@@ -165,16 +166,33 @@ test('combine create sums amounts, writes one row per member, and marks each spl
   expect(mockCreateExpense).toHaveBeenCalledWith(
     expect.objectContaining({ amount: 20, description: 'Starbucks, Uber' })
   );
-  await waitFor(() => expect(mockInsert).toHaveBeenCalledTimes(2));
-  expect(mockInsert).toHaveBeenCalledWith(
-    expect.objectContaining({ transaction_id: 'txA', splitwise_expense_id: 'expNew', description: 'Starbucks, Uber' })
+  await waitFor(() => expect(mockCommitCombined).toHaveBeenCalledTimes(1));
+  const decisions = mockCommitCombined.mock.calls[0][0];
+  expect(decisions).toHaveLength(2);
+  expect(decisions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ transaction_id: 'txA', splitwise_expense_id: 'expNew', description: 'Starbucks, Uber' }),
+      expect.objectContaining({ transaction_id: 'txB', splitwise_expense_id: 'expNew', description: 'Starbucks, Uber' }),
+    ])
   );
-  expect(mockInsert).toHaveBeenCalledWith(
-    expect.objectContaining({ transaction_id: 'txB', splitwise_expense_id: 'expNew' })
-  );
-  expect(markSplit).toHaveBeenCalledWith('txA');
-  expect(markSplit).toHaveBeenCalledWith('txB');
   expect(onSuccess).toHaveBeenCalledWith(10);
+});
+
+test('combine create rolls back the remote expense when the local commit fails', async () => {
+  mockCommitCombined.mockRejectedValue(new Error('DB_FAIL'));
+  const members: Transaction[] = [
+    { ...tx, id: 'txA', merchant_name: 'Starbucks', amount: 5 },
+    { ...tx, id: 'txB', merchant_name: 'Uber', amount: 15 },
+  ];
+  render(
+    <FriendPickerSheet transaction={null} combineTransactions={members} openToken={1} onSuccess={jest.fn()} />
+  );
+
+  fireEvent.press(screen.getByLabelText('Sam'));
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(splitwise.deleteExpense as jest.Mock).toHaveBeenCalledWith('expNew'));
 });
 
 test('combine edit upserts one row per member, reusing the decision id for its own row', async () => {
@@ -221,7 +239,8 @@ test('single create passes the edited title as the description', async () => {
   expect(mockCreateExpense).toHaveBeenCalledWith(
     expect.objectContaining({ description: 'Groceries' })
   );
-  await waitFor(() =>
-    expect(mockInsert).toHaveBeenCalledWith(expect.objectContaining({ description: 'Groceries', transaction_id: 'tx1' }))
-  );
+  await waitFor(() => expect(mockCommitCombined).toHaveBeenCalledTimes(1));
+  expect(mockCommitCombined.mock.calls[0][0]).toEqual([
+    expect.objectContaining({ transaction_id: 'tx1', description: 'Groceries' }),
+  ]);
 });

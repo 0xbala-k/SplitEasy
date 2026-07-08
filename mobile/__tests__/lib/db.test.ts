@@ -16,6 +16,8 @@ import {
   pruneOldTransactions,
   deleteAllTransactions,
   getTransactionsByIds,
+  persistCombinedSplit,
+  revertCombinedSplit,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 
@@ -24,6 +26,8 @@ const mockDb = {
   getAllAsync: jest.fn().mockResolvedValue([]),
   getFirstAsync: jest.fn().mockResolvedValue(null),
   runAsync: jest.fn().mockResolvedValue({ lastInsertRowId: 1, changes: 1 }),
+  // Run the transaction body immediately so inner runAsync calls are observable.
+  withTransactionAsync: jest.fn(async (task: () => Promise<void>) => { await task(); }),
 };
 
 beforeEach(() => {
@@ -319,4 +323,44 @@ test('getHistoryTransactions keeps skipped rows individual', async () => {
   expect(items[0].id).toBe('tx9');
   expect(items[0].status).toBe('skipped');
   expect(items[0].split).toBeUndefined();
+});
+
+test('persistCombinedSplit writes every row and status inside one transaction', async () => {
+  await initDb();
+  const decisions: SplitDecision[] = [
+    { id: 'a', transaction_id: 'txA', splitwise_expense_id: 'exp', friend_ids: ['2'], friend_names: ['Sam'], amount_each: 5, created_at: 'x', description: 'Trip' },
+    { id: 'b', transaction_id: 'txB', splitwise_expense_id: 'exp', friend_ids: ['2'], friend_names: ['Sam'], amount_each: 5, created_at: 'x', description: 'Trip' },
+  ];
+  await persistCombinedSplit(decisions);
+  expect(mockDb.withTransactionAsync).toHaveBeenCalledTimes(1);
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT INTO split_decisions'),
+    expect.arrayContaining(['a', 'txA', 'exp'])
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('UPDATE transactions SET status'),
+    ['split', 'txA']
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('UPDATE transactions SET status'),
+    ['split', 'txB']
+  );
+});
+
+test('revertCombinedSplit deletes rows and reverts statuses inside one transaction', async () => {
+  await initDb();
+  await revertCombinedSplit(['txA', 'txB']);
+  expect(mockDb.withTransactionAsync).toHaveBeenCalledTimes(1);
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('DELETE FROM split_decisions'),
+    ['txA']
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('UPDATE transactions SET status'),
+    ['new', 'txA']
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('UPDATE transactions SET status'),
+    ['new', 'txB']
+  );
 });
