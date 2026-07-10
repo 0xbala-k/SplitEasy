@@ -23,6 +23,20 @@ function decision(txId: string, over: Partial<SplitDecision> = {}): SplitDecisio
   };
 }
 
+// Seed a row through a second raw IDB connection: fake-indexeddb shares data
+// across connections, and version 1 needs no upgrade handler here.
+async function seedRaw(store: string, value: object) {
+  const d = await new Promise<IDBDatabase>((res, rej) => {
+    const open = indexedDB.open('spliteasy', 1);
+    open.onsuccess = () => res(open.result);
+    open.onerror = () => rej(open.error);
+  });
+  const tx = d.transaction(store, 'readwrite');
+  tx.objectStore(store).put(value);
+  await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onabort = () => rej(tx.error); });
+  d.close();
+}
+
 describe('db.web (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
@@ -103,6 +117,18 @@ describe('db.web (IndexedDB)', () => {
   it('prunes transactions older than 6 months', async () => {
     await upsertTransactions([plaidTx('t1')]);
     await pruneOldTransactions();
+    expect(await getNewTransactions()).toHaveLength(1);
+  });
+
+  it('prune deletes stale transactions and cascades their decisions', async () => {
+    const old = new Date(); old.setMonth(old.getMonth() - 7);
+    await seedRaw('transactions', { id: 'told', merchant_name: 'Old', amount: 1, currency: 'USD',
+      date: '2025-12-01', status: 'split', pending: false, created_at: old.toISOString() });
+    await seedRaw('split_decisions', decision('told'));
+    await upsertTransactions([plaidTx('t1')]);
+    await pruneOldTransactions();
+    expect(await getSplitDecision('told')).toBeNull();
+    expect((await getHistoryTransactions()).find((h) => h.id === 'told')).toBeUndefined();
     expect(await getNewTransactions()).toHaveLength(1);
   });
 });

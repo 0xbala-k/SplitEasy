@@ -23,7 +23,10 @@ function req<T>(r: IDBRequest<T>): Promise<T> {
 function done(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    // No tx.onerror handler: the bubbled 'error' event fires on the
+    // transaction BEFORE tx.error is set, so rejecting there yields null.
+    // An unhandled request error always aborts the transaction, and by
+    // 'abort' time tx.error holds the real DOMException.
     tx.onabort = () => reject(tx.error ?? new Error('IDB transaction aborted'));
   });
 }
@@ -84,6 +87,7 @@ export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void>
   const tx = db().transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const now = new Date().toISOString();
+  // Invariant: only await IDB requests belonging to this txn inside the loop, so the txn stays active.
   for (const p of txs) {
     const existing = await req(store.get(p.transaction_id) as IDBRequest<Transaction | undefined>);
     const name = p.merchant_name ?? p.name;
@@ -135,7 +139,9 @@ export async function getSplitDecision(transactionId: string): Promise<SplitDeci
 
 export async function insertSplitDecision(decision: SplitDecision): Promise<void> {
   const tx = db().transaction(DECISION_STORE, 'readwrite');
-  tx.objectStore(DECISION_STORE).put(decision);
+  // add() (not put) rejects on duplicate transaction_id, matching SQLite's
+  // plain INSERT which throws on the UNIQUE(transaction_id) constraint.
+  tx.objectStore(DECISION_STORE).add(decision);
   await done(tx);
 }
 
