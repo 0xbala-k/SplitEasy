@@ -39,6 +39,7 @@ test('getLinkToken returns link_token', async () => {
     expect.objectContaining({
       method: 'POST',
       headers: expect.objectContaining({ Authorization: 'Bearer test-api-key' }),
+      body: JSON.stringify({ platform: 'mobile' }),
     })
   );
 });

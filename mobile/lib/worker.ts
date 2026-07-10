@@ -1,5 +1,6 @@
 // mobile/lib/worker.ts
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 import { PlaidTransactionsResponse, SplitwiseAuthResponse } from '@/lib/types';
 
 function getConfig() {
@@ -39,7 +40,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
 }
 
 export async function getLinkToken(): Promise<{ link_token: string }> {
-  return post('/plaid/link-token', {});
+  return post('/plaid/link-token', { platform: Platform.OS === 'web' ? 'web' : 'mobile' });
 }
 
 export async function exchangePublicToken(
