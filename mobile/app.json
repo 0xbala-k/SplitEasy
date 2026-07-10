@@ -10,7 +10,7 @@
         "projectId": "8b2b8bc5-b15d-492a-ba24-d7c554959c46"
       }
     },
-    "platforms": ["ios", "android"],
+    "platforms": ["ios", "android", "web"],
     "icon": "./assets/icon.png",
     "splash": {
       "backgroundColor": "#5C7AEA",
@@ -27,6 +27,11 @@
         "backgroundColor": "#5C7AEA",
         "foregroundImage": "./assets/adaptive-icon.png"
       }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/icon.png"
     },
     "plugins": [
       "expo-router",
