@@ -1,7 +1,8 @@
-import { Alert, Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { showDialog } from '@/lib/dialog';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore, PlaidAccount } from '@/stores/plaidStore';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
@@ -12,7 +13,7 @@ export default function SettingsScreen() {
   const router = useRouter();
 
   function confirmSignOut() {
-    Alert.alert(
+    showDialog(
       'Sign Out',
       'This will remove all local data from this device. Your Splitwise data is safe.',
       [
@@ -31,7 +32,7 @@ export default function SettingsScreen() {
 
   function confirmDisconnect(account: PlaidAccount) {
     const isLast = accounts.length === 1;
-    Alert.alert(
+    showDialog(
       `Disconnect ${account.institution_name}`,
       isLast
         ? 'This will remove your bank connection and all local transactions.'

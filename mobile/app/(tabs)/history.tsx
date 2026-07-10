@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, FlatList, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
+import { showDialog } from '@/lib/dialog';
 import { getHistoryTransactions, getSplitDecision } from '@/lib/db';
 import { TransactionWithSplit, SplitDecision } from '@/lib/types';
 import { useTransactionStore } from '@/stores/transactionStore';
@@ -79,7 +80,7 @@ export default function HistoryScreen() {
     if (!selected) return;
     const tx = selected;
     actionRef.current?.dismiss();
-    Alert.alert(
+    showDialog(
       'Delete split?',
       `This removes the Splitwise expense for ${tx.merchant_name} and moves it back to your transactions.`,
       [

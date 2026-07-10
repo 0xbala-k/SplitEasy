@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import {
   create,
@@ -12,6 +12,7 @@ import {
 } from 'react-native-plaid-link-sdk';
 import { Ionicons } from '@expo/vector-icons';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { showDialog } from '@/lib/dialog';
 import { getLinkToken, WorkerError } from '@/lib/worker';
 import { isPlaidLinkNativeAvailable } from '@/lib/plaidLinkAvailable';
 import { useRouter } from 'expo-router';
@@ -43,7 +44,7 @@ export default function BankConnectScreen() {
   async function startPlaid() {
     if (!isPlaidLinkNativeAvailable()) {
       const inExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
-      Alert.alert(
+      showDialog(
         'Plaid needs a native build',
         inExpoGo
           ? 'Expo Go does not ship the Plaid native module. Run: npx expo run:ios'
@@ -74,7 +75,7 @@ export default function BankConnectScreen() {
         e instanceof WorkerError ? e.code
         : e instanceof Error ? e.message
         : 'Could not start bank linking.';
-      Alert.alert('Plaid unavailable', message);
+      showDialog('Plaid unavailable', message);
     } finally {
       setLoading(false);
     }
