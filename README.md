@@ -5,7 +5,7 @@ Automatically split shared expenses with friends. SplitEasy connects to your ban
 ## Architecture
 
 ```
-mobile/          Expo (React Native) iOS app
+mobile/          Expo app — PWA (web) + optional iOS native build
 workers/         Cloudflare Worker — API proxy for Plaid & Splitwise
 supabase/        Postgres DB + RLS policies (local dev via Supabase CLI)
 ```
@@ -20,6 +20,7 @@ The mobile app never holds Plaid or Splitwise secrets. All third-party API calls
 | POST | `/plaid/exchange` | Exchange a Plaid public token for an access token |
 | POST | `/plaid/transactions` | Fetch recent transactions for a linked account |
 | POST | `/splitwise/exchange` | Exchange a Splitwise OAuth code for an access token |
+| GET/POST | `/splitwise/api/*` | CORS proxy to the Splitwise API for the web app (user token via `X-Splitwise-Token`) |
 
 All routes require `Authorization: Bearer <WORKER_API_KEY>`.
 
@@ -103,6 +104,19 @@ Then open `mobile/ios/SplitEasy.xcworkspace` in Xcode and press **⌘R** to buil
 
 > **Why a native build?** Plaid's iOS SDK (`LinkKit`) is a native framework — it cannot run in Expo Go.
 
+#### Web (PWA)
+
+```bash
+cd mobile
+npm run web          # dev server in the browser
+npm run build:web    # production build → mobile/dist/
+```
+
+The web app talks to the same local Worker. Two extra setup notes:
+
+- **Splitwise redirect URI:** register `http://localhost:8081/oauth/callback` (dev) and `https://<your-domain>/oauth/callback` (production) as callback URLs in your [Splitwise OAuth app](https://secure.splitwise.com/oauth_clients). The native custom scheme `spliteasy://oauth/callback` stays registered for iOS builds.
+- **Plaid on web** uses Plaid's hosted Link JS — no native build needed.
+
 ---
 
 ## Deployment
@@ -122,11 +136,35 @@ npx wrangler secret put SPLITWISE_CLIENT_ID
 npx wrangler secret put SPLITWISE_CLIENT_SECRET
 ```
 
-### Mobile app (EAS Build)
+### Web app (PWA — primary distribution)
+
+```bash
+cd mobile
+WORKER_BASE_URL=https://<your-worker>.workers.dev \
+WORKER_API_KEY=<production key> \
+SPLITWISE_CLIENT_ID=<client id> \
+npx expo export --platform web
+```
+
+Deploy `mobile/dist/` to any static host. Cloudflare Pages (free, same account as the Worker) works well:
+
+```bash
+npx wrangler pages deploy mobile/dist --project-name spliteasy
+```
+
+The host must serve `index.html` for unknown paths (SPA fallback) so the `/oauth/callback` route works — Cloudflare Pages does this automatically for single-page apps.
+
+Set `ALLOWED_ORIGIN` on the Worker to the deployed origin (optional hardening; defaults to `*`):
+
+```bash
+cd workers && npx wrangler secret put ALLOWED_ORIGIN
+```
+
+Users install the PWA from the browser: **Share → Add to Home Screen** on iOS Safari, or the install prompt on Chrome/Edge/Android.
+
+### iOS native build (optional, requires Apple Developer account)
 
 ```bash
 cd mobile
 npx eas build --platform ios --profile production
 ```
-
-Update `mobile/.env.local` (or EAS environment variables) to point `WORKER_BASE_URL` at the deployed Worker URL before submitting.
