@@ -1,8 +1,6 @@
 // mobile/lib/splitwise.ts
 import { SplitwiseFriend } from '@/lib/types';
-import { getSecure, KEYS } from '@/lib/secure';
-
-const BASE = 'https://secure.splitwise.com/api/v3.0';
+import { splitwiseFetch } from '@/lib/splitwiseTransport';
 
 export class SplitwiseAuthError extends Error {
   constructor() {
@@ -11,25 +9,17 @@ export class SplitwiseAuthError extends Error {
   }
 }
 
-async function authHeader(): Promise<{ Authorization: string }> {
-  const token = await getSecure(KEYS.SPLITWISE_ACCESS_TOKEN);
-  return { Authorization: `Bearer ${token}` };
-}
-
 async function swGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: await authHeader() });
+  const res = await splitwiseFetch(path);
   if (res.status === 401) throw new SplitwiseAuthError();
   if (!res.ok) throw new Error('SPLITWISE_ERROR');
   return res.json() as Promise<T>;
 }
 
 async function swPost<T>(path: string, body: Record<string, string>): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await splitwiseFetch(path, {
     method: 'POST',
-    headers: {
-      ...(await authHeader()),
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+    contentType: 'application/x-www-form-urlencoded',
     body: new URLSearchParams(body).toString(),
   });
   if (res.status === 401) throw new SplitwiseAuthError();
