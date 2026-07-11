@@ -18,6 +18,7 @@ declare global {
 }
 
 let scriptPromise: Promise<void> | null = null;
+let currentHandler: { open(): void; exit(): void; destroy(): void } | null = null;
 
 function loadScript(): Promise<void> {
   if (window.Plaid) return Promise.resolve();
@@ -43,14 +44,18 @@ export function isPlaidLinkAvailable(): boolean {
 
 export async function openPlaidLink(linkToken: string, handlers: PlaidLinkHandlers): Promise<void> {
   await loadScript();
-  const handler = window.Plaid!.create({
+  currentHandler?.destroy();
+  currentHandler = window.Plaid!.create({
     token: linkToken,
     onSuccess: (publicToken, metadata) => {
       handlers.onSuccess({ publicToken, institutionName: metadata.institution?.name ?? 'Your bank' });
     },
     onExit: () => handlers.onExit(),
   });
-  handler.open();
+  currentHandler.open();
 }
 
-export async function disposePlaidLink(): Promise<void> {}
+export async function disposePlaidLink(): Promise<void> {
+  currentHandler?.destroy();
+  currentHandler = null;
+}

@@ -50,6 +50,8 @@ export default function BankConnectScreen() {
       console.error('Plaid link failed', e);
       const message =
         e instanceof WorkerError ? e.code
+        : e instanceof Error && e.message === 'PLAID_SCRIPT_LOAD_FAILED'
+          ? "Couldn't load the bank-linking module. Check your connection and try again."
         : e instanceof Error ? e.message
         : 'Could not start bank linking.';
       showDialog('Plaid unavailable', message);
