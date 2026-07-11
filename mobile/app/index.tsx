@@ -1,7 +1,7 @@
 import { SplashScreen, useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
 
@@ -14,7 +14,7 @@ export default function Index() {
   const ready = authHydrated && plaidHydrated;
 
   useLayoutEffect(() => {
-    void SplashScreen.hideAsync();
+    if (Platform.OS !== 'web') void SplashScreen.hideAsync();
   }, []);
 
   useEffect(() => {
