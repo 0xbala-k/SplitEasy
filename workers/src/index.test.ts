@@ -393,6 +393,32 @@ describe('Splitwise proxy', () => {
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/x-www-form-urlencoded');
   });
 
+  it('forwards query strings to the upstream URL', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ expenses: [] }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/api/get_expenses?group_id=5&limit=20', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key', 'X-Splitwise-Token': 'user-tok' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe('https://secure.splitwise.com/api/v3.0/get_expenses?group_id=5&limit=20');
+  });
+
+  it('passes through non-2xx upstream status', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid API request' }), { status: 401 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/api/get_friends', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key', 'X-Splitwise-Token': 'expired-tok' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(401);
+  });
+
   it('rejects proxy calls missing the Splitwise token', async () => {
     const req = new Request('https://worker.example.com/splitwise/api/get_friends', {
       method: 'GET',

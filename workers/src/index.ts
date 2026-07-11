@@ -202,14 +202,15 @@ export default {
     }
     try {
       if (!authenticate(req, env)) return withCors(json({ error: 'Unauthorized' }, 401), env);
-      const path = new URL(req.url).pathname;
+      const url = new URL(req.url);
+      const path = url.pathname;
       let res: Response;
       if (req.method === 'POST' && path === '/plaid/link-token') res = await handleLinkToken(req, env);
       else if (req.method === 'POST' && path === '/plaid/exchange') res = await handleExchange(req, env);
       else if (req.method === 'POST' && path === '/plaid/transactions') res = await handleTransactions(req, env);
       else if (req.method === 'POST' && path === '/splitwise/exchange') res = await handleSplitwiseExchange(req, env);
       else if ((req.method === 'GET' || req.method === 'POST') && path.startsWith('/splitwise/api/')) {
-        res = await handleSplitwiseProxy(req, path.slice('/splitwise/api'.length));
+        res = await handleSplitwiseProxy(req, path.slice('/splitwise/api'.length) + url.search);
       } else res = json({ error: 'Not Found' }, 404);
       return withCors(res, env);
     } catch (err) {
