@@ -1,15 +1,13 @@
 import { useRouter } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
-import * as Linking from 'expo-linking';
 import { Pressable, StatusBar, StyleSheet, Text, View, ActivityIndicator } from 'react-native';
 import { useState } from 'react';
 import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { signInWithSplitwise } from '@/lib/splitwiseAuth';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 
-const REDIRECT_URI = 'spliteasy://oauth/callback';
 const CLIENT_ID: string = Constants.expoConfig?.extra?.splitwiseClientId ?? '';
 
 export default function WelcomeScreen() {
@@ -20,19 +18,10 @@ export default function WelcomeScreen() {
   async function handleSignIn() {
     setLoading(true);
     try {
-      const authUrl =
-        `https://secure.splitwise.com/oauth/authorize` +
-        `?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
-
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, REDIRECT_URI);
-      if (result.type !== 'success') return;
-
-      const url = Linking.parse(result.url);
-      const code = url.queryParams?.code as string | undefined;
-      if (!code) return;
-
-      await signIn(code, REDIRECT_URI);
-
+      const result = await signInWithSplitwise(CLIENT_ID);
+      // null on web (page is navigating away) and on native cancel.
+      if (!result) return;
+      await signIn(result.code, result.redirectUri);
       const isLinked = usePlaidStore.getState().isLinked;
       router.replace(isLinked ? '/(tabs)/' : '/(auth)/bank-connect');
     } catch (err) {
