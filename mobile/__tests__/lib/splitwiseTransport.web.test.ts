@@ -40,3 +40,29 @@ describe('splitwiseTransport (web)', () => {
     expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
   });
 });
+
+describe('splitwiseTransport (web) — missing config', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    (globalThis as Record<string, unknown>).fetch = jest
+      .fn()
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+  });
+
+  it('throws instead of fetching when worker config is absent', async () => {
+    jest.doMock('expo-constants', () => ({
+      __esModule: true,
+      default: { expoConfig: { extra: {} } },
+    }));
+    jest.doMock('@/lib/secure', () => ({
+      getSecure: jest.fn().mockResolvedValue('sw-token'),
+      KEYS: { SPLITWISE_ACCESS_TOKEN: 'splitwise_access_token' },
+    }));
+    let guarded: typeof splitwiseFetch;
+    jest.isolateModules(() => {
+      guarded = require('@/lib/splitwiseTransport.web').splitwiseFetch;
+    });
+    await expect(guarded!('/get_friends')).rejects.toThrow(/Missing WORKER_BASE_URL/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
