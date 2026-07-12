@@ -136,25 +136,32 @@ npx wrangler secret put SPLITWISE_CLIENT_ID
 npx wrangler secret put SPLITWISE_CLIENT_SECRET
 ```
 
-### Web app (PWA — primary distribution)
+### Web app (PWA — primary distribution, via Vercel)
+
+`mobile/vercel.json` configures the build (`npm run build:web` → `dist/`), the SPA fallback rewrite (so the `/oauth/callback` route works on hard loads), and cache headers (`sw.js` never cached; hashed bundles immutable).
+
+One-time setup:
 
 ```bash
 cd mobile
-WORKER_BASE_URL=https://<your-worker>.workers.dev \
-WORKER_API_KEY=<production key> \
-SPLITWISE_CLIENT_ID=<client id> \
-npx expo export --platform web
+npx vercel login
+npx vercel link                     # create/link the Vercel project (root = mobile)
+# Build-time env vars, needed because app.config.js embeds them into the bundle:
+npx vercel env add WORKER_BASE_URL production      # https://<your-worker>.workers.dev
+npx vercel env add WORKER_API_KEY production
+npx vercel env add SPLITWISE_CLIENT_ID production
 ```
 
-Deploy `mobile/dist/` to any static host. Cloudflare Pages (free, same account as the Worker) works well:
+Deploy:
 
 ```bash
-npx wrangler pages deploy mobile/dist --project-name spliteasy
+cd mobile
+npx vercel deploy --prod
 ```
 
-The host must serve `index.html` for unknown paths (SPA fallback) so the `/oauth/callback` route works — Cloudflare Pages does this automatically for single-page apps.
+(Any static host works — the build is plain static files: `npx expo export --platform web` with the three env vars set, then serve `mobile/dist/` with an SPA fallback to `index.html`.)
 
-Set `ALLOWED_ORIGIN` on the Worker to the deployed origin (optional hardening; defaults to `*`):
+Set `ALLOWED_ORIGIN` on the Worker to the deployed origin, e.g. `https://<project>.vercel.app` (optional hardening; defaults to `*`):
 
 ```bash
 cd workers && npx wrangler secret put ALLOWED_ORIGIN
