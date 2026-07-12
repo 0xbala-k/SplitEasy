@@ -21,6 +21,7 @@ export interface SplitDecision {
   friend_names: string[];        // same order as friend_ids; for offline display
   amount_each: number;
   created_at: string;
+  description?: string;          // custom title; falls back to merchant_name for display
 }
 
 export interface TransactionWithSplit extends Transaction {
@@ -57,4 +58,17 @@ export interface SplitwiseAuthResponse {
   user_id: string;
   display_name: string;
   avatar_url: string | null;
+}
+
+// A row in the History list. A combined split (multiple transactions sharing one
+// Splitwise expense) collapses into a single item with `combined` populated.
+export interface HistoryItem {
+  id: string;                 // transaction id for single rows; expense id for combined rows
+  merchant_name: string;      // display title (description ?? merchant_name)
+  amount: number;             // total (summed across members for combined rows)
+  currency: string;           // from the (first) member transaction
+  date: string;
+  status: TransactionStatus;
+  split?: { friend_names: string[]; amount_each: number };
+  combined?: { expense_id: string; transaction_ids: string[]; count: number };
 }

@@ -3,7 +3,7 @@
 // expo-sqlite's wasm build was rejected because it requires COOP/COEP
 // cross-origin isolation, which breaks Plaid Link popups (see design spec).
 import {
-  Transaction, PlaidTransaction, SplitDecision, TransactionStatus, TransactionWithSplit,
+  Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem,
 } from '@/lib/types';
 
 const DB_NAME = 'spliteasy';
@@ -64,23 +64,85 @@ export async function getNewTransactions(): Promise<Transaction[]> {
   return all.filter((t) => t.status === 'new').sort(byDateDesc);
 }
 
-export async function getHistoryTransactions(): Promise<TransactionWithSplit[]> {
+export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
+  if (ids.length === 0) return [];
+  const store = db().transaction(TX_STORE).objectStore(TX_STORE);
+  const rows = await Promise.all(
+    ids.map((id) => req(store.get(id) as IDBRequest<Transaction | undefined>)),
+  );
+  return rows.filter((r): r is Transaction => r !== undefined);
+}
+
+export async function getHistoryTransactions(): Promise<HistoryItem[]> {
   const tx = db().transaction([TX_STORE, DECISION_STORE]);
   const [all, decisions] = await Promise.all([
     req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
     req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
   ]);
   const byTxId = new Map(decisions.map((d) => [d.transaction_id, d]));
-  return all
+  const rows = all
     .filter((t) => t.status === 'split' || t.status === 'skipped')
-    .sort(byDateDesc)
-    .map((t) => {
-      const d = byTxId.get(t.id);
-      return {
-        ...t,
-        split: d ? { friend_names: d.friend_names, amount_each: d.amount_each } : undefined,
-      };
-    });
+    .sort(byDateDesc);
+
+  const items: HistoryItem[] = [];
+  // Track split groups by expense id so multiple member transactions collapse
+  // into one item (mirrors lib/db.ts). _txIds is stripped before returning.
+  const groups = new Map<string, HistoryItem & { _txIds: string[] }>();
+
+  for (const t of rows) {
+    const d = byTxId.get(t.id);
+    const title = d?.description ?? t.merchant_name;
+    if (t.status === 'split' && d?.splitwise_expense_id) {
+      const key = d.splitwise_expense_id;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.amount += t.amount;
+        existing._txIds.push(t.id);
+      } else {
+        const item: HistoryItem & { _txIds: string[] } = {
+          id: t.id,
+          merchant_name: title,
+          amount: t.amount,
+          currency: t.currency,
+          date: t.date,
+          status: 'split',
+          split: {
+            friend_names: d.friend_names ?? [],
+            amount_each: d.amount_each ?? 0,
+          },
+          _txIds: [t.id],
+        };
+        groups.set(key, item);
+        items.push(item);
+      }
+    } else {
+      items.push({
+        id: t.id,
+        merchant_name: title,
+        amount: t.amount,
+        currency: t.currency,
+        date: t.date,
+        status: t.status,
+        // A split row missing its expense id is malformed, but still surface its
+        // friends so it doesn't masquerade as a skipped row in the UI.
+        ...(t.status === 'split' && d?.friend_names
+          ? { split: { friend_names: d.friend_names, amount_each: d.amount_each ?? 0 } }
+          : {}),
+      });
+    }
+  }
+
+  // Finalize: combined groups (>1 member) expose expense/member metadata and use
+  // the expense id as the row key; single-member groups stay keyed by tx id.
+  for (const [expenseId, g] of groups.entries()) {
+    if (g._txIds.length > 1) {
+      g.combined = { expense_id: expenseId, transaction_ids: g._txIds, count: g._txIds.length };
+      g.id = expenseId;
+    }
+    delete (g as { _txIds?: string[] })._txIds;
+  }
+
+  return items;
 }
 
 export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void> {

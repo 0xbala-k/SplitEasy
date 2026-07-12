@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import {
-  initDb, getNewTransactions, getHistoryTransactions, upsertTransactions,
+  initDb, getNewTransactions, getTransactionsByIds, getHistoryTransactions, upsertTransactions,
   deleteTransactionsByPlaidIds, updateTransactionStatus, getSplitDecision,
   insertSplitDecision, upsertSplitDecision, deleteSplitDecision,
   pruneOldTransactions, deleteAllTransactions,
@@ -130,5 +130,41 @@ describe('db.web (IndexedDB)', () => {
     expect(await getSplitDecision('told')).toBeNull();
     expect((await getHistoryTransactions()).find((h) => h.id === 'told')).toBeUndefined();
     expect(await getNewTransactions()).toHaveLength(1);
+  });
+
+  it('getTransactionsByIds returns matching rows and skips missing ids', async () => {
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
+    const rows = await getTransactionsByIds(['t1', 'missing', 't2']);
+    expect(rows.map((r) => r.id).sort()).toEqual(['t1', 't2']);
+    expect(await getTransactionsByIds([])).toEqual([]);
+  });
+
+  it('groups combined splits by expense id with summed amount and member metadata', async () => {
+    await upsertTransactions([
+      plaidTx('t1', { amount: 10, date: '2026-07-02' }),
+      plaidTx('t2', { amount: 15, date: '2026-07-01' }),
+    ]);
+    await updateTransactionStatus('t1', 'split');
+    await updateTransactionStatus('t2', 'split');
+    await insertSplitDecision(decision('t1', { splitwise_expense_id: 'exp_shared' }));
+    await insertSplitDecision(decision('t2', { splitwise_expense_id: 'exp_shared' }));
+    const history = await getHistoryTransactions();
+    expect(history).toHaveLength(1);
+    const [item] = history;
+    expect(item.id).toBe('exp_shared');
+    expect(item.amount).toBe(25);
+    expect(item.combined).toEqual({
+      expense_id: 'exp_shared',
+      transaction_ids: ['t1', 't2'],
+      count: 2,
+    });
+  });
+
+  it('uses the decision description as the display title when present', async () => {
+    await upsertTransactions([plaidTx('t1')]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1', { description: 'Team dinner' }));
+    const [item] = await getHistoryTransactions();
+    expect(item.merchant_name).toBe('Team dinner');
   });
 });
