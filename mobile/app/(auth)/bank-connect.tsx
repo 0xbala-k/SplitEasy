@@ -1,19 +1,11 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import {
-  create,
-  open,
-  destroy,
-  LinkSuccess,
-  LinkExit,
-  LinkLogLevel,
-  LinkIOSPresentationStyle,
-} from 'react-native-plaid-link-sdk';
 import { Ionicons } from '@expo/vector-icons';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { showDialog } from '@/lib/dialog';
 import { getLinkToken, WorkerError } from '@/lib/worker';
-import { isPlaidLinkNativeAvailable } from '@/lib/plaidLinkAvailable';
+import { isPlaidLinkAvailable, openPlaidLink, disposePlaidLink } from '@/lib/plaidLink';
 import { useRouter } from 'expo-router';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 
@@ -25,25 +17,20 @@ export default function BankConnectScreen() {
 
   useEffect(() => {
     return () => {
-      void destroy().catch(() => {});
+      void disposePlaidLink();
     };
   }, []);
 
-  async function onLinkSuccess(success: LinkSuccess) {
-    const institutionName = success.metadata.institution?.name ?? 'Your bank';
-    await linkBank(success.publicToken, institutionName);
-    await destroy().catch(() => {});
+  async function onLinkSuccess(publicToken: string, institutionName: string) {
+    await linkBank(publicToken, institutionName);
+    await disposePlaidLink();
     router.replace('/(tabs)/');
   }
 
-  function onLinkExit(_exit: LinkExit) {
-    void destroy().catch(() => {});
-  }
-
   async function startPlaid() {
-    if (!isPlaidLinkNativeAvailable()) {
+    if (!isPlaidLinkAvailable()) {
       const inExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
-      Alert.alert(
+      showDialog(
         'Plaid needs a native build',
         inExpoGo
           ? 'Expo Go does not ship the Plaid native module. Run: npx expo run:ios'
@@ -55,26 +42,19 @@ export default function BankConnectScreen() {
     setLoading(true);
     try {
       const { link_token } = await getLinkToken();
-      await destroy().catch(() => {});
-      create({
-        token: link_token,
-        logLevel: LinkLogLevel.ERROR,
-        noLoadingState: false,
-      });
-      requestAnimationFrame(() => {
-        open({
-          iOSPresentationStyle: LinkIOSPresentationStyle.MODAL,
-          onSuccess: (success) => { void onLinkSuccess(success); },
-          onExit: (exit) => { onLinkExit(exit); },
-        });
+      await openPlaidLink(link_token, {
+        onSuccess: (r) => { void onLinkSuccess(r.publicToken, r.institutionName); },
+        onExit: () => { void disposePlaidLink(); },
       });
     } catch (e) {
       console.error('Plaid link failed', e);
       const message =
         e instanceof WorkerError ? e.code
+        : e instanceof Error && e.message === 'PLAID_SCRIPT_LOAD_FAILED'
+          ? "Couldn't load the bank-linking module. Check your connection and try again."
         : e instanceof Error ? e.message
         : 'Could not start bank linking.';
-      Alert.alert('Plaid unavailable', message);
+      showDialog('Plaid unavailable', message);
     } finally {
       setLoading(false);
     }

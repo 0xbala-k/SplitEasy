@@ -1,7 +1,7 @@
 // mobile/stores/plaidStore.ts
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as SecureStore from 'expo-secure-store';
+import { getSecure, setSecure, deleteSecure } from '@/lib/secure';
 import { exchangePublicToken } from '@/lib/worker';
 import { deleteAllTransactions } from '@/lib/db';
 
@@ -45,12 +45,12 @@ export const usePlaidStore = create<PlaidState>((set, get) => ({
     }
 
     // Migrate from legacy single-account format
-    const oldToken = await SecureStore.getItemAsync('plaid_access_token');
+    const oldToken = await getSecure('plaid_access_token');
     const oldName = await AsyncStorage.getItem('plaid_institution_name');
     if (oldToken) {
       const id = `acct_${Date.now()}`;
-      await SecureStore.setItemAsync(tokenKey(id), oldToken);
-      await SecureStore.deleteItemAsync('plaid_access_token');
+      await setSecure(tokenKey(id), oldToken);
+      await deleteSecure('plaid_access_token');
       const oldCursor = await AsyncStorage.getItem('last_plaid_cursor');
       if (oldCursor) {
         await AsyncStorage.setItem(cursorKey(id), oldCursor);
@@ -69,7 +69,7 @@ export const usePlaidStore = create<PlaidState>((set, get) => ({
   linkBank: async (public_token, institution_name) => {
     const res = await exchangePublicToken(public_token);
     const id = `acct_${Date.now()}`;
-    await SecureStore.setItemAsync(tokenKey(id), res.access_token);
+    await setSecure(tokenKey(id), res.access_token);
     const accounts = [...get().accounts, { id, institution_name }];
     await AsyncStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
     set({ accounts, isLinked: true });
@@ -79,7 +79,7 @@ export const usePlaidStore = create<PlaidState>((set, get) => ({
     const { accounts } = get();
 
     if (id) {
-      await SecureStore.deleteItemAsync(tokenKey(id));
+      await deleteSecure(tokenKey(id));
       await AsyncStorage.removeItem(cursorKey(id));
       const remaining = accounts.filter((a) => a.id !== id);
       await AsyncStorage.setItem(ACCOUNTS_KEY, JSON.stringify(remaining));
@@ -90,7 +90,7 @@ export const usePlaidStore = create<PlaidState>((set, get) => ({
       set({ accounts: remaining, isLinked: remaining.length > 0, needs_reauth: remaining.length > 0 ? get().needs_reauth : false });
     } else {
       for (const acct of accounts) {
-        await SecureStore.deleteItemAsync(tokenKey(acct.id));
+        await deleteSecure(tokenKey(acct.id));
         await AsyncStorage.removeItem(cursorKey(acct.id));
       }
       await AsyncStorage.multiRemove([ACCOUNTS_KEY, 'plaid_needs_reauth']);
@@ -109,7 +109,7 @@ export const usePlaidStore = create<PlaidState>((set, get) => ({
     return Promise.all(
       accounts.map(async (acct) => ({
         id: acct.id,
-        access_token: (await SecureStore.getItemAsync(tokenKey(acct.id))) ?? '',
+        access_token: (await getSecure(tokenKey(acct.id))) ?? '',
         cursor: await AsyncStorage.getItem(cursorKey(acct.id)),
       }))
     );

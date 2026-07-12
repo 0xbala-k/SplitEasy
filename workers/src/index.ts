@@ -5,6 +5,7 @@ export interface Env {
   WORKER_API_KEY: string;
   SPLITWISE_CLIENT_ID: string;
   SPLITWISE_CLIENT_SECRET: string;
+  ALLOWED_ORIGIN?: string;
 }
 
 function plaidBase(env: Env): string {
@@ -22,12 +23,34 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+function corsHeaders(env: Env): Record<string, string> {
+  return {
+    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Splitwise-Token',
+    'Access-Control-Max-Age': '86400',
+  };
+}
+
+function withCors(res: Response, env: Env): Response {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(corsHeaders(env))) headers.set(k, v);
+  return new Response(res.body, { status: res.status, headers });
+}
+
 function authenticate(req: Request, env: Env): boolean {
   const auth = req.headers.get('Authorization') ?? '';
   return auth === `Bearer ${env.WORKER_API_KEY}`;
 }
 
-async function handleLinkToken(env: Env): Promise<Response> {
+async function handleLinkToken(req: Request, env: Env): Promise<Response> {
+  let platform = 'mobile';
+  try {
+    const body = await req.json() as { platform?: string };
+    if (body.platform === 'web') platform = 'web';
+  } catch {
+    // empty body → default to mobile
+  }
   const res = await fetch(`${plaidBase(env)}/link/token/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -39,8 +62,8 @@ async function handleLinkToken(env: Env): Promise<Response> {
       language: 'en',
       user: { client_user_id: 'spliteasy-user' }, // TODO(phase-2): accept user_id from request body for per-user Plaid identity
       products: ['transactions'],
-      // Required for Link on Android; include for mobile tokens (see Plaid link/token/create).
-      android_package_name: 'com.spliteasy.app',
+      // android_package_name is only valid for Android link tokens.
+      ...(platform === 'web' ? {} : { android_package_name: 'com.spliteasy.app' }),
     }),
   });
   const data = await res.json() as { link_token?: string; error_code?: string };
@@ -149,19 +172,50 @@ async function handleSplitwiseExchange(req: Request, env: Env): Promise<Response
   });
 }
 
+const SPLITWISE_API_BASE = 'https://secure.splitwise.com/api/v3.0';
+
+// Browser clients cannot call Splitwise directly (no CORS on their API), so the
+// web app tunnels through here. The user's Splitwise token arrives in
+// X-Splitwise-Token; Authorization still carries the worker API key.
+async function handleSplitwiseProxy(req: Request, apiPath: string): Promise<Response> {
+  const token = req.headers.get('X-Splitwise-Token');
+  if (!token) return json({ error: 'MISSING_SPLITWISE_TOKEN' }, 400);
+  const contentType = req.headers.get('Content-Type');
+  const upstream = await fetch(`${SPLITWISE_API_BASE}${apiPath}`, {
+    method: req.method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(contentType ? { 'Content-Type': contentType } : {}),
+    },
+    body: req.method === 'POST' ? await req.text() : undefined,
+  });
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders(env) });
+    }
     try {
-      if (!authenticate(req, env)) return json({ error: 'Unauthorized' }, 401);
-      const path = new URL(req.url).pathname;
-      if (req.method === 'POST' && path === '/plaid/link-token') return handleLinkToken(env);
-      if (req.method === 'POST' && path === '/plaid/exchange') return handleExchange(req, env);
-      if (req.method === 'POST' && path === '/plaid/transactions') return handleTransactions(req, env);
-      if (req.method === 'POST' && path === '/splitwise/exchange') return handleSplitwiseExchange(req, env);
-      return json({ error: 'Not Found' }, 404);
+      if (!authenticate(req, env)) return withCors(json({ error: 'Unauthorized' }, 401), env);
+      const url = new URL(req.url);
+      const path = url.pathname;
+      let res: Response;
+      if (req.method === 'POST' && path === '/plaid/link-token') res = await handleLinkToken(req, env);
+      else if (req.method === 'POST' && path === '/plaid/exchange') res = await handleExchange(req, env);
+      else if (req.method === 'POST' && path === '/plaid/transactions') res = await handleTransactions(req, env);
+      else if (req.method === 'POST' && path === '/splitwise/exchange') res = await handleSplitwiseExchange(req, env);
+      else if ((req.method === 'GET' || req.method === 'POST') && path.startsWith('/splitwise/api/')) {
+        res = await handleSplitwiseProxy(req, path.slice('/splitwise/api'.length) + url.search);
+      } else res = json({ error: 'Not Found' }, 404);
+      return withCors(res, env);
     } catch (err) {
       if (err instanceof SyntaxError) {
-        return json({ error: 'INVALID_REQUEST_BODY' }, 400);
+        return withCors(json({ error: 'INVALID_REQUEST_BODY' }, 400), env);
       }
       throw err;
     }

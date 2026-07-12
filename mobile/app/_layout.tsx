@@ -3,13 +3,15 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Slot, SplashScreen } from 'expo-router';
 import { useEffect } from 'react';
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { ToastProvider } from '@/components/ToastProvider';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { initDb } from '@/lib/db';
 
-SplashScreen.preventAutoHideAsync();
+if (Platform.OS !== 'web') {
+  SplashScreen.preventAutoHideAsync();
+}
 
 export default function RootLayout() {
   const { hydrate: hydrateAuth } = useAuthStore();
@@ -25,6 +27,19 @@ export default function RootLayout() {
       await Promise.all([hydrateAuth(), hydratePlaid()]);
     }
     void init();
+  }, []);
+
+  useEffect(() => {
+    if (
+      Platform.OS === 'web' &&
+      process.env.NODE_ENV === 'production' &&
+      typeof navigator !== 'undefined' &&
+      'serviceWorker' in navigator
+    ) {
+      navigator.serviceWorker.register('/sw.js').catch((e) => {
+        console.error('Service worker registration failed', e);
+      });
+    }
   }, []);
 
   return (

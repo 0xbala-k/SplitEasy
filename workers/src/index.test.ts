@@ -328,3 +328,135 @@ describe('POST /splitwise/exchange', () => {
     expect(body.error).toBe('SPLITWISE_PROFILE_ERROR');
   });
 });
+
+describe('CORS', () => {
+  it('answers preflight without auth', async () => {
+    const req = new Request('https://worker.example.com/plaid/link-token', { method: 'OPTIONS' });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Access-Control-Allow-Headers')).toContain('X-Splitwise-Token');
+  });
+
+  it('adds CORS headers to normal responses', async () => {
+    const req = new Request('https://worker.example.com/nope', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('honors ALLOWED_ORIGIN when set', async () => {
+    const req = new Request('https://worker.example.com/plaid/link-token', { method: 'OPTIONS' });
+    const res = await handler.fetch(req, makeEnv({ ALLOWED_ORIGIN: 'https://app.example' }), {} as ExecutionContext);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://app.example');
+  });
+});
+
+describe('Splitwise proxy', () => {
+  it('forwards GET requests with the user token', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ friends: [] }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/api/get_friends', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key', 'X-Splitwise-Token': 'user-tok' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://secure.splitwise.com/api/v3.0/get_friends');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer user-tok');
+    expect(init.method).toBe('GET');
+  });
+
+  it('forwards POST bodies and content type', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ expenses: [{ id: 1 }] }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/api/create_expense', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test_api_key',
+        'X-Splitwise-Token': 'user-tok',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'cost=1.00',
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://secure.splitwise.com/api/v3.0/create_expense');
+    expect(init.body).toBe('cost=1.00');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/x-www-form-urlencoded');
+  });
+
+  it('forwards query strings to the upstream URL', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ expenses: [] }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/api/get_expenses?group_id=5&limit=20', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key', 'X-Splitwise-Token': 'user-tok' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe('https://secure.splitwise.com/api/v3.0/get_expenses?group_id=5&limit=20');
+  });
+
+  it('passes through non-2xx upstream status', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid API request' }), { status: 401 })
+    );
+    const req = new Request('https://worker.example.com/splitwise/api/get_friends', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key', 'X-Splitwise-Token': 'expired-tok' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects proxy calls missing the Splitwise token', async () => {
+    const req = new Request('https://worker.example.com/splitwise/api/get_friends', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('link-token platform', () => {
+  it('omits android_package_name for web platform', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ link_token: 'link-web-abc' }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/link-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'web' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('android_package_name');
+  });
+
+  it('keeps android_package_name for mobile (no platform in body)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ link_token: 'link-mobile-abc' }), { status: 200 })
+    );
+    const req = new Request('https://worker.example.com/plaid/link-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key' },
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toHaveProperty('android_package_name', 'com.spliteasy.app');
+  });
+});
