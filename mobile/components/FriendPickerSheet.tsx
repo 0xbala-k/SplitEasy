@@ -287,6 +287,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       <BottomSheetModal
         ref={ref}
         snapPoints={['55%', '90%']}
+        enableDynamicSizing={false}
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
         backgroundStyle={styles.sheetBg}

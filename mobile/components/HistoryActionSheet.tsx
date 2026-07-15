@@ -23,6 +23,7 @@ export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
       <BottomSheetModal
         ref={ref}
         snapPoints={['38%']}
+        enableDynamicSizing={false}
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
         backgroundStyle={styles.sheetBg}
