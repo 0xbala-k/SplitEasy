@@ -5,6 +5,7 @@ import {
   deleteTransactionsByPlaidIds, updateTransactionStatus, getSplitDecision,
   insertSplitDecision, upsertSplitDecision, deleteSplitDecision,
   pruneOldTransactions, deleteAllTransactions,
+  persistCombinedSplit, revertCombinedSplit,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 
@@ -130,6 +131,37 @@ describe('db.web (IndexedDB)', () => {
     expect(await getSplitDecision('told')).toBeNull();
     expect((await getHistoryTransactions()).find((h) => h.id === 'told')).toBeUndefined();
     expect(await getNewTransactions()).toHaveLength(1);
+  });
+
+  it('persistCombinedSplit writes every decision and marks each transaction split', async () => {
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
+    await persistCombinedSplit([
+      decision('t1', { splitwise_expense_id: 'exp', description: 'Trip' }),
+      decision('t2', { splitwise_expense_id: 'exp', description: 'Trip' }),
+    ]);
+    expect(await getNewTransactions()).toHaveLength(0);
+    expect(await getSplitDecision('t1')).toMatchObject({ splitwise_expense_id: 'exp' });
+    expect(await getSplitDecision('t2')).toMatchObject({ splitwise_expense_id: 'exp' });
+  });
+
+  it('persistCombinedSplit rolls the whole group back when one row is a duplicate', async () => {
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
+    await insertSplitDecision(decision('t2'));
+    await expect(
+      persistCombinedSplit([decision('t1'), decision('t2')])
+    ).rejects.toBeTruthy();
+    // t1 must be untouched: no decision row, still 'new'.
+    expect(await getSplitDecision('t1')).toBeNull();
+    expect((await getNewTransactions()).map((t) => t.id)).toContain('t1');
+  });
+
+  it('revertCombinedSplit deletes decisions and returns transactions to new', async () => {
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
+    await persistCombinedSplit([decision('t1'), decision('t2')]);
+    await revertCombinedSplit(['t1', 't2']);
+    expect(await getSplitDecision('t1')).toBeNull();
+    expect(await getSplitDecision('t2')).toBeNull();
+    expect((await getNewTransactions()).map((t) => t.id).sort()).toEqual(['t1', 't2']);
   });
 
   it('getTransactionsByIds returns matching rows and skips missing ids', async () => {
