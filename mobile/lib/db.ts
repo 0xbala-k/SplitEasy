@@ -255,6 +255,29 @@ export async function deleteSplitDecision(transactionId: string): Promise<void> 
   );
 }
 
+// Atomically persist every member's decision row and flip its transaction to
+// 'split'. Wrapped in a single SQLite transaction so a mid-batch failure rolls
+// back the whole combined split locally (no half-written members).
+export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<void> {
+  await db().withTransactionAsync(async () => {
+    for (const d of decisions) {
+      await insertSplitDecision(d);
+      await updateTransactionStatus(d.transaction_id, 'split');
+    }
+  });
+}
+
+// Atomically delete every member's decision row and revert its transaction to
+// 'new'. Single transaction so a failure can't leave the group half-reverted.
+export async function revertCombinedSplit(transactionIds: string[]): Promise<void> {
+  await db().withTransactionAsync(async () => {
+    for (const id of transactionIds) {
+      await deleteSplitDecision(id);
+      await updateTransactionStatus(id, 'new');
+    }
+  });
+}
+
 export async function pruneOldTransactions(): Promise<void> {
   await db().runAsync(
     `DELETE FROM transactions WHERE created_at < datetime('now', '-6 months')`,

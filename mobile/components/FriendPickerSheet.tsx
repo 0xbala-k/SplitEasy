@@ -17,8 +17,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { getSplitDecision, insertSplitDecision, upsertSplitDecision, updateTransactionStatus } from '@/lib/db';
-import { createExpense, updateExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { getSplitDecision, upsertSplitDecision } from '@/lib/db';
+import { createExpense, updateExpense, deleteExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
 import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
@@ -49,6 +49,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
+    const commitCombinedSplit = useTransactionStore((s) => s.commitCombinedSplit);
 
     const members = useMemo(
       () =>
@@ -183,17 +184,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       setCustomAmounts((prev) => ({ ...prev, [id]: value }));
     }
 
-    async function insertWithRetry(decision: SplitDecision) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          await insertSplitDecision(decision);
-          return;
-        } catch {
-          if (attempt === 3) throw new Error('DB_WRITE_FAILED');
-        }
-      }
-    }
-
     async function handleAddToSplitwise() {
       if (ctaDisabled) return;
       setSubmitting(true);
@@ -233,7 +223,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         if (!isCombine) {
           const existing = await getSplitDecision(members[0].id);
           if (existing) {
-            await updateTransactionStatus(members[0].id, 'split');
             await markSplit(members[0].id);
             onSuccess(existing.amount_each);
             return;
@@ -249,24 +238,30 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           ...shares,
         });
 
-        // Persist every member row before flipping any status, so a mid-loop DB
-        // failure never leaves the list half-marked (some members removed, some not).
         const ts = Date.now();
         const createdAt = new Date().toISOString();
-        for (const t of members) {
-          await insertWithRetry({
-            id: `${t.id}-${ts}`,
-            transaction_id: t.id,
-            splitwise_expense_id: expense_id,
-            friend_ids: friendIds,
-            friend_names: friendNames,
-            amount_each,
-            created_at: createdAt,
-            description: desc,
-          });
-        }
-        for (const t of members) {
-          await markSplit(t.id);
+        const decisions: SplitDecision[] = members.map((t) => ({
+          id: `${t.id}-${ts}`,
+          transaction_id: t.id,
+          splitwise_expense_id: expense_id,
+          friend_ids: friendIds,
+          friend_names: friendNames,
+          amount_each,
+          created_at: createdAt,
+          description: desc,
+        }));
+        try {
+          // Persist all member rows + statuses atomically.
+          await commitCombinedSplit(decisions);
+        } catch (dbErr) {
+          // Local commit failed after the remote expense was created — undo the
+          // remote side so no orphan is left and a retry won't create a duplicate.
+          try {
+            await deleteExpense(expense_id);
+          } catch {
+            // Best-effort rollback; surface the original failure below.
+          }
+          throw dbErr;
         }
         onSuccess(amount_each);
       } catch (err) {
