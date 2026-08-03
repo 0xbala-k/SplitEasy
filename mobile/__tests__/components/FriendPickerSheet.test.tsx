@@ -244,3 +244,26 @@ test('single create passes the edited title as the description', async () => {
     expect.objectContaining({ transaction_id: 'tx1', description: 'Groceries' }),
   ]);
 });
+
+// Regression: the sheet renders null until it has a transaction, so every hook
+// must run before that bail-out. When it didn't, the render that first supplied
+// a transaction — i.e. tapping Split — added a hook the previous render lacked
+// and React tore the whole tree down (blank white screen on the PWA).
+test('going from no transaction to a transaction does not change the hook count', () => {
+  const { rerender } = render(
+    <FriendPickerSheet transaction={null} openToken={0} onSuccess={jest.fn()} />
+  );
+  expect(screen.queryByLabelText('Split title')).toBeNull();
+
+  expect(() =>
+    rerender(
+      <FriendPickerSheet
+        transaction={{ ...tx, status: 'new' }}
+        openToken={1}
+        onSuccess={jest.fn()}
+      />
+    )
+  ).not.toThrow();
+
+  expect(screen.getByLabelText('Split title').props.value).toBe('Amazon');
+});

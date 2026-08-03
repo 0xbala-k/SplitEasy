@@ -135,6 +135,19 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       [friends, selected]
     );
 
+    // Stable so memoized EqualRows only re-render when their own selection flips.
+    const toggle = useCallback((id: string) => {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
+    }, []);
+
+    // Every hook must run before this bail-out, or the render that first
+    // supplies a transaction adds hooks the previous render didn't have and
+    // React throws "rendered more hooks than during the previous render" —
+    // which unmounts the whole tree (blank screen) on tapping Split.
     if (members.length === 0) return null;
 
     const totalCents = Math.round(totalAmount * 100);
@@ -152,15 +165,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const ownerShareCents = totalCents - friendTotalCents;
     const isOverBudget = ownerShareCents < -1;
     const ctaDisabled = selected.size === 0 || submitting || isOverBudget || title.trim() === '';
-
-    // Stable so memoized EqualRows only re-render when their own selection flips.
-    const toggle = useCallback((id: string) => {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        next.has(id) ? next.delete(id) : next.add(id);
-        return next;
-      });
-    }, []);
 
     function switchToCustom() {
       const baseShareCents = Math.floor(totalCents / n);

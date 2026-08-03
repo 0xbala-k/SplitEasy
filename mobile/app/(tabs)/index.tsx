@@ -28,6 +28,7 @@ export default function NewTransactionsScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [combineTxs, setCombineTxs] = useState<Transaction[] | null>(null);
   const [pickerToken, setPickerToken] = useState(0);
+  const [pendingPresent, setPendingPresent] = useState(false);
 
   useEffect(() => {
     load();
@@ -36,11 +37,21 @@ export default function NewTransactionsScreen() {
     return unsub;
   }, []);
 
+  // Present from an effect, after the sheet has rendered with the chosen
+  // transaction — same reason as the history screen. FriendPickerSheet renders
+  // null while it has no transaction, so on the first tap sheetRef.current is
+  // still null and a synchronous present() silently does nothing.
+  useEffect(() => {
+    if (!pendingPresent) return;
+    sheetRef.current?.present();
+    setPendingPresent(false);
+  }, [pendingPresent]);
+
   function openSheet(tx: Transaction) {
     setCombineTxs(null);
     setSelected(tx);
     setPickerToken((t) => t + 1);
-    sheetRef.current?.present();
+    setPendingPresent(true);
   }
 
   function enterSelect(tx: Transaction) {
@@ -72,7 +83,7 @@ export default function NewTransactionsScreen() {
     setSelected(null);
     setCombineTxs(members);
     setPickerToken((t) => t + 1);
-    sheetRef.current?.present();
+    setPendingPresent(true);
   }
 
   function handleSplitSuccess(amountEach: number) {
