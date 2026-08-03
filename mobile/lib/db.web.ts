@@ -219,6 +219,46 @@ export async function deleteSplitDecision(transactionId: string): Promise<void> 
   await done(tx);
 }
 
+// Atomically write every member's decision row and flip its transaction to
+// 'split'. One IDB transaction across both stores mirrors the SQLite
+// withTransactionAsync version: any failure aborts the whole group.
+export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<void> {
+  if (decisions.length === 0) return;
+  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  // Read every row up front, then issue all writes: a write that fails aborts
+  // the txn, and a later get() on an aborting txn would reject with a less
+  // useful error than the abort reason done() surfaces.
+  const rows = await Promise.all(
+    decisions.map((d) => req(txStore.get(d.transaction_id) as IDBRequest<Transaction | undefined>)),
+  );
+  decisions.forEach((d, i) => {
+    // add() (not put) rejects a duplicate transaction_id, matching the SQLite
+    // UNIQUE(transaction_id) constraint.
+    tx.objectStore(DECISION_STORE).add(d);
+    const existing = rows[i];
+    if (existing) txStore.put({ ...existing, status: 'split' });
+  });
+  await done(tx);
+}
+
+// Atomically delete every member's decision row and revert its transaction to
+// 'new'. Single transaction so a failure can't leave the group half-reverted.
+export async function revertCombinedSplit(transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  const rows = await Promise.all(
+    transactionIds.map((id) => req(txStore.get(id) as IDBRequest<Transaction | undefined>)),
+  );
+  transactionIds.forEach((id, i) => {
+    tx.objectStore(DECISION_STORE).delete(id);
+    const existing = rows[i];
+    if (existing) txStore.put({ ...existing, status: 'new' });
+  });
+  await done(tx);
+}
+
 export async function pruneOldTransactions(): Promise<void> {
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
