@@ -13,6 +13,7 @@ import {
 } from '@/lib/db';
 import { Transaction, SplitDecision } from '@/lib/types';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { useVacationStore } from '@/stores/vacationStore';
 
 interface TransactionState {
   transactions: Transaction[];
@@ -39,6 +40,8 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   refresh: async () => {
     set({ isLoading: true });
     try {
+      await useVacationStore.getState().reconcile();
+      const activeVacationId = useVacationStore.getState().activeVacation?.id ?? null;
       const tokensAndCursors = await usePlaidStore.getState().getTokensAndCursors();
       for (const { id, access_token, cursor } of tokensAndCursors) {
         if (!access_token) continue;
@@ -50,7 +53,7 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
         while (hasMore) {
           const res = await fetchTransactions(access_token, pageCursor);
           if (!isFirstSync) {
-            await upsertTransactions([...res.added, ...res.modified]);
+            await upsertTransactions([...res.added, ...res.modified], activeVacationId);
             await deleteTransactionsByPlaidIds(res.removed.map((r) => r.transaction_id));
             await usePlaidStore.getState().saveCursor(id, res.next_cursor);
           }

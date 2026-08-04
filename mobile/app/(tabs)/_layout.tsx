@@ -3,15 +3,18 @@ import { useEffect } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useFriendStore } from '@/stores/friendStore';
+import { useVacationStore } from '@/stores/vacationStore';
 import { pruneOldTransactions } from '@/lib/db';
 import { Colors } from '@/lib/theme';
 
 export default function TabsLayout() {
   const count = useTransactionStore((s) => s.transactions.length);
   const loadFriends = useFriendStore((s) => s.load);
+  const reconcileVacations = useVacationStore((s) => s.reconcile);
 
   useEffect(() => {
     loadFriends();
+    reconcileVacations();
     pruneOldTransactions().catch(console.error);
   }, []);
 
