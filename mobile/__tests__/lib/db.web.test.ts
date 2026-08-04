@@ -9,6 +9,7 @@ import {
   createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
   removeTransactionFromVacation, reconcileVacationStatuses,
+  rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { VacationConflictError } from '@/lib/vacationErrors';
@@ -204,6 +205,228 @@ describe('db.web (IndexedDB)', () => {
     await insertSplitDecision(decision('t1', { description: 'Team dinner' }));
     const [item] = await getHistoryTransactions();
     expect(item.merchant_name).toBe('Team dinner');
+  });
+});
+
+describe('rekeyTransaction (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    await initDb();
+  });
+
+  it('returns not_found and writes nothing when the old id does not exist', async () => {
+    const result = await rekeyTransaction('missing', plaidTx('new1'));
+    expect(result).toBe('not_found');
+    expect(await getTransactionsByIds(['new1'])).toEqual([]);
+  });
+
+  it('unchanged amount: preserves status/vacation_id/decision, clears pending, sets no review flag', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20, pending: true })], 'vac1');
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1', { friend_names: ['Ana'] }));
+
+    const result = await rekeyTransaction('t1', plaidTx('new1', { amount: 20, pending: false }));
+
+    expect(result).toBe('unchanged');
+    expect(await getSplitDecision('t1')).toBeNull();
+    const [row] = await getTransactionsByIds(['new1']);
+    expect(row).toMatchObject({ status: 'split', pending: false, vacation_id: 'vac1' });
+    expect(row.review_reason ?? null).toBeNull();
+    const newDecision = await getSplitDecision('new1');
+    expect(newDecision).toMatchObject({ transaction_id: 'new1', friend_names: ['Ana'] });
+  });
+
+  it('changed amount on a split row: flags amount_changed with the old amount, decision follows to the new id', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1'));
+
+    const result = await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+
+    expect(result).toBe('changed');
+    const [row] = await getTransactionsByIds(['new1']);
+    expect(row.amount).toBe(25);
+    expect(row.review_reason).toBe('amount_changed');
+    expect(row.amount_changed_from).toBe(20);
+    expect(await getSplitDecision('new1')).toMatchObject({ transaction_id: 'new1' });
+  });
+
+  it('changed amount on a new row: no review flag, new amount stored', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+
+    const result = await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+
+    expect(result).toBe('changed');
+    const [row] = await getTransactionsByIds(['new1']);
+    expect(row.amount).toBe(25);
+    expect(row.review_reason ?? null).toBeNull();
+  });
+
+  it('changed amount on a skipped row: no review flag, new amount stored', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionStatus('t1', 'skipped');
+
+    const result = await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+
+    expect(result).toBe('changed');
+    const [row] = await getTransactionsByIds(['new1']);
+    expect(row.review_reason ?? null).toBeNull();
+  });
+
+  it('conflict: a split row already occupying the posted id is never clobbered', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1', { splitwise_expense_id: 'expMine' }));
+    // A different transaction already holds the posted id AND its own expense.
+    await upsertTransactions([plaidTx('new1', { amount: 99 })]);
+    await updateTransactionStatus('new1', 'split');
+    await insertSplitDecision(decision('new1', { splitwise_expense_id: 'expOther' }));
+
+    const result = await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+
+    expect(result).toBe('conflict');
+    // Both rows survive untouched — neither Splitwise expense is stranded.
+    expect(await getTransactionsByIds(['t1'])).toMatchObject([{ amount: 20, status: 'split' }]);
+    expect(await getTransactionsByIds(['new1'])).toMatchObject([{ amount: 99, status: 'split' }]);
+    expect(await getSplitDecision('t1')).toMatchObject({ splitwise_expense_id: 'expMine' });
+    expect(await getSplitDecision('new1')).toMatchObject({ splitwise_expense_id: 'expOther' });
+  });
+
+  it('duplicate: a non-split row occupying the posted id is replaced by the rekeyed row', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1', { splitwise_expense_id: 'expMine', friend_names: ['Ana'] }));
+    // The posted transaction was already inserted as a fresh 'new' row.
+    await upsertTransactions([plaidTx('new1', { amount: 25 })]);
+
+    const result = await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+
+    expect(result).toBe('changed');
+    expect(await getTransactionsByIds(['t1'])).toEqual([]);
+    const rows = await getTransactionsByIds(['new1']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'split', amount: 25, amount_changed_from: 20 });
+    expect(await getSplitDecision('new1')).toMatchObject({ splitwise_expense_id: 'expMine', friend_names: ['Ana'] });
+    // The duplicate is gone from the Transactions list, not left behind.
+    expect(await getNewTransactions()).toEqual([]);
+  });
+});
+
+describe('markTransactionsReversed (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    await initDb();
+  });
+
+  it('keeps and flags a split row as reversed', async () => {
+    await upsertTransactions([plaidTx('t1')]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1'));
+
+    const kept = await markTransactionsReversed(['t1']);
+
+    expect(kept).toEqual(['t1']);
+    const [row] = await getTransactionsByIds(['t1']);
+    expect(row.review_reason).toBe('reversed');
+    expect(row.status).toBe('split');
+    expect(await getSplitDecision('t1')).not.toBeNull();
+  });
+
+  it('deletes a new/skipped row along with its decision', async () => {
+    await upsertTransactions([plaidTx('t1')]);
+
+    const kept = await markTransactionsReversed(['t1']);
+
+    expect(kept).toEqual([]);
+    expect(await getTransactionsByIds(['t1'])).toEqual([]);
+    expect(await getSplitDecision('t1')).toBeNull();
+  });
+
+  it('is a no-op for an empty list', async () => {
+    const kept = await markTransactionsReversed([]);
+    expect(kept).toEqual([]);
+  });
+});
+
+describe('getReviewTransactions / clearReview (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    await initDb();
+  });
+
+  it('returns a single review row with the review reason and amounts', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1', { splitwise_expense_id: 'exp1', friend_names: ['Ana'] }));
+    await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+
+    const items = await getReviewTransactions();
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: 'new1', reason: 'amount_changed', amount: 25, amount_changed_from: 20,
+      expense_id: 'exp1', transaction_ids: ['new1'],
+    });
+    expect(items[0].split.friend_names).toEqual(['Ana']);
+  });
+
+  it('groups combined-split members sharing an expense id, summing both amounts', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 12 }), plaidTx('t2', { amount: 8 })]);
+    await persistCombinedSplit([
+      decision('t1', { splitwise_expense_id: 'expShared' }),
+      decision('t2', { splitwise_expense_id: 'expShared' }),
+    ]);
+    await rekeyTransaction('t1', plaidTx('new1', { amount: 15 }));
+    await rekeyTransaction('t2', plaidTx('new2', { amount: 10 }));
+
+    const items = await getReviewTransactions();
+
+    expect(items).toHaveLength(1);
+    expect(items[0].amount).toBe(25);
+    expect(items[0].amount_changed_from).toBe(20);
+    expect(items[0].transaction_ids.slice().sort()).toEqual(['new1', 'new2']);
+  });
+
+  it('a combined group with any reversed member reads as reversed', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 12 }), plaidTx('t2', { amount: 8 })]);
+    await persistCombinedSplit([
+      decision('t1', { splitwise_expense_id: 'expShared' }),
+      decision('t2', { splitwise_expense_id: 'expShared' }),
+    ]);
+    await rekeyTransaction('t1', plaidTx('new1', { amount: 15 })); // amount_changed
+    await markTransactionsReversed(['t2']);                        // reversed
+
+    const items = await getReviewTransactions();
+
+    expect(items).toHaveLength(1);
+    // A stranded Splitwise expense outranks a mere amount change.
+    expect(items[0].reason).toBe('reversed');
+  });
+
+  it('surfaces a reversed row with a null amount_changed_from', async () => {
+    await upsertTransactions([plaidTx('t1')]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1', { splitwise_expense_id: 'exp9' }));
+    await markTransactionsReversed(['t1']);
+
+    const [item] = await getReviewTransactions();
+    expect(item.reason).toBe('reversed');
+    expect(item.amount_changed_from).toBeNull();
+  });
+
+  it('clearReview clears the review flag and the transaction drops out of the queue', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1'));
+    await rekeyTransaction('t1', plaidTx('new1', { amount: 25 }));
+    expect(await getReviewTransactions()).toHaveLength(1);
+
+    await clearReview(['new1']);
+
+    expect(await getReviewTransactions()).toHaveLength(0);
+    const [row] = await getTransactionsByIds(['new1']);
+    expect(row.review_reason ?? null).toBeNull();
+    expect(row.amount_changed_from ?? null).toBeNull();
   });
 });
 

@@ -94,6 +94,10 @@ interface PlaidTransaction {
   transaction_id: string;
   amount: number;
   pending?: boolean;
+  // Set on the posted transaction when it replaces a pending one; points back
+  // at the pending transaction_id. Passed through untouched via the index
+  // signature below — declared here only for documentation.
+  pending_transaction_id?: string | null;
   [key: string]: unknown;
 }
 

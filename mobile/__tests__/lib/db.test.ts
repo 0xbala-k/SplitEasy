@@ -30,6 +30,10 @@ import {
   assignTransactionsToVacation,
   removeTransactionFromVacation,
   reconcileVacationStatuses,
+  rekeyTransaction,
+  markTransactionsReversed,
+  getReviewTransactions,
+  clearReview,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { VacationConflictError } from '@/lib/vacationErrors';
@@ -207,7 +211,7 @@ test('initDb migrates a v1 install by adding both pending and description column
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 4')
+    expect.stringContaining('user_version = 5')
   );
 });
 
@@ -218,8 +222,31 @@ test('initDb migrates an existing v2 install by adding the description column', 
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 4')
+    expect.stringContaining('user_version = 5')
   );
+});
+
+test('initDb migrates an existing v4 install by adding review columns', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 4 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE transactions ADD COLUMN review_reason')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE transactions ADD COLUMN amount_changed_from')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('user_version = 5')
+  );
+});
+
+test('initDb skips the review-column migration when already at version 5', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 5 });
+  await initDb();
+  const alterCalls = mockDb.execAsync.mock.calls.filter(([sql]: [string]) =>
+    sql.includes('ADD COLUMN review_reason')
+  );
+  expect(alterCalls).toHaveLength(0);
 });
 
 test('insertSplitDecision persists the description', async () => {
@@ -378,9 +405,250 @@ test('revertCombinedSplit deletes rows and reverts statuses inside one transacti
   );
 });
 
+test('deleteTransactionsByPlaidIds also deletes matching split_decisions rows (inert-cascade regression)', async () => {
+  // Native SQLite never issues `PRAGMA foreign_keys = ON`, so the
+  // `ON DELETE CASCADE` on split_decisions.transaction_id is inert — this
+  // must delete split_decisions explicitly, mirroring db.web.ts.
+  await initDb();
+  await deleteTransactionsByPlaidIds(['tx1', 'tx2']);
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('DELETE FROM split_decisions WHERE transaction_id IN'),
+    ['tx1', 'tx2']
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('DELETE FROM transactions WHERE id IN'),
+    ['tx1', 'tx2']
+  );
+});
+
+describe('rekeyTransaction', () => {
+  beforeEach(async () => {
+    await initDb();
+  });
+
+  function posted(over: Partial<PlaidTransaction> = {}): PlaidTransaction {
+    return {
+      transaction_id: 'new1', merchant_name: 'Cafe', name: 'CAFE', amount: 10,
+      iso_currency_code: 'USD', date: '2026-08-01', pending: false, ...over,
+    };
+  }
+
+  test('returns not_found and writes nothing when the old id does not exist', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce(null);
+    const result = await rekeyTransaction('old1', posted());
+    expect(result).toBe('not_found');
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('unchanged amount: rekeys the row, clears pending, sets no review flag', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'split' });
+    const result = await rekeyTransaction('old1', posted({ amount: 10 }));
+    expect(result).toBe('unchanged');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE transactions SET id'),
+      ['new1', 'Cafe', 10, '2026-08-01', null, null, 'old1']
+    );
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE split_decisions SET transaction_id'),
+      ['new1', 'old1']
+    );
+  });
+
+  test('changed amount on a split row: flags amount_changed with the old amount, decision follows to the new id', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'split' });
+    const result = await rekeyTransaction('old1', posted({ amount: 12.5 }));
+    expect(result).toBe('changed');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE transactions SET id'),
+      ['new1', 'Cafe', 12.5, '2026-08-01', 'amount_changed', 10, 'old1']
+    );
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE split_decisions SET transaction_id'),
+      ['new1', 'old1']
+    );
+  });
+
+  test('changed amount on a new row: no review flag, new amount stored', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'new' });
+    const result = await rekeyTransaction('old1', posted({ amount: 12.5 }));
+    expect(result).toBe('changed');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE transactions SET id'),
+      ['new1', 'Cafe', 12.5, '2026-08-01', null, null, 'old1']
+    );
+  });
+
+  test('changed amount on a skipped row: no review flag, new amount stored', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'skipped' });
+    const result = await rekeyTransaction('old1', posted({ amount: 12.5 }));
+    expect(result).toBe('changed');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE transactions SET id'),
+      ['new1', 'Cafe', 12.5, '2026-08-01', null, null, 'old1']
+    );
+  });
+
+  test('conflict: a split row already occupying the posted id is never clobbered', async () => {
+    mockDb.getFirstAsync
+      .mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'split' })
+      .mockResolvedValueOnce({ id: 'new1', status: 'split' });
+    const result = await rekeyTransaction('old1', posted({ amount: 12.5 }));
+    expect(result).toBe('conflict');
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('duplicate: a non-split row occupying the posted id is dropped, then the rekey proceeds', async () => {
+    mockDb.getFirstAsync
+      .mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'split' })
+      .mockResolvedValueOnce({ id: 'new1', status: 'new' });
+    const result = await rekeyTransaction('old1', posted({ amount: 12.5 }));
+    expect(result).toBe('changed');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM transactions'),
+      ['new1']
+    );
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE transactions SET id'),
+      ['new1', 'Cafe', 12.5, '2026-08-01', 'amount_changed', 10, 'old1']
+    );
+  });
+
+  test('does not probe for a collision when the posted id is unchanged', async () => {
+    mockDb.getFirstAsync.mockClear(); // drop initDb's user_version read from the count
+    mockDb.getFirstAsync.mockResolvedValueOnce({ id: 'old1', amount: 10, status: 'split' });
+    const result = await rekeyTransaction('old1', posted({ transaction_id: 'old1', amount: 10 }));
+    expect(result).toBe('unchanged');
+    expect(mockDb.getFirstAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('markTransactionsReversed', () => {
+  beforeEach(async () => {
+    await initDb();
+  });
+
+  test('keeps and flags a split row as reversed', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Cafe', amount: 10, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x' },
+    ]);
+    const kept = await markTransactionsReversed(['tx1']);
+    expect(kept).toEqual(['tx1']);
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("review_reason = 'reversed'"),
+      ['tx1']
+    );
+  });
+
+  test('deletes a new/skipped row along with its decision', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Cafe', amount: 10, currency: 'USD', date: '2026-08-01', status: 'new', pending: 0, created_at: 'x' },
+    ]);
+    const kept = await markTransactionsReversed(['tx1']);
+    expect(kept).toEqual([]);
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM split_decisions'),
+      ['tx1']
+    );
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM transactions'),
+      ['tx1']
+    );
+  });
+
+  test('is a no-op for an empty list', async () => {
+    mockDb.runAsync.mockClear();
+    const kept = await markTransactionsReversed([]);
+    expect(kept).toEqual([]);
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe('getReviewTransactions', () => {
+  beforeEach(async () => {
+    await initDb();
+  });
+
+  test('returns single review rows with the review reason and amounts', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Cafe', amount: 12.5, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'amount_changed', amount_changed_from: 10,
+        splitwise_expense_id: 'exp1', description: null, friend_names: '["Sam"]', amount_each: 6.25 },
+    ]);
+    const items = await getReviewTransactions();
+    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining('review_reason IS NOT NULL'),
+      []
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: 'tx1', reason: 'amount_changed', amount: 12.5, amount_changed_from: 10,
+      expense_id: 'exp1', transaction_ids: ['tx1'],
+    });
+    expect(items[0].split.friend_names).toEqual(['Sam']);
+  });
+
+  test('groups combined-split members sharing an expense id, summing both amounts', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Cafe', amount: 12, currency: 'USD', date: '2026-08-02', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'amount_changed', amount_changed_from: 10,
+        splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 6 },
+      { id: 'tx2', merchant_name: 'Uber', amount: 8, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'amount_changed', amount_changed_from: 5,
+        splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 6 },
+    ]);
+    const items = await getReviewTransactions();
+    expect(items).toHaveLength(1);
+    expect(items[0].amount).toBe(20);
+    expect(items[0].amount_changed_from).toBe(15);
+    expect(items[0].transaction_ids.slice().sort()).toEqual(['tx1', 'tx2']);
+  });
+
+  test('a combined group with any reversed member reads as reversed', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Cafe', amount: 12, currency: 'USD', date: '2026-08-02', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'amount_changed', amount_changed_from: 10,
+        splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 6 },
+      { id: 'tx2', merchant_name: 'Uber', amount: 8, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'reversed', amount_changed_from: null,
+        splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 6 },
+    ]);
+    const items = await getReviewTransactions();
+    expect(items).toHaveLength(1);
+    // A stranded Splitwise expense outranks a mere amount change.
+    expect(items[0].reason).toBe('reversed');
+  });
+
+  test('surfaces a reversed row with a null amount_changed_from', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx9', merchant_name: 'Cafe', amount: 10, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'reversed', amount_changed_from: null,
+        splitwise_expense_id: 'exp9', description: null, friend_names: '["Sam"]', amount_each: 5 },
+    ]);
+    const [item] = await getReviewTransactions();
+    expect(item.reason).toBe('reversed');
+    expect(item.amount_changed_from).toBeNull();
+  });
+});
+
+test('clearReview clears the review flag and old amount', async () => {
+  await initDb();
+  await clearReview(['tx1', 'tx2']);
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('review_reason = NULL'),
+    ['tx1', 'tx2']
+  );
+});
+
+test('clearReview is a no-op for an empty list', async () => {
+  await initDb();
+  mockDb.runAsync.mockClear();
+  await clearReview([]);
+  expect(mockDb.runAsync).not.toHaveBeenCalled();
+});
+
 describe('vacation CRUD', () => {
   beforeEach(async () => {
-    mockDb.getFirstAsync.mockResolvedValue({ user_version: 4 });
+    mockDb.getFirstAsync.mockResolvedValue({ user_version: 5 });
     await initDb();
   });
 
@@ -469,7 +737,7 @@ describe('vacation CRUD', () => {
 
 describe('vacation transaction capture & history', () => {
   beforeEach(async () => {
-    mockDb.getFirstAsync.mockResolvedValue({ user_version: 4 });
+    mockDb.getFirstAsync.mockResolvedValue({ user_version: 5 });
     await initDb();
   });
 
