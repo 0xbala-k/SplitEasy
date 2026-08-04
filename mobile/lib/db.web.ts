@@ -68,7 +68,7 @@ function byDateDesc(a: Transaction, b: Transaction): number {
 
 export async function getNewTransactions(): Promise<Transaction[]> {
   const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
-  return all.filter((t) => t.status === 'new').sort(byDateDesc);
+  return all.filter((t) => t.status === 'new' && !t.vacation_id).sort(byDateDesc);
 }
 
 export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
@@ -80,20 +80,9 @@ export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]
   return rows.filter((r): r is Transaction => r !== undefined);
 }
 
-export async function getHistoryTransactions(): Promise<HistoryItem[]> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE]);
-  const [all, decisions] = await Promise.all([
-    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
-    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
-  ]);
+function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): HistoryItem[] {
   const byTxId = new Map(decisions.map((d) => [d.transaction_id, d]));
-  const rows = all
-    .filter((t) => t.status === 'split' || t.status === 'skipped')
-    .sort(byDateDesc);
-
   const items: HistoryItem[] = [];
-  // Track split groups by expense id so multiple member transactions collapse
-  // into one item (mirrors lib/db.ts). _txIds is stripped before returning.
   const groups = new Map<string, HistoryItem & { _txIds: string[] }>();
 
   for (const t of rows) {
@@ -113,10 +102,7 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
           currency: t.currency,
           date: t.date,
           status: 'split',
-          split: {
-            friend_names: d.friend_names ?? [],
-            amount_each: d.amount_each ?? 0,
-          },
+          split: { friend_names: d.friend_names ?? [], amount_each: d.amount_each ?? 0 },
           _txIds: [t.id],
         };
         groups.set(key, item);
@@ -130,8 +116,6 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
         currency: t.currency,
         date: t.date,
         status: t.status,
-        // A split row missing its expense id is malformed, but still surface its
-        // friends so it doesn't masquerade as a skipped row in the UI.
         ...(t.status === 'split' && d?.friend_names
           ? { split: { friend_names: d.friend_names, amount_each: d.amount_each ?? 0 } }
           : {}),
@@ -139,8 +123,6 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
     }
   }
 
-  // Finalize: combined groups (>1 member) expose expense/member metadata and use
-  // the expense id as the row key; single-member groups stay keyed by tx id.
   for (const [expenseId, g] of groups.entries()) {
     if (g._txIds.length > 1) {
       g.combined = { expense_id: expenseId, transaction_ids: g._txIds, count: g._txIds.length };
@@ -152,7 +134,99 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
   return items;
 }
 
-export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void> {
+export async function getHistoryTransactions(): Promise<HistoryItem[]> {
+  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all.filter((t) => t.status === 'split' || t.status === 'skipped').sort(byDateDesc);
+  return groupHistoryRows(rows, decisions);
+}
+
+export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
+  const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
+  return all.filter((t) => t.status === 'new' && t.vacation_id === vacationId).sort(byDateDesc);
+}
+
+export async function getVacationHistory(vacationId: string): Promise<HistoryItem[]> {
+  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all
+    .filter((t) => (t.status === 'split' || t.status === 'skipped') && t.vacation_id === vacationId)
+    .sort(byDateDesc);
+  return groupHistoryRows(rows, decisions);
+}
+
+export async function assignTransactionsToVacation(vacationId: string, transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const tx = db().transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  for (const id of transactionIds) {
+    const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+    if (existing && existing.status === 'new' && !existing.vacation_id) {
+      store.put({ ...existing, vacation_id: vacationId });
+    }
+  }
+  await done(tx);
+}
+
+export async function removeTransactionFromVacation(transactionId: string): Promise<void> {
+  const tx = db().transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(transactionId) as IDBRequest<Transaction | undefined>);
+  if (existing && existing.status === 'new') store.put({ ...existing, vacation_id: null });
+  await done(tx);
+}
+
+export async function reconcileVacationStatuses(): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const all = await req(store.getAll() as IDBRequest<Vacation[]>);
+
+  // Mirrors the three-phase SQL in lib/db.ts's reconcileVacationStatuses —
+  // see that function's comments for why each phase exists. All three phases
+  // read from this same `all` snapshot (matching how each native UPDATE
+  // statement's WHERE evaluates against the state at the start of that
+  // statement) rather than re-querying mid-function.
+
+  // 1. Fully-elapsed drafts go straight to 'ended'.
+  const elapsedIds = new Set<string>();
+  for (const v of all) {
+    if (v.status === 'draft' && v.start_date && v.start_date <= today && v.end_date && v.end_date < today) {
+      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
+      elapsedIds.add(v.id);
+    }
+  }
+
+  // 2. Activate at most one remaining due draft, earliest start_date first —
+  //    phase 1 already excluded any candidate that would immediately re-end.
+  const hasActive = all.some((v) => v.status === 'active');
+  if (!hasActive) {
+    const dueDrafts = all
+      .filter((v) => v.status === 'draft' && !elapsedIds.has(v.id) && v.start_date && v.start_date <= today)
+      .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''));
+    const next = dueDrafts[0];
+    if (next) store.put({ ...next, status: 'active' as VacationStatus, started_at: now });
+  }
+
+  // 3. End any already-active vacation (from a prior call) whose end date
+  //    has passed.
+  for (const v of all) {
+    if (v.status === 'active' && v.end_date && v.end_date < today) {
+      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
+    }
+  }
+
+  await done(tx);
+}
+
+export async function upsertTransactions(txs: PlaidTransaction[], activeVacationId: string | null = null): Promise<void> {
   const tx = db().transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const now = new Date().toISOString();
@@ -170,6 +244,7 @@ export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void>
         status: 'new',
         pending: p.pending,
         created_at: now,
+        vacation_id: activeVacationId,
       } satisfies Transaction);
     } else if (existing.status === 'new') {
       // Mirror the SQL UPDATE: refresh mutable fields, never touch status of

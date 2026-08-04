@@ -82,7 +82,7 @@ export async function initDb(): Promise<void> {
 
 export async function getNewTransactions(): Promise<Transaction[]> {
   const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
-    `SELECT * FROM transactions WHERE status = 'new' ORDER BY date DESC`,
+    `SELECT * FROM transactions WHERE status = 'new' AND vacation_id IS NULL ORDER BY date DESC`,
     []
   );
   return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
@@ -98,24 +98,15 @@ export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]
   return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
 }
 
-export async function getHistoryTransactions(): Promise<HistoryItem[]> {
-  const rows = await db().getAllAsync<Transaction & {
-    splitwise_expense_id: string | null;
-    description: string | null;
-    friend_names: string | null;
-    amount_each: number | null;
-  }>(
-    `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
-     FROM transactions t
-     LEFT JOIN split_decisions s ON s.transaction_id = t.id
-     WHERE t.status IN ('split','skipped')
-     ORDER BY t.date DESC`,
-    []
-  );
+type HistoryRow = Transaction & {
+  splitwise_expense_id: string | null;
+  description: string | null;
+  friend_names: string | null;
+  amount_each: number | null;
+};
 
+function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
   const items: HistoryItem[] = [];
-  // Track split groups by expense id so multiple member transactions collapse
-  // into one item. _txIds is stripped before returning.
   const groups = new Map<string, HistoryItem & { _txIds: string[] }>();
 
   for (const r of rows) {
@@ -151,8 +142,6 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
         currency: r.currency,
         date: r.date,
         status: r.status,
-        // A split row missing its expense id is malformed, but still surface its
-        // friends so it doesn't masquerade as a skipped row in the UI.
         ...(r.status === 'split' && r.friend_names
           ? { split: { friend_names: JSON.parse(r.friend_names), amount_each: r.amount_each ?? 0 } }
           : {}),
@@ -160,8 +149,6 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
     }
   }
 
-  // Finalize: combined groups (>1 member) expose expense/member metadata and use
-  // the expense id as the row key; single-member groups stay keyed by tx id.
   for (const [expenseId, g] of groups.entries()) {
     if (g._txIds.length > 1) {
       g.combined = { expense_id: expenseId, transaction_ids: g._txIds, count: g._txIds.length };
@@ -173,18 +160,113 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
   return items;
 }
 
-export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void> {
+export async function getHistoryTransactions(): Promise<HistoryItem[]> {
+  const rows = await db().getAllAsync<HistoryRow>(
+    `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     WHERE t.status IN ('split','skipped')
+     ORDER BY t.date DESC`,
+    []
+  );
+  return groupHistoryRows(rows);
+}
+
+export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
+  const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
+    `SELECT * FROM transactions WHERE status = 'new' AND vacation_id = ? ORDER BY date DESC`,
+    [vacationId]
+  );
+  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
+}
+
+export async function getVacationHistory(vacationId: string): Promise<HistoryItem[]> {
+  const rows = await db().getAllAsync<HistoryRow>(
+    `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     WHERE t.status IN ('split','skipped') AND t.vacation_id = ?
+     ORDER BY t.date DESC`,
+    [vacationId]
+  );
+  return groupHistoryRows(rows);
+}
+
+export async function assignTransactionsToVacation(vacationId: string, transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const placeholders = transactionIds.map(() => '?').join(',');
+  await db().runAsync(
+    `UPDATE transactions SET vacation_id = ? WHERE id IN (${placeholders}) AND status = 'new' AND vacation_id IS NULL`,
+    [vacationId, ...transactionIds]
+  );
+}
+
+export async function removeTransactionFromVacation(transactionId: string): Promise<void> {
+  await db().runAsync(
+    `UPDATE transactions SET vacation_id = NULL WHERE id = ? AND status = 'new'`,
+    [transactionId]
+  );
+}
+
+export async function reconcileVacationStatuses(): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+  await db().withTransactionAsync(async () => {
+    // Three independent phases, run in order, each seeing the previous
+    // phase's writes (sequential statements in one SQLite transaction):
+    //
+    // 1. A draft whose entire window has already elapsed (past start AND
+    //    past end) goes straight to 'ended' — it never needs the single
+    //    active slot at all.
+    await db().runAsync(
+      `UPDATE vacations SET status = 'ended', ended_at = ?
+       WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
+         AND end_date IS NOT NULL AND end_date < ?`,
+      [now, today, today]
+    );
+    // 2. Activate at most one remaining due draft (earliest start_date
+    //    first). SQLite's UPDATE evaluates its WHERE against the pre-update
+    //    snapshot for every candidate row before writing any of them, so a
+    //    plain `NOT EXISTS (... status = 'active')` guard alone would let
+    //    two simultaneously-due drafts both flip to 'active' in one
+    //    statement; the `id = (SELECT ... LIMIT 1)` clause caps that to one
+    //    row. Phase 1 already removed any fully-elapsed draft from
+    //    consideration here, so this never "wastes" the slot on one that
+    //    would immediately re-end.
+    await db().runAsync(
+      `UPDATE vacations SET status = 'active', started_at = ?
+       WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
+         AND NOT EXISTS (SELECT 1 FROM vacations v2 WHERE v2.status = 'active')
+         AND id = (
+           SELECT id FROM vacations
+           WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
+           ORDER BY start_date ASC, id ASC LIMIT 1
+         )`,
+      [now, today, today]
+    );
+    // 3. End any already-active vacation (from a prior reconcile call, or
+    //    just-activated by phase 2 with an elapsed end_date) whose end date
+    //    has passed.
+    await db().runAsync(
+      `UPDATE vacations SET status = 'ended', ended_at = ?
+       WHERE status = 'active' AND end_date IS NOT NULL AND end_date < ?`,
+      [now, today]
+    );
+  });
+}
+
+export async function upsertTransactions(txs: PlaidTransaction[], activeVacationId: string | null = null): Promise<void> {
   const d = db();
   const now = new Date().toISOString();
   for (const tx of txs) {
     const name = tx.merchant_name ?? tx.name;
     const currency = tx.iso_currency_code ?? 'USD';
     const pending = tx.pending ? 1 : 0;
-    // INSERT OR IGNORE preserves status for already-split/skipped rows
+    // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped rows
     await d.runAsync(
-      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at)
-       VALUES (?, ?, ?, ?, ?, 'new', ?, ?)`,
-      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now]
+      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id)
+       VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?)`,
+      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId]
     );
     // UPDATE only if still 'new' (don't overwrite user decisions)
     await d.runAsync(

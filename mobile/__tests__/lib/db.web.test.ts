@@ -7,6 +7,8 @@ import {
   pruneOldTransactions, deleteAllTransactions,
   persistCombinedSplit, revertCombinedSplit,
   createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
+  getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
+  removeTransactionFromVacation, reconcileVacationStatuses,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { VacationConflictError } from '@/lib/vacationErrors';
@@ -269,5 +271,121 @@ describe('vacation CRUD (IndexedDB)', () => {
     expect(await getVacation(v.id)).toBeNull();
     const [row] = await getNewTransactions();
     expect(row.vacation_id).toBeFalsy();
+  });
+});
+
+describe('vacation transaction capture & history (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    await initDb();
+  });
+
+  it('getNewTransactions excludes vacation-assigned rows', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
+    await assignTransactionsToVacation(v.id, ['t1']);
+    const rows = await getNewTransactions();
+    expect(rows.map((r) => r.id)).toEqual(['t2']);
+  });
+
+  it('upsertTransactions stamps new rows with the active vacation id', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    await startVacation(v.id);
+    await upsertTransactions([plaidTx('t1')], v.id);
+    const [row] = await getVacationPendingTransactions(v.id);
+    expect(row.id).toBe('t1');
+  });
+
+  it('upsertTransactions does not stamp when no vacation id is passed', async () => {
+    await upsertTransactions([plaidTx('t1')]);
+    const [row] = await getNewTransactions();
+    expect(row.vacation_id).toBeFalsy();
+  });
+
+  it('assignTransactionsToVacation only moves eligible (new, unassigned) rows', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
+    await updateTransactionStatus('t2', 'skipped');
+    await assignTransactionsToVacation(v.id, ['t1', 't2']);
+    const pending = await getVacationPendingTransactions(v.id);
+    expect(pending.map((r) => r.id)).toEqual(['t1']);
+  });
+
+  it('removeTransactionFromVacation returns a transaction to the main list', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    await upsertTransactions([plaidTx('t1')]);
+    await assignTransactionsToVacation(v.id, ['t1']);
+    await removeTransactionFromVacation('t1');
+    expect((await getNewTransactions()).map((r) => r.id)).toEqual(['t1']);
+    expect(await getVacationPendingTransactions(v.id)).toHaveLength(0);
+  });
+
+  it('getVacationHistory scopes combined-split grouping to the vacation', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    await upsertTransactions([plaidTx('t1'), plaidTx('t2'), plaidTx('t3')]);
+    await assignTransactionsToVacation(v.id, ['t1', 't2']);
+    await persistCombinedSplit([
+      decision('t1', { splitwise_expense_id: 'exp_shared' }),
+      decision('t2', { splitwise_expense_id: 'exp_shared' }),
+    ]);
+    await updateTransactionStatus('t3', 'split');
+    await insertSplitDecision(decision('t3', { splitwise_expense_id: 'exp_other' }));
+    const history = await getVacationHistory(v.id);
+    expect(history).toHaveLength(1);
+    expect(history[0].combined?.count).toBe(2);
+  });
+
+  it('reconcileVacationStatuses activates a draft whose start date has arrived', async () => {
+    const past = new Date(); past.setDate(past.getDate() - 1);
+    const v = await createVacation({ name: 'Hawaii', start_date: past.toISOString().slice(0, 10), end_date: '2099-01-01' });
+    await reconcileVacationStatuses();
+    expect((await getVacation(v.id))?.status).toBe('active');
+  });
+
+  it('reconcileVacationStatuses ends an active vacation whose end date has passed', async () => {
+    const past = new Date(); past.setDate(past.getDate() - 5);
+    const pastEnd = new Date(); pastEnd.setDate(pastEnd.getDate() - 1);
+    const v = await createVacation({
+      name: 'Hawaii',
+      start_date: past.toISOString().slice(0, 10),
+      end_date: pastEnd.toISOString().slice(0, 10),
+    });
+    await startVacation(v.id);
+    await reconcileVacationStatuses();
+    expect((await getVacation(v.id))?.status).toBe('ended');
+  });
+
+  it('reconcileVacationStatuses does not touch dateless (manual) vacations', async () => {
+    const v = await createVacation({ name: 'Manual' });
+    await reconcileVacationStatuses();
+    expect((await getVacation(v.id))?.status).toBe('draft');
+  });
+
+  it('reconcileVacationStatuses activates at most one of two due, open-ended drafts', async () => {
+    // Both have start_date in the past and no end_date, so createVacation's
+    // overlap check (which only runs when both dates are set) never rejects
+    // the second one — this is the scenario the native LIMIT-1 fix guards.
+    const past = new Date(); past.setDate(past.getDate() - 3);
+    const startDate = past.toISOString().slice(0, 10);
+    const a = await createVacation({ name: 'A', start_date: startDate });
+    const b = await createVacation({ name: 'B', start_date: startDate });
+    await reconcileVacationStatuses();
+    const statuses = [(await getVacation(a.id))?.status, (await getVacation(b.id))?.status];
+    expect(statuses.filter((s) => s === 'active')).toHaveLength(1);
+  });
+
+  it('reconcileVacationStatuses ends a draft immediately if both its dates have already elapsed, without blocking a later activation', async () => {
+    const wayPast = new Date(); wayPast.setDate(wayPast.getDate() - 10);
+    const stillPast = new Date(); stillPast.setDate(stillPast.getDate() - 5);
+    const recentPast = new Date(); recentPast.setDate(recentPast.getDate() - 1);
+    const elapsed = await createVacation({
+      name: 'Elapsed', start_date: wayPast.toISOString().slice(0, 10), end_date: stillPast.toISOString().slice(0, 10),
+    });
+    const current = await createVacation({
+      name: 'Current', start_date: recentPast.toISOString().slice(0, 10),
+    });
+    await reconcileVacationStatuses();
+    expect((await getVacation(elapsed.id))?.status).toBe('ended');
+    expect((await getVacation(current.id))?.status).toBe('active');
   });
 });

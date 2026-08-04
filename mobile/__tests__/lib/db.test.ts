@@ -25,6 +25,11 @@ import {
   startVacation,
   endVacation,
   deleteVacation,
+  getVacationPendingTransactions,
+  getVacationHistory,
+  assignTransactionsToVacation,
+  removeTransactionFromVacation,
+  reconcileVacationStatuses,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { VacationConflictError } from '@/lib/vacationErrors';
@@ -459,5 +464,105 @@ describe('vacation CRUD', () => {
       expect.stringContaining('DELETE FROM vacations'),
       ['v1']
     );
+  });
+});
+
+describe('vacation transaction capture & history', () => {
+  beforeEach(async () => {
+    mockDb.getFirstAsync.mockResolvedValue({ user_version: 4 });
+    await initDb();
+  });
+
+  test('getNewTransactions filters out vacation-assigned rows', async () => {
+    await getNewTransactions();
+    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining('vacation_id IS NULL'),
+      []
+    );
+  });
+
+  test('upsertTransactions stamps new rows with the active vacation id', async () => {
+    await upsertTransactions(
+      [{ transaction_id: 'ptx1', merchant_name: 'Amazon', name: 'AMZN', amount: 10, iso_currency_code: 'USD', date: '2026-08-01', pending: false }],
+      'vac1'
+    );
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT OR IGNORE'),
+      expect.arrayContaining(['ptx1', 'vac1'])
+    );
+  });
+
+  test('upsertTransactions stamps null when no vacation is active', async () => {
+    await upsertTransactions([{ transaction_id: 'ptx1', merchant_name: 'Amazon', name: 'AMZN', amount: 10, iso_currency_code: 'USD', date: '2026-08-01', pending: false }]);
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT OR IGNORE'),
+      expect.arrayContaining(['ptx1', null])
+    );
+  });
+
+  test('getVacationPendingTransactions queries by vacation id and status=new', async () => {
+    await getVacationPendingTransactions('vac1');
+    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining("status = 'new'"),
+      ['vac1']
+    );
+  });
+
+  test('getVacationHistory scopes the history query to the vacation and groups combined splits', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Amazon', amount: 20, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x',
+        splitwise_expense_id: 'exp1', description: null, friend_names: '["Sam"]', amount_each: 10 },
+    ]);
+    const items = await getVacationHistory('vac1');
+    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining('t.vacation_id = ?'),
+      ['vac1']
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].split?.friend_names).toEqual(['Sam']);
+  });
+
+  test('assignTransactionsToVacation bulk-updates eligible transactions', async () => {
+    await assignTransactionsToVacation('vac1', ['t1', 't2']);
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("SET vacation_id = ? WHERE id IN (?,?)"),
+      ['vac1', 't1', 't2']
+    );
+  });
+
+  test('assignTransactionsToVacation is a no-op for an empty list', async () => {
+    mockDb.runAsync.mockClear();
+    await assignTransactionsToVacation('vac1', []);
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('removeTransactionFromVacation clears vacation_id for a pending row', async () => {
+    await removeTransactionFromVacation('t1');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SET vacation_id = NULL'),
+      ['t1']
+    );
+  });
+
+  test('reconcileVacationStatuses activates due drafts then ends elapsed actives', async () => {
+    await reconcileVacationStatuses();
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'active'"),
+      expect.arrayContaining([expect.any(String), expect.any(String)])
+    );
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'ended'"),
+      expect.arrayContaining([expect.any(String), expect.any(String)])
+    );
+  });
+
+  test('reconcileVacationStatuses caps activation to a single row per call', async () => {
+    // Regression: without the `id = (SELECT ... LIMIT 1)` clause, SQLite's
+    // UPDATE would activate every due draft in one pass since it evaluates
+    // the WHERE against the pre-update snapshot for all matching rows.
+    await reconcileVacationStatuses();
+    const [sql, params] = mockDb.runAsync.mock.calls.find(([s]: [string]) => s.includes("SET status = 'active'"))!;
+    expect(sql).toContain('LIMIT 1');
+    expect(params).toHaveLength(3);
   });
 });
