@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { TransactionRow } from '@/components/TransactionRow';
+import { VacationBanner } from '@/components/VacationBanner';
 import { ReauthBanner } from '@/components/ReauthBanner';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
@@ -119,6 +120,8 @@ export default function NewTransactionsScreen() {
           </View>
         )}
       </View>
+
+      <VacationBanner />
 
       {needsReauth && <ReauthBanner onPress={handleReauth} />}
       {!isConnected && <OfflineBanner />}
