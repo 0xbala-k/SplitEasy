@@ -267,3 +267,43 @@ test('going from no transaction to a transaction does not change the hook count'
 
   expect(screen.getByLabelText('Split title').props.value).toBe('Amazon');
 });
+
+test('passes groupId through to createExpense when set', async () => {
+  render(
+    <FriendPickerSheet
+      transaction={{ ...tx, status: 'new' }}
+      groupId="55"
+      openToken={1}
+      onSuccess={jest.fn()}
+    />
+  );
+  fireEvent.press(screen.getByLabelText('Sam'));
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
+  expect(mockCreateExpense).toHaveBeenCalledWith(expect.objectContaining({ groupId: '55' }));
+});
+
+test('sorts group members ahead of other friends without hiding non-members', async () => {
+  // Store order is Sam-then-Zoe and Zoe is the group member, so this only
+  // passes once the groupMemberIds sort actually runs — with the fix absent,
+  // the assertion below would see ['Sam', 'Zoe'] (the store's own order) and
+  // fail, unlike a fixture that already happens to match the sorted output.
+  (useFriendStore as jest.Mock).mockReturnValue({
+    friends: [
+      { id: '2', display_name: 'Sam', avatar_url: null },
+      { id: '3', display_name: 'Zoe', avatar_url: null },
+    ],
+    isLoading: false,
+  });
+  render(
+    <FriendPickerSheet
+      transaction={{ ...tx, status: 'new' }}
+      groupId="55"
+      groupMemberIds={['3']}
+      openToken={1}
+      onSuccess={jest.fn()}
+    />
+  );
+  const names = screen.getAllByRole('checkbox').map((el) => el.props.accessibilityLabel);
+  expect(names).toEqual(['Zoe', 'Sam']);
+});
