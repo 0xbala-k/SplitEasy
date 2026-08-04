@@ -6,8 +6,10 @@ import {
   insertSplitDecision, upsertSplitDecision, deleteSplitDecision,
   pruneOldTransactions, deleteAllTransactions,
   persistCombinedSplit, revertCombinedSplit,
+  createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
+import { VacationConflictError } from '@/lib/vacationErrors';
 
 function plaidTx(id: string, over: Partial<PlaidTransaction> = {}): PlaidTransaction {
   return {
@@ -25,10 +27,12 @@ function decision(txId: string, over: Partial<SplitDecision> = {}): SplitDecisio
 }
 
 // Seed a row through a second raw IDB connection: fake-indexeddb shares data
-// across connections, and version 1 needs no upgrade handler here.
+// across connections. No explicit version here — always opens at whatever
+// version the database is already at, so this stays correct as DB_VERSION
+// bumps over time instead of needing to track it.
 async function seedRaw(store: string, value: object) {
   const d = await new Promise<IDBDatabase>((res, rej) => {
-    const open = indexedDB.open('spliteasy', 1);
+    const open = indexedDB.open('spliteasy');
     open.onsuccess = () => res(open.result);
     open.onerror = () => rej(open.error);
   });
@@ -198,5 +202,72 @@ describe('db.web (IndexedDB)', () => {
     await insertSplitDecision(decision('t1', { description: 'Team dinner' }));
     const [item] = await getHistoryTransactions();
     expect(item.merchant_name).toBe('Team dinner');
+  });
+});
+
+describe('vacation CRUD (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    await initDb();
+  });
+
+  test('createVacation inserts a draft row and returns it', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    expect(v).toMatchObject({ name: 'Hawaii', status: 'draft', start_date: null, end_date: null });
+    const all = await getVacations();
+    expect(all.map((x) => x.id)).toContain(v.id);
+  });
+
+  test('createVacation rejects an overlapping dated range', async () => {
+    await createVacation({ name: 'Ski trip', start_date: '2026-08-01', end_date: '2026-08-10' });
+    await expect(
+      createVacation({ name: 'Hawaii', start_date: '2026-08-05', end_date: '2026-08-15' })
+    ).rejects.toBeInstanceOf(VacationConflictError);
+  });
+
+  test('createVacation allows adjacent non-overlapping dated ranges', async () => {
+    await createVacation({ name: 'Ski trip', start_date: '2026-08-01', end_date: '2026-08-10' });
+    const v = await createVacation({ name: 'Hawaii', start_date: '2026-08-11', end_date: '2026-08-20' });
+    expect(v.name).toBe('Hawaii');
+  });
+
+  test('getVacation returns null when not found', async () => {
+    expect(await getVacation('missing')).toBeNull();
+  });
+
+  test('getActiveVacation returns null until one is started', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    expect(await getActiveVacation()).toBeNull();
+    await startVacation(v.id);
+    expect((await getActiveVacation())?.id).toBe(v.id);
+  });
+
+  test('startVacation throws when another vacation is active', async () => {
+    const a = await createVacation({ name: 'A' });
+    const b = await createVacation({ name: 'B' });
+    await startVacation(a.id);
+    await expect(startVacation(b.id)).rejects.toBeInstanceOf(VacationConflictError);
+  });
+
+  test('endVacation flips status to ended', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    await startVacation(v.id);
+    await endVacation(v.id);
+    expect((await getVacation(v.id))?.status).toBe('ended');
+  });
+
+  test('deleteVacation unassigns pending transactions then removes the vacation', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+    // Seed the row directly via the raw IDB helper (not upsertTransactions +
+    // assignTransactionsToVacation — both gain vacation-awareness in Task 3,
+    // which lands after this one) so this task's test suite is self-contained.
+    await seedRaw('transactions', {
+      id: 't1', merchant_name: 'Cafe', amount: 20, currency: 'USD', date: '2026-08-01',
+      status: 'new', pending: false, created_at: new Date().toISOString(), vacation_id: v.id,
+    });
+    await deleteVacation(v.id);
+    expect(await getVacation(v.id)).toBeNull();
+    const [row] = await getNewTransactions();
+    expect(row.vacation_id).toBeFalsy();
   });
 });

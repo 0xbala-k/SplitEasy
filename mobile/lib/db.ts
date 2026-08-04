@@ -1,6 +1,9 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
 import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem } from '@/lib/types';
+import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
+import { generateId } from '@/lib/id';
+import { VacationConflictError } from '@/lib/vacationErrors';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 
@@ -44,11 +47,36 @@ export async function initDb(): Promise<void> {
   if (version >= 1 && version < 3) {
     await _db.execAsync(`ALTER TABLE split_decisions ADD COLUMN description TEXT;`);
   }
+  if (version < 4) {
+    await _db.execAsync(`
+      CREATE TABLE IF NOT EXISTS vacations (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        start_date TEXT,
+        end_date TEXT,
+        status TEXT DEFAULT 'draft',
+        splitwise_group_id TEXT,
+        splitwise_group_name TEXT,
+        splitwise_group_member_ids TEXT,
+        created_at TEXT,
+        started_at TEXT,
+        ended_at TEXT
+      );
+    `);
+    // Unlike `pending`/`description` above, vacation_id is NOT in the base
+    // `version < 1` CREATE TABLE for transactions — so, unlike those columns,
+    // this ALTER must run ungated (not `version >= 1 && ...`) so a brand-new
+    // install (version 0) gets the column too. If a future migration ever
+    // adds vacation_id to the base CREATE TABLE, this ALTER must move behind
+    // a `version >= 1` guard or it will fail with "duplicate column name" on
+    // fresh installs.
+    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN vacation_id TEXT REFERENCES vacations(id);`);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 3) {
-    await _db.execAsync(`PRAGMA user_version = 3;`);
+  if (version < 4) {
+    await _db.execAsync(`PRAGMA user_version = 4;`);
   }
 }
 
@@ -287,4 +315,115 @@ export async function pruneOldTransactions(): Promise<void> {
 
 export async function deleteAllTransactions(): Promise<void> {
   await db().runAsync(`DELETE FROM transactions`, []);
+}
+
+function mapVacationRow(row: {
+  id: string; name: string; start_date: string | null; end_date: string | null; status: VacationStatus;
+  splitwise_group_id: string | null; splitwise_group_name: string | null;
+  splitwise_group_member_ids: string | null; created_at: string; started_at: string | null; ended_at: string | null;
+}): Vacation {
+  return {
+    ...row,
+    splitwise_group_member_ids: row.splitwise_group_member_ids
+      ? JSON.parse(row.splitwise_group_member_ids)
+      : null,
+  };
+}
+
+export async function createVacation(input: CreateVacationInput): Promise<Vacation> {
+  const d = db();
+  if (input.start_date && input.end_date) {
+    // Overlap = existing.start <= new.end AND new.start <= existing.end.
+    const conflicts = await d.getAllAsync(
+      `SELECT id FROM vacations
+       WHERE status IN ('draft','active')
+         AND start_date IS NOT NULL AND end_date IS NOT NULL
+         AND start_date <= ? AND end_date >= ?`,
+      [input.end_date, input.start_date]
+    );
+    if (conflicts.length > 0) {
+      throw new VacationConflictError('overlap', 'Dates overlap an existing vacation.');
+    }
+  }
+  const now = new Date().toISOString();
+  const vacation: Vacation = {
+    id: generateId('vac'),
+    name: input.name,
+    start_date: input.start_date ?? null,
+    end_date: input.end_date ?? null,
+    status: 'draft',
+    splitwise_group_id: input.splitwise_group_id ?? null,
+    splitwise_group_name: input.splitwise_group_name ?? null,
+    splitwise_group_member_ids: input.splitwise_group_member_ids ?? null,
+    created_at: now,
+    started_at: null,
+    ended_at: null,
+  };
+  await d.runAsync(
+    `INSERT INTO vacations (id, name, start_date, end_date, status, splitwise_group_id, splitwise_group_name, splitwise_group_member_ids, created_at, started_at, ended_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      vacation.id, vacation.name, vacation.start_date, vacation.end_date, vacation.status,
+      vacation.splitwise_group_id, vacation.splitwise_group_name,
+      vacation.splitwise_group_member_ids ? JSON.stringify(vacation.splitwise_group_member_ids) : null,
+      vacation.created_at, vacation.started_at, vacation.ended_at,
+    ]
+  );
+  return vacation;
+}
+
+export async function getVacations(): Promise<Vacation[]> {
+  const rows = await db().getAllAsync<Parameters<typeof mapVacationRow>[0]>(
+    `SELECT * FROM vacations
+     ORDER BY CASE status WHEN 'ended' THEN 1 ELSE 0 END, COALESCE(start_date, created_at) DESC`,
+    []
+  );
+  return rows.map(mapVacationRow);
+}
+
+export async function getVacation(id: string): Promise<Vacation | null> {
+  const row = await db().getFirstAsync<Parameters<typeof mapVacationRow>[0]>(
+    `SELECT * FROM vacations WHERE id = ?`,
+    [id]
+  );
+  return row ? mapVacationRow(row) : null;
+}
+
+export async function getActiveVacation(): Promise<Vacation | null> {
+  const row = await db().getFirstAsync<Parameters<typeof mapVacationRow>[0]>(
+    `SELECT * FROM vacations WHERE status = 'active'`,
+    []
+  );
+  return row ? mapVacationRow(row) : null;
+}
+
+export async function startVacation(id: string): Promise<void> {
+  const others = await db().getAllAsync<{ id: string }>(
+    `SELECT id FROM vacations WHERE status = 'active' AND id != ?`,
+    [id]
+  );
+  if (others.length > 0) {
+    throw new VacationConflictError('already_active', 'Another vacation is already active.');
+  }
+  await db().runAsync(
+    `UPDATE vacations SET status = 'active', started_at = ? WHERE id = ?`,
+    [new Date().toISOString(), id]
+  );
+}
+
+export async function endVacation(id: string): Promise<void> {
+  await db().runAsync(
+    `UPDATE vacations SET status = 'ended', ended_at = ? WHERE id = ?`,
+    [new Date().toISOString(), id]
+  );
+}
+
+export async function deleteVacation(id: string): Promise<void> {
+  await db().withTransactionAsync(async () => {
+    await db().runAsync(
+      `UPDATE transactions SET vacation_id = NULL WHERE vacation_id = ? AND status = 'new'`,
+      [id]
+    );
+    await db().runAsync(`DELETE FROM vacations WHERE id = ?`, [id]);
+  });
 }

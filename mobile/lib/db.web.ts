@@ -5,11 +5,15 @@
 import {
   Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem,
 } from '@/lib/types';
+import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
+import { generateId } from '@/lib/id';
+import { VacationConflictError } from '@/lib/vacationErrors';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
+const VACATION_STORE = 'vacations';
 
 let _db: IDBDatabase | null = null;
 
@@ -48,6 +52,9 @@ export async function initDb(): Promise<void> {
         // Keyed by transaction_id: mirrors the SQLite UNIQUE(transaction_id)
         // constraint and makes lookups by transaction natural.
         d.createObjectStore(DECISION_STORE, { keyPath: 'transaction_id' });
+      }
+      if (!d.objectStoreNames.contains(VACATION_STORE)) {
+        d.createObjectStore(VACATION_STORE, { keyPath: 'id' });
       }
     };
     open.onsuccess = () => resolve(open.result);
@@ -280,5 +287,96 @@ export async function deleteAllTransactions(): Promise<void> {
   tx.objectStore(TX_STORE).clear();
   // Parity with SQLite ON DELETE CASCADE.
   tx.objectStore(DECISION_STORE).clear();
+  await done(tx);
+}
+
+function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  return aStart <= bEnd && bStart <= aEnd;
+}
+
+export async function createVacation(input: CreateVacationInput): Promise<Vacation> {
+  if (input.start_date && input.end_date) {
+    const all = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
+    const conflict = all.some(
+      (v) =>
+        (v.status === 'draft' || v.status === 'active') &&
+        v.start_date && v.end_date &&
+        rangesOverlap(v.start_date, v.end_date, input.start_date!, input.end_date!)
+    );
+    if (conflict) throw new VacationConflictError('overlap', 'Dates overlap an existing vacation.');
+  }
+  const vacation: Vacation = {
+    id: generateId('vac'),
+    name: input.name,
+    start_date: input.start_date ?? null,
+    end_date: input.end_date ?? null,
+    status: 'draft',
+    splitwise_group_id: input.splitwise_group_id ?? null,
+    splitwise_group_name: input.splitwise_group_name ?? null,
+    splitwise_group_member_ids: input.splitwise_group_member_ids ?? null,
+    created_at: new Date().toISOString(),
+    started_at: null,
+    ended_at: null,
+  };
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  tx.objectStore(VACATION_STORE).add(vacation);
+  await done(tx);
+  return vacation;
+}
+
+function byVacationOrder(a: Vacation, b: Vacation): number {
+  const aEnded = a.status === 'ended' ? 1 : 0;
+  const bEnded = b.status === 'ended' ? 1 : 0;
+  if (aEnded !== bEnded) return aEnded - bEnded;
+  const aKey = a.start_date ?? a.created_at;
+  const bKey = b.start_date ?? b.created_at;
+  return aKey < bKey ? 1 : aKey > bKey ? -1 : 0;
+}
+
+export async function getVacations(): Promise<Vacation[]> {
+  const all = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
+  return all.sort(byVacationOrder);
+}
+
+export async function getVacation(id: string): Promise<Vacation | null> {
+  const row = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).get(id) as IDBRequest<Vacation | undefined>);
+  return row ?? null;
+}
+
+export async function getActiveVacation(): Promise<Vacation | null> {
+  const all = await getVacations();
+  return all.find((v) => v.status === 'active') ?? null;
+}
+
+export async function startVacation(id: string): Promise<void> {
+  const all = await getVacations();
+  if (all.some((v) => v.status === 'active' && v.id !== id)) {
+    throw new VacationConflictError('already_active', 'Another vacation is already active.');
+  }
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
+  if (existing) store.put({ ...existing, status: 'active' as VacationStatus, started_at: new Date().toISOString() });
+  await done(tx);
+}
+
+export async function endVacation(id: string): Promise<void> {
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
+  if (existing) store.put({ ...existing, status: 'ended' as VacationStatus, ended_at: new Date().toISOString() });
+  await done(tx);
+}
+
+export async function deleteVacation(id: string): Promise<void> {
+  const tx = db().transaction([TX_STORE, VACATION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  const all = await req(txStore.getAll() as IDBRequest<Transaction[]>);
+  for (const t of all) {
+    if (t.vacation_id === id && t.status === 'new') {
+      txStore.put({ ...t, vacation_id: null });
+    }
+  }
+  tx.objectStore(VACATION_STORE).delete(id);
   await done(tx);
 }
