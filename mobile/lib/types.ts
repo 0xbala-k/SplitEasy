@@ -11,6 +11,7 @@ export interface Transaction {
   status: TransactionStatus;
   pending: boolean;
   created_at: string;    // ISO-8601 datetime; used for 6-month prune
+  vacation_id?: string | null; // set while assigned to a vacation
 }
 
 export interface SplitDecision {
@@ -71,4 +72,36 @@ export interface HistoryItem {
   status: TransactionStatus;
   split?: { friend_names: string[]; amount_each: number };
   combined?: { expense_id: string; transaction_ids: string[]; count: number };
+}
+
+export type VacationStatus = 'draft' | 'active' | 'ended';
+
+export interface Vacation {
+  id: string;
+  name: string;
+  start_date: string | null;   // ISO-8601 date "YYYY-MM-DD"
+  end_date: string | null;
+  status: VacationStatus;
+  splitwise_group_id: string | null;
+  splitwise_group_name: string | null;
+  splitwise_group_member_ids: string[] | null;
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+export interface CreateVacationInput {
+  name: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  splitwise_group_id?: string | null;
+  splitwise_group_name?: string | null;
+  splitwise_group_member_ids?: string[] | null;
+}
+
+export interface SplitwiseGroup {
+  id: string;
+  name: string;
+  member_ids: string[];
+  member_names: string[];
 }
