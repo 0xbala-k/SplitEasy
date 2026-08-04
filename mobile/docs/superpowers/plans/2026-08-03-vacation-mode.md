@@ -270,7 +270,7 @@ Expected: FAIL — the new exports don't exist yet.
 
 Add the import at the top:
 ```ts
-import { Vacation, CreateVacationInput } from '@/lib/types';
+import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { VacationConflictError } from '@/lib/vacationErrors';
 ```
@@ -293,10 +293,13 @@ In `initDb()`, add a new migration block right after the existing `if (version >
         ended_at TEXT
       );
     `);
-    // Always runs (not gated on version >= 1) so a brand-new install, whose
-    // base transactions table is created above without this column, still
-    // gets it — matches the "fresh install and upgrade both take the ALTER
-    // path" shape already used for other columns in this function.
+    // Unlike `pending`/`description` above, vacation_id is NOT in the base
+    // `version < 1` CREATE TABLE for transactions — so, unlike those columns,
+    // this ALTER must run ungated (not `version >= 1 && ...`) so a brand-new
+    // install (version 0) gets the column too. If a future migration ever
+    // adds vacation_id to the base CREATE TABLE, this ALTER must move behind
+    // a `version >= 1` guard or it will fail with "duplicate column name" on
+    // fresh installs.
     await _db.execAsync(`ALTER TABLE transactions ADD COLUMN vacation_id TEXT REFERENCES vacations(id);`);
   }
 ```
@@ -311,6 +314,16 @@ Update the version-stamp block's literal and comment:
   }
 ```
 (This replaces the prior `if (version < 3) { PRAGMA user_version = 3; }` block — same guard, new literal.)
+
+This migration change breaks three pre-existing assertions in `__tests__/lib/db.test.ts` that this task must fix (do this now, before Step 4, or Step 4's "Expected: PASS" will not hold):
+- `initDb skips migration when already at version 1` (the test that does `mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 1 })` and filters `execAsync` calls for `'CREATE TABLE'`, asserting zero matches): at version 1 the new `version < 4` block still runs and emits `CREATE TABLE IF NOT EXISTS vacations`, so the filter now finds one call and the length-0 assertion fails. Narrow the filter to what the test actually means to check — that the *original* tables aren't recreated:
+  ```ts
+  const ddlCalls = mockDb.execAsync.mock.calls.filter(([sql]: [string]) =>
+    sql.includes('CREATE TABLE IF NOT EXISTS transactions')
+  );
+  expect(ddlCalls).toHaveLength(0);
+  ```
+- `initDb migrates a v1 install by adding both pending and description columns` and `initDb migrates an existing v2 install by adding the description column`: both assert `expect.stringContaining('user_version = 3')`. Change both to `expect.stringContaining('user_version = 4')`.
 
 Add these functions after `deleteAllTransactions` at the end of the file:
 ```ts
@@ -435,6 +448,10 @@ Expected: PASS
 
 `seedRaw` (top of `__tests__/lib/db.web.test.ts`) opens a second raw connection via `indexedDB.open('spliteasy', 1)` — a hardcoded version. Once this task bumps `DB_VERSION` to `2` in `lib/db.web.ts`, that hardcoded `1` becomes a **lower** version than the database's actual current version, and `IDBFactory.open` throws `VersionError` for that — breaking every existing test that uses `seedRaw` (e.g. the prune tests), not just new ones. Fix it first by dropping the explicit version so it always opens at whatever version the database is already at:
 ```ts
+// Seed a row through a second raw IDB connection: fake-indexeddb shares data
+// across connections. No explicit version here — always opens at whatever
+// version the database is already at, so this stays correct as DB_VERSION
+// bumps over time instead of needing to track it.
 async function seedRaw(store: string, value: object) {
   const d = await new Promise<IDBDatabase>((res, rej) => {
     const open = indexedDB.open('spliteasy');
@@ -447,7 +464,7 @@ async function seedRaw(store: string, value: object) {
   d.close();
 }
 ```
-(Only the `indexedDB.open('spliteasy', 1)` line changes, to `indexedDB.open('spliteasy')`.) Run `npm test -- db.web.test.ts` now, before writing anything else, to confirm the existing suite still passes with this one-line fix in isolation.
+(Replaces both the old comment and the `indexedDB.open('spliteasy', 1)` line.) Run `npm test -- db.web.test.ts` now, before writing anything else, to confirm the existing suite still passes with this fix in isolation.
 
 Now append to `__tests__/lib/db.web.test.ts` (add to the existing import from `@/lib/db.web`: `createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation`, and add `import { VacationConflictError } from '@/lib/vacationErrors';`):
 
@@ -657,7 +674,7 @@ export async function deleteVacation(id: string): Promise<void> {
 - [ ] **Step 8: Run both test files and the parity test**
 
 Run: `npm test -- db.test.ts db.web.test.ts db.parity.test.ts`
-Expected: PASS for `db.test.ts`; `db.web.test.ts` passes once Task 3's `assignTransactionsToVacation` lands (see Step 5 note) — if running strictly in order, re-run after Task 3; `db.parity.test.ts` PASSes now since both files export the same new names.
+Expected: all PASS — including the three pre-existing `db.test.ts` assertions updated above. `db.parity.test.ts` PASSes since both files export the same new names.
 
 - [ ] **Step 9: Commit**
 
@@ -772,6 +789,16 @@ describe('vacation transaction capture & history', () => {
       expect.stringContaining("SET status = 'ended'"),
       expect.arrayContaining([expect.any(String), expect.any(String)])
     );
+  });
+
+  test('reconcileVacationStatuses caps activation to a single row per call', async () => {
+    // Regression: without the `id = (SELECT ... LIMIT 1)` clause, SQLite's
+    // UPDATE would activate every due draft in one pass since it evaluates
+    // the WHERE against the pre-update snapshot for all matching rows.
+    await reconcileVacationStatuses();
+    const [sql, params] = mockDb.runAsync.mock.calls.find(([s]: [string]) => s.includes("SET status = 'active'"))!;
+    expect(sql).toContain('LIMIT 1');
+    expect(params).toHaveLength(3);
   });
 });
 ```
@@ -935,12 +962,41 @@ export async function reconcileVacationStatuses(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
   await db().withTransactionAsync(async () => {
+    // Three independent phases, run in order, each seeing the previous
+    // phase's writes (sequential statements in one SQLite transaction):
+    //
+    // 1. A draft whose entire window has already elapsed (past start AND
+    //    past end) goes straight to 'ended' — it never needs the single
+    //    active slot at all.
+    await db().runAsync(
+      `UPDATE vacations SET status = 'ended', ended_at = ?
+       WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
+         AND end_date IS NOT NULL AND end_date < ?`,
+      [now, today, today]
+    );
+    // 2. Activate at most one remaining due draft (earliest start_date
+    //    first). SQLite's UPDATE evaluates its WHERE against the pre-update
+    //    snapshot for every candidate row before writing any of them, so a
+    //    plain `NOT EXISTS (... status = 'active')` guard alone would let
+    //    two simultaneously-due drafts both flip to 'active' in one
+    //    statement; the `id = (SELECT ... LIMIT 1)` clause caps that to one
+    //    row. Phase 1 already removed any fully-elapsed draft from
+    //    consideration here, so this never "wastes" the slot on one that
+    //    would immediately re-end.
     await db().runAsync(
       `UPDATE vacations SET status = 'active', started_at = ?
        WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
-         AND NOT EXISTS (SELECT 1 FROM vacations v2 WHERE v2.status = 'active')`,
-      [now, today]
+         AND NOT EXISTS (SELECT 1 FROM vacations v2 WHERE v2.status = 'active')
+         AND id = (
+           SELECT id FROM vacations
+           WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
+           ORDER BY start_date ASC, id ASC LIMIT 1
+         )`,
+      [now, today, today]
     );
+    // 3. End any already-active vacation (from a prior reconcile call, or
+    //    just-activated by phase 2 with an elapsed end_date) whose end date
+    //    has passed.
     await db().runAsync(
       `UPDATE vacations SET status = 'ended', ended_at = ?
        WHERE status = 'active' AND end_date IS NOT NULL AND end_date < ?`,
@@ -955,11 +1011,11 @@ Note the assertion in the test above for `assignTransactionsToVacation`'s SQL: `
 - [ ] **Step 4: Run native tests to verify they pass**
 
 Run: `npm test -- db.test.ts`
-Expected: PASS. Also re-run the full native suite (`npm test -- db.test.ts`) to confirm the `groupHistoryRows` refactor didn't change any existing `getHistoryTransactions` assertions from Task 2's file (all of Task 2's pre-existing `getHistoryTransactions` tests must still pass unchanged).
+Expected: PASS, including every pre-existing `getHistoryTransactions` test — the `groupHistoryRows` refactor must not change their assertions (those tests are unchanged by this task; only the three migration-related tests fixed in Task 2 were touched).
 
 - [ ] **Step 5: Write the failing web tests**
 
-Add to the imports in `__tests__/lib/db.web.test.ts`: `getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation, removeTransactionFromVacation, reconcileVacationStatuses`. Also uncomment/finish the `deleteVacation` test from Task 2 Step 5 now that `assignTransactionsToVacation` exists.
+Add to the imports in `__tests__/lib/db.web.test.ts`: `getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation, removeTransactionFromVacation, reconcileVacationStatuses`.
 
 ```ts
 describe('vacation transaction capture & history (IndexedDB)', () => {
@@ -1042,6 +1098,34 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
     const v = await createVacation({ name: 'Manual' });
     await reconcileVacationStatuses();
     expect((await getVacation(v.id))?.status).toBe('draft');
+  });
+
+  it('reconcileVacationStatuses activates at most one of two due, open-ended drafts', async () => {
+    // Both have start_date in the past and no end_date, so createVacation's
+    // overlap check (which only runs when both dates are set) never rejects
+    // the second one — this is the scenario the native LIMIT-1 fix guards.
+    const past = new Date(); past.setDate(past.getDate() - 3);
+    const startDate = past.toISOString().slice(0, 10);
+    const a = await createVacation({ name: 'A', start_date: startDate });
+    const b = await createVacation({ name: 'B', start_date: startDate });
+    await reconcileVacationStatuses();
+    const statuses = [(await getVacation(a.id))?.status, (await getVacation(b.id))?.status];
+    expect(statuses.filter((s) => s === 'active')).toHaveLength(1);
+  });
+
+  it('reconcileVacationStatuses ends a draft immediately if both its dates have already elapsed, without blocking a later activation', async () => {
+    const wayPast = new Date(); wayPast.setDate(wayPast.getDate() - 10);
+    const stillPast = new Date(); stillPast.setDate(stillPast.getDate() - 5);
+    const recentPast = new Date(); recentPast.setDate(recentPast.getDate() - 1);
+    const elapsed = await createVacation({
+      name: 'Elapsed', start_date: wayPast.toISOString().slice(0, 10), end_date: stillPast.toISOString().slice(0, 10),
+    });
+    const current = await createVacation({
+      name: 'Current', start_date: recentPast.toISOString().slice(0, 10),
+    });
+    await reconcileVacationStatuses();
+    expect((await getVacation(elapsed.id))?.status).toBe('ended');
+    expect((await getVacation(current.id))?.status).toBe('active');
   });
 });
 ```
@@ -1200,21 +1284,41 @@ export async function reconcileVacationStatuses(): Promise<void> {
   const tx = db().transaction(VACATION_STORE, 'readwrite');
   const store = tx.objectStore(VACATION_STORE);
   const all = await req(store.getAll() as IDBRequest<Vacation[]>);
-  const hasActive = all.some((v) => v.status === 'active');
-  let activated = false;
+
+  // Mirrors the three-phase SQL in lib/db.ts's reconcileVacationStatuses —
+  // see that function's comments for why each phase exists. All three phases
+  // read from this same `all` snapshot (matching how each native UPDATE
+  // statement's WHERE evaluates against the state at the start of that
+  // statement) rather than re-querying mid-function.
+
+  // 1. Fully-elapsed drafts go straight to 'ended'.
+  const elapsedIds = new Set<string>();
   for (const v of all) {
-    if (!hasActive && !activated && v.status === 'draft' && v.start_date && v.start_date <= today) {
-      store.put({ ...v, status: 'active' as VacationStatus, started_at: now });
-      activated = true;
-      if (v.end_date && v.end_date < today) {
-        store.put({ ...v, status: 'ended' as VacationStatus, started_at: now, ended_at: now });
-      }
-      continue;
+    if (v.status === 'draft' && v.start_date && v.start_date <= today && v.end_date && v.end_date < today) {
+      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
+      elapsedIds.add(v.id);
     }
+  }
+
+  // 2. Activate at most one remaining due draft, earliest start_date first —
+  //    phase 1 already excluded any candidate that would immediately re-end.
+  const hasActive = all.some((v) => v.status === 'active');
+  if (!hasActive) {
+    const dueDrafts = all
+      .filter((v) => v.status === 'draft' && !elapsedIds.has(v.id) && v.start_date && v.start_date <= today)
+      .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''));
+    const next = dueDrafts[0];
+    if (next) store.put({ ...next, status: 'active' as VacationStatus, started_at: now });
+  }
+
+  // 3. End any already-active vacation (from a prior call) whose end date
+  //    has passed.
+  for (const v of all) {
     if (v.status === 'active' && v.end_date && v.end_date < today) {
       store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
     }
   }
+
   await done(tx);
 }
 ```
@@ -1242,6 +1346,8 @@ git commit -m "feat(db): capture transactions into active vacations, scope histo
 **Interfaces:**
 - Consumes: `SplitwiseGroup` (`lib/types.ts`), `splitwiseFetch` (`lib/splitwiseTransport.ts`).
 - Produces: `getGroups(): Promise<SplitwiseGroup[]>`; `ExpenseParams.groupId?: string` (threads into `create_expense`/`update_expense` as `group_id`).
+
+On web, `splitwiseFetch` (`lib/splitwiseTransport.web.ts`) doesn't call `secure.splitwise.com` directly — it tunnels through a Cloudflare Worker proxy (`${baseUrl}/splitwise/api${path}`, per that file's own header comment) because Splitwise doesn't send CORS headers. That Worker's source isn't in this repo, so this task's unit tests (which mock `splitwiseFetch` / `fetch` directly, same as the rest of `splitwise.test.ts`) will pass regardless, but the manual QA pass in Task 14 could still hit a 404/allowlist rejection on the web build specifically if the Worker only proxies a fixed set of paths. If step 8 of Task 14's manual pass fails only on web (native `getGroups` works, web doesn't), that Worker allowlist is the first thing to check — it's outside this repo's edit surface.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1436,12 +1542,16 @@ test('reconcile calls db.reconcileVacationStatuses then reloads', async () => {
   expect(useVacationStore.getState().activeVacation?.status).toBe('active');
 });
 
-test('create calls db.createVacation, reloads, and returns the new vacation', async () => {
+test('create calls db.createVacation, reconciles, and returns the new vacation', async () => {
   const created = vac({ id: 'new1', name: 'Ski' });
   mockCreateVacation.mockResolvedValue(created);
   mockGetVacations.mockResolvedValue([created]);
   const result = await useVacationStore.getState().create({ name: 'Ski' });
   expect(mockCreateVacation).toHaveBeenCalledWith({ name: 'Ski' });
+  // Reconciling (not a plain reload) matters here: a vacation whose
+  // start_date is today must activate immediately on creation, not wait for
+  // the next sync/foreground reconcile.
+  expect(mockReconcile).toHaveBeenCalledTimes(1);
   expect(result).toEqual(created);
   expect(useVacationStore.getState().vacations).toEqual([created]);
 });
@@ -1524,7 +1634,9 @@ export const useVacationStore = create<VacationState>((set, get) => ({
 
   create: async (input) => {
     const vacation = await createVacation(input);
-    await get().load();
+    // Reconcile (not just reload) so a vacation whose start_date is today
+    // activates immediately, per spec — see reconcile()'s comment.
+    await get().reconcile();
     return vacation;
   },
 
@@ -1559,15 +1671,16 @@ git commit -m "feat: add vacationStore for vacation lifecycle state"
 
 ---
 
-### Task 6: Wire vacation reconciliation and capture into `transactionStore.refresh()`
+### Task 6: Wire vacation reconciliation and capture into `transactionStore.refresh()` and app startup
 
 **Files:**
 - Modify: `stores/transactionStore.ts`
+- Modify: `app/(tabs)/_layout.tsx`
 - Test: `__tests__/stores/transactionStore.test.ts`
 
 **Interfaces:**
 - Consumes: `useVacationStore` (`stores/vacationStore.ts` — Task 5).
-- Produces: no new exports; `refresh()` now calls `useVacationStore.getState().reconcile()` before syncing, and passes `useVacationStore.getState().activeVacation?.id ?? null` as `upsertTransactions`'s second argument.
+- Produces: no new exports; `refresh()` now calls `useVacationStore.getState().reconcile()` before syncing, and passes `useVacationStore.getState().activeVacation?.id ?? null` as `upsertTransactions`'s second argument. `app/(tabs)/_layout.tsx` also reconciles once on app startup, so a dated vacation transitions even before the first Transactions-tab refresh.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1590,7 +1703,17 @@ In `beforeEach`, add:
   });
 ```
 
-Add these tests:
+This task also breaks three pre-existing assertions that must be fixed now, before Step 2, or they'll fail once `refresh()` calls `upsertTransactions` with a second argument: `toHaveBeenCalledWith(expect.arrayContaining([...]))` requires an exact-arity match, and after this task's implementation the call always has two arguments. In the existing tests `refresh calls worker, upserts added, deletes removed, updates cursor`, `refresh follows has_more pages and saves the final cursor`, and `first sync (no cursor) drains the backlog without storing transactions`, change every
+```ts
+expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([...]))
+```
+to
+```ts
+expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([...]), null)
+```
+(three call sites total — the array contents inside `arrayContaining([...])` stay exactly as they are, only the trailing `, null` is added).
+
+Now add these new tests:
 ```ts
 test('refresh reconciles vacation statuses before syncing', async () => {
   mockFetchTxs.mockResolvedValue(syncPage());
@@ -1634,7 +1757,7 @@ In `stores/transactionStore.ts`, add the import:
 import { useVacationStore } from '@/stores/vacationStore';
 ```
 
-In `refresh()`, right after `set({ isLoading: true });` inside the `try` block, add:
+In `refresh()`, `set({ isLoading: true });` runs before the `try` block — as the first statement inside that `try` block, add:
 ```ts
       await useVacationStore.getState().reconcile();
       const activeVacationId = useVacationStore.getState().activeVacation?.id ?? null;
@@ -1652,12 +1775,40 @@ to:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npm test -- transactionStore.test.ts`
-Expected: PASS. Re-run the full suite once more (`npm test`) since this is the last integration point that touches a widely-mocked module.
+Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Reconcile once on app startup**
+
+The spec commits to reconciling "once at app startup (in the tabs layout, alongside the existing `pruneOldTransactions()` call)" so a dated vacation transitions even before the user pulls to refresh. `app/(tabs)/_layout.tsx` already runs `pruneOldTransactions()` in a `useEffect` on mount — add the same call there. This is a screen-adjacent file with no existing test file (matches this codebase's convention of not unit-testing `app/**` — see Task 11's note), so this step is manual-only; Task 14's regression pass covers it.
+
+In `app/(tabs)/_layout.tsx`, add the import:
+```ts
+import { useVacationStore } from '@/stores/vacationStore';
+```
+Add inside the existing `useEffect`, alongside the `loadFriends()` call:
+```tsx
+export default function TabsLayout() {
+  const count = useTransactionStore((s) => s.transactions.length);
+  const loadFriends = useFriendStore((s) => s.load);
+  const reconcileVacations = useVacationStore((s) => s.reconcile);
+
+  useEffect(() => {
+    loadFriends();
+    reconcileVacations();
+    pruneOldTransactions().catch(console.error);
+  }, []);
+```
+(Only the `reconcileVacations` line and its destructuring are new — the rest of the component is unchanged.)
+
+- [ ] **Step 6: Run the full suite**
+
+Run: `npm test`
+Expected: all PASS — this is the last integration point that touches a widely-mocked module.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add stores/transactionStore.ts __tests__/stores/transactionStore.test.ts
+git add stores/transactionStore.ts "app/(tabs)/_layout.tsx" __tests__/stores/transactionStore.test.ts
 git commit -m "feat: reconcile vacations and capture synced transactions into the active one"
 ```
 
@@ -1693,10 +1844,14 @@ test('passes groupId through to createExpense when set', async () => {
 });
 
 test('sorts group members ahead of other friends without hiding non-members', async () => {
+  // Store order is Sam-then-Zoe and Zoe is the group member, so this only
+  // passes once the groupMemberIds sort actually runs — with the fix absent,
+  // the assertion below would see ['Sam', 'Zoe'] (the store's own order) and
+  // fail, unlike a fixture that already happens to match the sorted output.
   (useFriendStore as jest.Mock).mockReturnValue({
     friends: [
-      { id: '3', display_name: 'Zoe', avatar_url: null },
       { id: '2', display_name: 'Sam', avatar_url: null },
+      { id: '3', display_name: 'Zoe', avatar_url: null },
     ],
     isLoading: false,
   });
@@ -1717,7 +1872,7 @@ test('sorts group members ahead of other friends without hiding non-members', as
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- FriendPickerSheet.test.tsx`
-Expected: FAIL — `groupId` is dropped (not passed to `createExpense`), friend order is unchanged (`Sam` before `Zoe`, the store's given order).
+Expected: FAIL — `groupId` is dropped (not passed to `createExpense`); the order test sees `['Sam', 'Zoe']` (the store's own order, since nothing sorts by `groupMemberIds` yet) instead of the expected `['Zoe', 'Sam']`.
 
 - [ ] **Step 3: Implement**
 
@@ -1972,8 +2127,16 @@ test('shows the in-progress vacation and jumps straight to its detail screen', (
   mockStore({ vacations: [v], activeVacation: v });
   render(<VacationBanner />);
   expect(screen.getByText('Hawaii')).toBeTruthy();
+  expect(screen.getByText('Active vacation')).toBeTruthy();
   fireEvent.press(screen.getByLabelText('Open Hawaii vacation'));
   expect(mockPush).toHaveBeenCalledWith('/vacation/v1');
+});
+
+test('shows the date range instead of the status line when the vacation has dates', () => {
+  const v = vac({ id: 'v1', status: 'active', name: 'Hawaii', start_date: '2026-08-01', end_date: '2026-08-10' });
+  mockStore({ vacations: [v], activeVacation: v });
+  render(<VacationBanner />);
+  expect(screen.getByText('2026-08-01 – 2026-08-10')).toBeTruthy();
 });
 
 test('shows a compact link when only ended vacations exist', () => {
@@ -2029,7 +2192,9 @@ export function VacationBanner() {
         <View style={styles.info}>
           <Text style={styles.title}>{inProgress.name}</Text>
           <Text style={styles.subtitle}>
-            {inProgress.status === 'active' ? 'Active vacation' : 'Not started yet'}
+            {inProgress.start_date && inProgress.end_date
+              ? `${inProgress.start_date} – ${inProgress.end_date}`
+              : inProgress.status === 'active' ? 'Active vacation' : 'Not started yet'}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
@@ -2731,6 +2896,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
 import { getVacationPendingTransactions, getVacationHistory, removeTransactionFromVacation } from '@/lib/db';
+import { VacationConflictError } from '@/lib/vacationErrors';
 import { useVacationStore } from '@/stores/vacationStore';
 import { TransactionRow } from '@/components/TransactionRow';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
@@ -2838,8 +3004,13 @@ export default function VacationDetailScreen() {
   async function handleStart() {
     try {
       await startVacation(vacation.id);
-    } catch {
-      toast.show('Another vacation is already active. End it first.', 'error');
+    } catch (err) {
+      toast.show(
+        err instanceof VacationConflictError
+          ? 'Another vacation is already active. End it first.'
+          : 'Could not start vacation. Please try again.',
+        'error'
+      );
     }
   }
 

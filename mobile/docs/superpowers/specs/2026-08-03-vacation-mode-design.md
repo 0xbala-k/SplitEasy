@@ -157,10 +157,13 @@ banner and list stay current.
   `app/(tabs)/index.tsx` above the `FlatList`:
   - No vacations exist at all → "Track vacation spending separately — Create
     a vacation" CTA → `router.push('/vacation')`.
-  - An in-progress (`draft`/`active`) vacation exists → card with name,
-    dates (if set), status pill, pending-transaction count → tapping opens
-    `router.push('/vacation/${id}')` directly (skip the list, since there's
-    only one in-progress vacation to show).
+  - An in-progress (`draft`/`active`) vacation exists → card with name and
+    either its dates (if set) or a status line ("Active vacation" /
+    "Not started yet") → tapping opens `router.push('/vacation/${id}')`
+    directly (skip the list, since there's only one in-progress vacation to
+    show). No pending-transaction count on the banner itself — that's one tap
+    away on the detail screen; keeps the banner a single cheap store read
+    instead of an extra query on every Transactions-tab focus.
   - Only `ended` vacations exist → compact "Vacations" link →
     `router.push('/vacation')`.
 - **`app/vacation/index.tsx`** — list screen. In-progress vacation pinned at
