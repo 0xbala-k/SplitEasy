@@ -101,8 +101,12 @@ export default function VacationDetailScreen() {
   }
 
   async function handleRemove(txId: string) {
-    await removeTransactionFromVacation(txId);
-    refresh();
+    try {
+      await removeTransactionFromVacation(txId);
+      refresh();
+    } catch {
+      toast.show('Could not remove transaction. Please try again.', 'error');
+    }
   }
 
   function handleSplitSuccess() {
@@ -130,7 +134,11 @@ export default function VacationDetailScreen() {
   };
 
   const handleEnd = async () => {
-    await endVacation(vacation.id);
+    try {
+      await endVacation(vacation.id);
+    } catch {
+      toast.show('Could not end vacation. Please try again.', 'error');
+    }
   };
 
   const handleDelete = () => {
@@ -145,8 +153,12 @@ export default function VacationDetailScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await deleteVacation(vacation.id);
-            router.back();
+            try {
+              await deleteVacation(vacation.id);
+              router.back();
+            } catch {
+              toast.show('Could not delete vacation. Please try again.', 'error');
+            }
           },
         },
       ]
@@ -166,9 +178,18 @@ export default function VacationDetailScreen() {
           <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
         </Pressable>
         <Text style={styles.headerTitle} numberOfLines={1}>{vacation.name}</Text>
-        <Pressable onPress={handleDelete} accessibilityRole="button" accessibilityLabel="Delete vacation">
-          <Ionicons name="trash-outline" size={20} color={Colors.error} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            onPress={() => router.push('/vacation')}
+            accessibilityRole="button"
+            accessibilityLabel="View all vacations"
+          >
+            <Ionicons name="list-outline" size={20} color={Colors.textPrimary} />
+          </Pressable>
+          <Pressable onPress={handleDelete} accessibilityRole="button" accessibilityLabel="Delete vacation">
+            <Ionicons name="trash-outline" size={20} color={Colors.error} />
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.metaRow}>
@@ -319,6 +340,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg, paddingTop: 56, paddingBottom: Spacing.sm,
   },
   headerTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: Colors.textPrimary, marginHorizontal: Spacing.md, textAlign: 'center' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   metaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, paddingHorizontal: Spacing.lg, marginBottom: Spacing.md },
   statusPill: { backgroundColor: Colors.surfaceMuted, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4 },
   statusPillActive: { backgroundColor: Colors.successLight },

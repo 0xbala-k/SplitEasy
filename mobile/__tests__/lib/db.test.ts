@@ -565,4 +565,13 @@ describe('vacation transaction capture & history', () => {
     expect(sql).toContain('LIMIT 1');
     expect(params).toHaveLength(3);
   });
+
+  test('reconcileVacationStatuses ends an elapsed active vacation before attempting to activate a new draft', async () => {
+    await reconcileVacationStatuses();
+    const calls = mockDb.runAsync.mock.calls;
+    const endActiveIdx = calls.findIndex(([s]: [string]) => s.includes("WHERE status = 'active' AND end_date"));
+    const activateIdx = calls.findIndex(([s]: [string]) => s.includes("SET status = 'active'"));
+    expect(endActiveIdx).toBeGreaterThanOrEqual(0);
+    expect(activateIdx).toBeGreaterThan(endActiveIdx);
+  });
 });

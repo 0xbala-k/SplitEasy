@@ -388,4 +388,18 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
     expect((await getVacation(elapsed.id))?.status).toBe('ended');
     expect((await getVacation(current.id))?.status).toBe('active');
   });
+
+  it('reconcileVacationStatuses activates a new draft the same day an active vacation elapses', async () => {
+    const farPast = new Date(); farPast.setDate(farPast.getDate() - 10);
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    const today = new Date().toISOString().slice(0, 10);
+    const a = await createVacation({
+      name: 'A', start_date: farPast.toISOString().slice(0, 10), end_date: yesterday.toISOString().slice(0, 10),
+    });
+    await startVacation(a.id);
+    const b = await createVacation({ name: 'B', start_date: today, end_date: null });
+    await reconcileVacationStatuses();
+    expect((await getVacation(a.id))?.status).toBe('ended');
+    expect((await getVacation(b.id))?.status).toBe('active');
+  });
 });

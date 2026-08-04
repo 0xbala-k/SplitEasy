@@ -212,9 +212,6 @@ export async function reconcileVacationStatuses(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
   await db().withTransactionAsync(async () => {
-    // Three independent phases, run in order, each seeing the previous
-    // phase's writes (sequential statements in one SQLite transaction):
-    //
     // 1. A draft whose entire window has already elapsed (past start AND
     //    past end) goes straight to 'ended' — it never needs the single
     //    active slot at all.
@@ -224,15 +221,26 @@ export async function reconcileVacationStatuses(): Promise<void> {
          AND end_date IS NOT NULL AND end_date < ?`,
       [now, today, today]
     );
-    // 2. Activate at most one remaining due draft (earliest start_date
+    // 2. End any already-active vacation whose end date has passed —
+    //    BEFORE attempting to activate a new draft, so a same-day handoff
+    //    between two dated vacations (e.g. A ends 08-10, B starts 08-11)
+    //    frees the active slot within this same reconcile call instead of
+    //    stranding B in 'draft' for one extra cycle.
+    await db().runAsync(
+      `UPDATE vacations SET status = 'ended', ended_at = ?
+       WHERE status = 'active' AND end_date IS NOT NULL AND end_date < ?`,
+      [now, today]
+    );
+    // 3. Activate at most one remaining due draft (earliest start_date
     //    first). SQLite's UPDATE evaluates its WHERE against the pre-update
     //    snapshot for every candidate row before writing any of them, so a
     //    plain `NOT EXISTS (... status = 'active')` guard alone would let
     //    two simultaneously-due drafts both flip to 'active' in one
     //    statement; the `id = (SELECT ... LIMIT 1)` clause caps that to one
     //    row. Phase 1 already removed any fully-elapsed draft from
-    //    consideration here, so this never "wastes" the slot on one that
-    //    would immediately re-end.
+    //    consideration here, and phase 2 already ended any expired active
+    //    vacation, so this statement's NOT EXISTS check sees an up-to-date
+    //    picture within this same transaction.
     await db().runAsync(
       `UPDATE vacations SET status = 'active', started_at = ?
        WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
@@ -243,14 +251,6 @@ export async function reconcileVacationStatuses(): Promise<void> {
            ORDER BY start_date ASC, id ASC LIMIT 1
          )`,
       [now, today, today]
-    );
-    // 3. End any already-active vacation (from a prior reconcile call, or
-    //    just-activated by phase 2 with an elapsed end_date) whose end date
-    //    has passed.
-    await db().runAsync(
-      `UPDATE vacations SET status = 'ended', ended_at = ?
-       WHERE status = 'active' AND end_date IS NOT NULL AND end_date < ?`,
-      [now, today]
     );
   });
 }

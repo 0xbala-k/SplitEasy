@@ -57,7 +57,16 @@ export async function initDb(): Promise<void> {
         d.createObjectStore(VACATION_STORE, { keyPath: 'id' });
       }
     };
-    open.onsuccess = () => resolve(open.result);
+    // A version bump can't proceed while another tab holds an older-version
+    // connection open; without these handlers the promise never settles and
+    // initDb() hangs forever on that tab.
+    open.onblocked = () => reject(new Error('IndexedDB upgrade blocked by another open tab'));
+    open.onsuccess = () => {
+      // Let a newer tab's upgrade proceed instead of blocking it — this tab
+      // just closes its now-stale connection.
+      open.result.onversionchange = () => open.result.close();
+      resolve(open.result);
+    };
     open.onerror = () => reject(open.error);
   });
 }
@@ -190,10 +199,13 @@ export async function reconcileVacationStatuses(): Promise<void> {
   const all = await req(store.getAll() as IDBRequest<Vacation[]>);
 
   // Mirrors the three-phase SQL in lib/db.ts's reconcileVacationStatuses —
-  // see that function's comments for why each phase exists. All three phases
-  // read from this same `all` snapshot (matching how each native UPDATE
-  // statement's WHERE evaluates against the state at the start of that
-  // statement) rather than re-querying mid-function.
+  // see that function's comments for why each phase exists and why phase 2
+  // (end already-active elapsed vacations) must run before phase 3
+  // (activate a new draft). All phases read from this same `all` snapshot
+  // (matching how each native UPDATE statement's WHERE evaluates against
+  // the state at the start of that statement) rather than re-querying
+  // mid-function, so ids affected by an earlier phase are tracked
+  // explicitly (elapsedIds, endedIds) instead of re-reading the store.
 
   // 1. Fully-elapsed drafts go straight to 'ended'.
   const elapsedIds = new Set<string>();
@@ -204,23 +216,28 @@ export async function reconcileVacationStatuses(): Promise<void> {
     }
   }
 
-  // 2. Activate at most one remaining due draft, earliest start_date first —
-  //    phase 1 already excluded any candidate that would immediately re-end.
-  const hasActive = all.some((v) => v.status === 'active');
+  // 2. End any already-active vacation whose end date has passed — before
+  //    attempting to activate a new draft, so a same-day handoff between
+  //    two dated vacations frees the active slot within this same call.
+  const endedIds = new Set<string>();
+  for (const v of all) {
+    if (v.status === 'active' && v.end_date && v.end_date < today) {
+      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
+      endedIds.add(v.id);
+    }
+  }
+
+  // 3. Activate at most one remaining due draft, earliest start_date first —
+  //    phase 1 already excluded any candidate that would immediately
+  //    re-end, and phase 2 already freed the slot from any vacation that
+  //    was active only because it hadn't been reconciled since it elapsed.
+  const hasActive = all.some((v) => v.status === 'active' && !endedIds.has(v.id));
   if (!hasActive) {
     const dueDrafts = all
       .filter((v) => v.status === 'draft' && !elapsedIds.has(v.id) && v.start_date && v.start_date <= today)
       .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''));
     const next = dueDrafts[0];
     if (next) store.put({ ...next, status: 'active' as VacationStatus, started_at: now });
-  }
-
-  // 3. End any already-active vacation (from a prior call) whose end date
-  //    has passed.
-  for (const v of all) {
-    if (v.status === 'active' && v.end_date && v.end_date < today) {
-      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
-    }
   }
 
   await done(tx);

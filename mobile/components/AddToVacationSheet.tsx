@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { BottomSheetModal, BottomSheetView, BottomSheetFlatList } from '@gorhom/bottom-sheet';
 import { Ionicons } from '@expo/vector-icons';
 import { getNewTransactions, assignTransactionsToVacation } from '@/lib/db';
+import { useToast } from '@/components/ToastProvider';
 import { Transaction } from '@/lib/types';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
@@ -15,6 +16,7 @@ interface Props {
 
 export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
   ({ vacationId, openToken, onDone }, ref) => {
+    const toast = useToast();
     const [candidates, setCandidates] = useState<Transaction[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [submitting, setSubmitting] = useState(false);
@@ -38,6 +40,8 @@ export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
       try {
         await assignTransactionsToVacation(vacationId, [...selected]);
         onDone();
+      } catch {
+        toast.show('Could not add transactions. Please try again.', 'error');
       } finally {
         setSubmitting(false);
       }
