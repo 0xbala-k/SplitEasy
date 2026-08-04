@@ -5,7 +5,7 @@ jest.mock('@/lib/secure', () => ({
 }));
 
 import { getSecure } from '@/lib/secure';
-import { getFriends, createExpense, updateExpense, deleteExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { getFriends, getGroups, createExpense, updateExpense, deleteExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
 
 global.fetch = jest.fn();
 const mockFetch = fetch as jest.Mock;
@@ -201,4 +201,53 @@ test('getExpense URL-encodes the expense id', async () => {
   await getExpense('a/b');
   const [url] = mockFetch.mock.calls[0];
   expect(url).toContain('/get_expense/a%2Fb');
+});
+
+test('getGroups returns mapped groups with member ids and names', async () => {
+  mockResponse({
+    groups: [
+      {
+        id: 55,
+        name: 'Hawaii Trip',
+        members: [
+          { id: 1, first_name: 'Me', last_name: '' },
+          { id: 2, first_name: 'Sam', last_name: 'K' },
+        ],
+      },
+    ],
+  });
+  const groups = await getGroups();
+  expect(groups).toEqual([
+    { id: '55', name: 'Hawaii Trip', member_ids: ['1', '2'], member_names: ['Me', 'Sam K'] },
+  ]);
+});
+
+test('getGroups throws SplitwiseAuthError on 401', async () => {
+  mockResponse({}, 401);
+  await expect(getGroups()).rejects.toThrow(SplitwiseAuthError);
+});
+
+test('createExpense includes group_id when provided', async () => {
+  mockResponse({ expenses: [{ id: 1 }] });
+  await createExpense({
+    amount: 10, description: 'x', currency: 'USD', currentUserId: '1', friendIds: ['2'], groupId: '55',
+  });
+  const body = new URLSearchParams(mockFetch.mock.calls[0][1].body as string);
+  expect(body.get('group_id')).toBe('55');
+});
+
+test('createExpense omits group_id when not provided', async () => {
+  mockResponse({ expenses: [{ id: 1 }] });
+  await createExpense({ amount: 10, description: 'x', currency: 'USD', currentUserId: '1', friendIds: ['2'] });
+  const body = new URLSearchParams(mockFetch.mock.calls[0][1].body as string);
+  expect(body.has('group_id')).toBe(false);
+});
+
+test('updateExpense includes group_id when provided', async () => {
+  mockResponse({ expenses: [{ id: 1 }] });
+  await updateExpense('1', {
+    amount: 10, description: 'x', currency: 'USD', currentUserId: '1', friendIds: ['2'], groupId: '55',
+  });
+  const body = new URLSearchParams(mockFetch.mock.calls[0][1].body as string);
+  expect(body.get('group_id')).toBe('55');
 });

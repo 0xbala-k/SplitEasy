@@ -58,3 +58,16 @@ test('in select mode, tapping the row toggles selection and hides split/skip act
   fireEvent.press(screen.getByLabelText('Select Amazon'));
   expect(onToggleSelect).toHaveBeenCalled();
 });
+
+test('remove variant labels the action as removing from vacation', () => {
+  const onSkip = jest.fn();
+  render(<TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} variant="remove" />);
+  expect(screen.queryByLabelText('Skip Amazon')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Remove Amazon from vacation'));
+  expect(onSkip).toHaveBeenCalled();
+});
+
+test('default variant keeps the existing skip label', () => {
+  render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} />);
+  expect(screen.getByLabelText('Skip Amazon')).toBeTruthy();
+});

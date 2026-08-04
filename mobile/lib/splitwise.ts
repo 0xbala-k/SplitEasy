@@ -1,5 +1,5 @@
 // mobile/lib/splitwise.ts
-import { SplitwiseFriend } from '@/lib/types';
+import { SplitwiseFriend, SplitwiseGroup } from '@/lib/types';
 import { splitwiseFetch } from '@/lib/splitwiseTransport';
 
 export class SplitwiseAuthError extends Error {
@@ -43,6 +43,28 @@ export async function getFriends(): Promise<SplitwiseFriend[]> {
   }));
 }
 
+interface RawGroupMember {
+  id: number;
+  first_name: string;
+  last_name: string;
+}
+
+interface RawGroup {
+  id: number;
+  name: string;
+  members: RawGroupMember[];
+}
+
+export async function getGroups(): Promise<SplitwiseGroup[]> {
+  const data = await swGet<{ groups: RawGroup[] }>('/get_groups');
+  return data.groups.map((g) => ({
+    id: String(g.id),
+    name: g.name,
+    member_ids: g.members.map((m) => String(m.id)),
+    member_names: g.members.map((m) => `${m.first_name} ${m.last_name}`.trim()),
+  }));
+}
+
 interface ExpenseParams {
   amount: number;
   description: string;
@@ -52,6 +74,7 @@ interface ExpenseParams {
   // When provided, each entry overrides the equal-split share for that friend.
   // owner's owed_share is derived as amount - sum(friendShares).
   friendShares?: Record<string, number>;
+  groupId?: string;
 }
 
 // Builds the Splitwise indexed user body shared by create_expense and update_expense.
@@ -66,6 +89,10 @@ function buildExpenseBody(params: ExpenseParams): { body: Record<string, string>
     'users__0__user_id': params.currentUserId,
     'users__0__paid_share': params.amount.toFixed(2),
   };
+
+  if (params.groupId) {
+    body['group_id'] = params.groupId;
+  }
 
   if (params.friendShares) {
     let friendTotalCents = 0;

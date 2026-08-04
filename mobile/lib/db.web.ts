@@ -5,11 +5,15 @@
 import {
   Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem,
 } from '@/lib/types';
+import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
+import { generateId } from '@/lib/id';
+import { VacationConflictError } from '@/lib/vacationErrors';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
+const VACATION_STORE = 'vacations';
 
 let _db: IDBDatabase | null = null;
 
@@ -49,8 +53,20 @@ export async function initDb(): Promise<void> {
         // constraint and makes lookups by transaction natural.
         d.createObjectStore(DECISION_STORE, { keyPath: 'transaction_id' });
       }
+      if (!d.objectStoreNames.contains(VACATION_STORE)) {
+        d.createObjectStore(VACATION_STORE, { keyPath: 'id' });
+      }
     };
-    open.onsuccess = () => resolve(open.result);
+    // A version bump can't proceed while another tab holds an older-version
+    // connection open; without these handlers the promise never settles and
+    // initDb() hangs forever on that tab.
+    open.onblocked = () => reject(new Error('IndexedDB upgrade blocked by another open tab'));
+    open.onsuccess = () => {
+      // Let a newer tab's upgrade proceed instead of blocking it — this tab
+      // just closes its now-stale connection.
+      open.result.onversionchange = () => open.result.close();
+      resolve(open.result);
+    };
     open.onerror = () => reject(open.error);
   });
 }
@@ -61,7 +77,7 @@ function byDateDesc(a: Transaction, b: Transaction): number {
 
 export async function getNewTransactions(): Promise<Transaction[]> {
   const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
-  return all.filter((t) => t.status === 'new').sort(byDateDesc);
+  return all.filter((t) => t.status === 'new' && !t.vacation_id).sort(byDateDesc);
 }
 
 export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
@@ -73,20 +89,9 @@ export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]
   return rows.filter((r): r is Transaction => r !== undefined);
 }
 
-export async function getHistoryTransactions(): Promise<HistoryItem[]> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE]);
-  const [all, decisions] = await Promise.all([
-    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
-    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
-  ]);
+function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): HistoryItem[] {
   const byTxId = new Map(decisions.map((d) => [d.transaction_id, d]));
-  const rows = all
-    .filter((t) => t.status === 'split' || t.status === 'skipped')
-    .sort(byDateDesc);
-
   const items: HistoryItem[] = [];
-  // Track split groups by expense id so multiple member transactions collapse
-  // into one item (mirrors lib/db.ts). _txIds is stripped before returning.
   const groups = new Map<string, HistoryItem & { _txIds: string[] }>();
 
   for (const t of rows) {
@@ -106,10 +111,7 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
           currency: t.currency,
           date: t.date,
           status: 'split',
-          split: {
-            friend_names: d.friend_names ?? [],
-            amount_each: d.amount_each ?? 0,
-          },
+          split: { friend_names: d.friend_names ?? [], amount_each: d.amount_each ?? 0 },
           _txIds: [t.id],
         };
         groups.set(key, item);
@@ -123,8 +125,6 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
         currency: t.currency,
         date: t.date,
         status: t.status,
-        // A split row missing its expense id is malformed, but still surface its
-        // friends so it doesn't masquerade as a skipped row in the UI.
         ...(t.status === 'split' && d?.friend_names
           ? { split: { friend_names: d.friend_names, amount_each: d.amount_each ?? 0 } }
           : {}),
@@ -132,8 +132,6 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
     }
   }
 
-  // Finalize: combined groups (>1 member) expose expense/member metadata and use
-  // the expense id as the row key; single-member groups stay keyed by tx id.
   for (const [expenseId, g] of groups.entries()) {
     if (g._txIds.length > 1) {
       g.combined = { expense_id: expenseId, transaction_ids: g._txIds, count: g._txIds.length };
@@ -145,7 +143,107 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
   return items;
 }
 
-export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void> {
+export async function getHistoryTransactions(): Promise<HistoryItem[]> {
+  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all.filter((t) => t.status === 'split' || t.status === 'skipped').sort(byDateDesc);
+  return groupHistoryRows(rows, decisions);
+}
+
+export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
+  const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
+  return all.filter((t) => t.status === 'new' && t.vacation_id === vacationId).sort(byDateDesc);
+}
+
+export async function getVacationHistory(vacationId: string): Promise<HistoryItem[]> {
+  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all
+    .filter((t) => (t.status === 'split' || t.status === 'skipped') && t.vacation_id === vacationId)
+    .sort(byDateDesc);
+  return groupHistoryRows(rows, decisions);
+}
+
+export async function assignTransactionsToVacation(vacationId: string, transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const tx = db().transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  for (const id of transactionIds) {
+    const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+    if (existing && existing.status === 'new' && !existing.vacation_id) {
+      store.put({ ...existing, vacation_id: vacationId });
+    }
+  }
+  await done(tx);
+}
+
+export async function removeTransactionFromVacation(transactionId: string): Promise<void> {
+  const tx = db().transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(transactionId) as IDBRequest<Transaction | undefined>);
+  if (existing && existing.status === 'new') store.put({ ...existing, vacation_id: null });
+  await done(tx);
+}
+
+export async function reconcileVacationStatuses(): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const all = await req(store.getAll() as IDBRequest<Vacation[]>);
+
+  // Mirrors the three-phase SQL in lib/db.ts's reconcileVacationStatuses —
+  // see that function's comments for why each phase exists and why phase 2
+  // (end already-active elapsed vacations) must run before phase 3
+  // (activate a new draft). All phases read from this same `all` snapshot
+  // (matching how each native UPDATE statement's WHERE evaluates against
+  // the state at the start of that statement) rather than re-querying
+  // mid-function, so ids affected by an earlier phase are tracked
+  // explicitly (elapsedIds, endedIds) instead of re-reading the store.
+
+  // 1. Fully-elapsed drafts go straight to 'ended'.
+  const elapsedIds = new Set<string>();
+  for (const v of all) {
+    if (v.status === 'draft' && v.start_date && v.start_date <= today && v.end_date && v.end_date < today) {
+      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
+      elapsedIds.add(v.id);
+    }
+  }
+
+  // 2. End any already-active vacation whose end date has passed — before
+  //    attempting to activate a new draft, so a same-day handoff between
+  //    two dated vacations frees the active slot within this same call.
+  const endedIds = new Set<string>();
+  for (const v of all) {
+    if (v.status === 'active' && v.end_date && v.end_date < today) {
+      store.put({ ...v, status: 'ended' as VacationStatus, ended_at: now });
+      endedIds.add(v.id);
+    }
+  }
+
+  // 3. Activate at most one remaining due draft, earliest start_date first —
+  //    phase 1 already excluded any candidate that would immediately
+  //    re-end, and phase 2 already freed the slot from any vacation that
+  //    was active only because it hadn't been reconciled since it elapsed.
+  const hasActive = all.some((v) => v.status === 'active' && !endedIds.has(v.id));
+  if (!hasActive) {
+    const dueDrafts = all
+      .filter((v) => v.status === 'draft' && !elapsedIds.has(v.id) && v.start_date && v.start_date <= today)
+      .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''));
+    const next = dueDrafts[0];
+    if (next) store.put({ ...next, status: 'active' as VacationStatus, started_at: now });
+  }
+
+  await done(tx);
+}
+
+export async function upsertTransactions(txs: PlaidTransaction[], activeVacationId: string | null = null): Promise<void> {
   const tx = db().transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const now = new Date().toISOString();
@@ -163,6 +261,7 @@ export async function upsertTransactions(txs: PlaidTransaction[]): Promise<void>
         status: 'new',
         pending: p.pending,
         created_at: now,
+        vacation_id: activeVacationId,
       } satisfies Transaction);
     } else if (existing.status === 'new') {
       // Mirror the SQL UPDATE: refresh mutable fields, never touch status of
@@ -280,5 +379,96 @@ export async function deleteAllTransactions(): Promise<void> {
   tx.objectStore(TX_STORE).clear();
   // Parity with SQLite ON DELETE CASCADE.
   tx.objectStore(DECISION_STORE).clear();
+  await done(tx);
+}
+
+function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  return aStart <= bEnd && bStart <= aEnd;
+}
+
+export async function createVacation(input: CreateVacationInput): Promise<Vacation> {
+  if (input.start_date && input.end_date) {
+    const all = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
+    const conflict = all.some(
+      (v) =>
+        (v.status === 'draft' || v.status === 'active') &&
+        v.start_date && v.end_date &&
+        rangesOverlap(v.start_date, v.end_date, input.start_date!, input.end_date!)
+    );
+    if (conflict) throw new VacationConflictError('overlap', 'Dates overlap an existing vacation.');
+  }
+  const vacation: Vacation = {
+    id: generateId('vac'),
+    name: input.name,
+    start_date: input.start_date ?? null,
+    end_date: input.end_date ?? null,
+    status: 'draft',
+    splitwise_group_id: input.splitwise_group_id ?? null,
+    splitwise_group_name: input.splitwise_group_name ?? null,
+    splitwise_group_member_ids: input.splitwise_group_member_ids ?? null,
+    created_at: new Date().toISOString(),
+    started_at: null,
+    ended_at: null,
+  };
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  tx.objectStore(VACATION_STORE).add(vacation);
+  await done(tx);
+  return vacation;
+}
+
+function byVacationOrder(a: Vacation, b: Vacation): number {
+  const aEnded = a.status === 'ended' ? 1 : 0;
+  const bEnded = b.status === 'ended' ? 1 : 0;
+  if (aEnded !== bEnded) return aEnded - bEnded;
+  const aKey = a.start_date ?? a.created_at;
+  const bKey = b.start_date ?? b.created_at;
+  return aKey < bKey ? 1 : aKey > bKey ? -1 : 0;
+}
+
+export async function getVacations(): Promise<Vacation[]> {
+  const all = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
+  return all.sort(byVacationOrder);
+}
+
+export async function getVacation(id: string): Promise<Vacation | null> {
+  const row = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).get(id) as IDBRequest<Vacation | undefined>);
+  return row ?? null;
+}
+
+export async function getActiveVacation(): Promise<Vacation | null> {
+  const all = await getVacations();
+  return all.find((v) => v.status === 'active') ?? null;
+}
+
+export async function startVacation(id: string): Promise<void> {
+  const all = await getVacations();
+  if (all.some((v) => v.status === 'active' && v.id !== id)) {
+    throw new VacationConflictError('already_active', 'Another vacation is already active.');
+  }
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
+  if (existing) store.put({ ...existing, status: 'active' as VacationStatus, started_at: new Date().toISOString() });
+  await done(tx);
+}
+
+export async function endVacation(id: string): Promise<void> {
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
+  if (existing) store.put({ ...existing, status: 'ended' as VacationStatus, ended_at: new Date().toISOString() });
+  await done(tx);
+}
+
+export async function deleteVacation(id: string): Promise<void> {
+  const tx = db().transaction([TX_STORE, VACATION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  const all = await req(txStore.getAll() as IDBRequest<Transaction[]>);
+  for (const t of all) {
+    if (t.vacation_id === id && t.status === 'new') {
+      txStore.put({ ...t, vacation_id: null });
+    }
+  }
+  tx.objectStore(VACATION_STORE).delete(id);
   await done(tx);
 }

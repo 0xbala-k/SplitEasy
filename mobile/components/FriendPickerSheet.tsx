@@ -42,10 +42,12 @@ interface Props {
   // dismissing without saving (otherwise stale uncommitted edits would linger).
   openToken?: number;
   onSuccess: (amountEach: number) => void;
+  groupId?: string;
+  groupMemberIds?: string[];
 }
 
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, combineTransactions, mode = 'create', editDecision, openToken, onSuccess }, ref) => {
+  ({ transaction, combineTransactions, mode = 'create', editDecision, openToken, onSuccess, groupId, groupMemberIds }, ref) => {
     const { friends, isLoading } = useFriendStore();
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
@@ -127,8 +129,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();
-      return q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
-    }, [friends, query]);
+      const base = q ? friends.filter((f) => f.display_name.toLowerCase().includes(q)) : friends;
+      if (!groupMemberIds || groupMemberIds.length === 0) return base;
+      const memberSet = new Set(groupMemberIds);
+      return [...base].sort((a, b) => Number(memberSet.has(b.id)) - Number(memberSet.has(a.id)));
+    }, [friends, query, groupMemberIds]);
 
     const selectedFriends = useMemo(
       () => friends.filter((f) => selected.has(f.id)),
@@ -203,6 +208,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             currency,
             currentUserId: user_id!,
             friendIds,
+            groupId,
             ...shares,
           });
           for (const t of members) {
@@ -239,6 +245,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           currency,
           currentUserId: user_id!,
           friendIds,
+          groupId,
           ...shares,
         });
 

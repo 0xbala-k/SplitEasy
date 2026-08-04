@@ -13,9 +13,10 @@ interface Props {
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
+  variant?: 'skip' | 'remove';
 }
 
-export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, selectMode, selected, onToggleSelect }: Props) {
+export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, selectMode, selected, onToggleSelect, variant = 'skip' }: Props) {
   const amount = `$${transaction.amount.toFixed(2)}`;
   const date = new Date(transaction.date).toLocaleDateString('en-US', {
     month: 'short',
@@ -23,6 +24,11 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
   });
   const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
   const avatarBg = merchantColor(transaction.merchant_name ?? '?');
+  const removeMode = variant === 'remove';
+  const skipIcon = removeMode ? 'trash-outline' : 'close-circle-outline';
+  const skipBtnIcon = removeMode ? 'trash-outline' : 'close-outline';
+  const skipLabel = removeMode ? `Remove ${transaction.merchant_name} from vacation` : `Skip ${transaction.merchant_name}`;
+  const skipUnderlayLabel = removeMode ? 'Remove' : 'Skip';
 
   if (selectMode) {
     return (
@@ -53,10 +59,10 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
       style={styles.skipUnderlay}
       onPress={onSkip}
       accessibilityRole="button"
-      accessibilityLabel={`Skip ${transaction.merchant_name}`}
+      accessibilityLabel={skipLabel}
     >
-      <Ionicons name="close-circle-outline" size={22} color={Colors.textSecondary} />
-      <Text style={styles.skipUnderlayText}>Skip</Text>
+      <Ionicons name={skipIcon} size={22} color={Colors.textSecondary} />
+      <Text style={styles.skipUnderlayText}>{skipUnderlayLabel}</Text>
     </Pressable>
   );
 
@@ -98,9 +104,9 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
             style={({ pressed }) => [styles.btn, styles.skipBtn, pressed && styles.skipBtnPressed]}
             onPress={onSkip}
             accessibilityRole="button"
-            accessibilityLabel={`Skip ${transaction.merchant_name}`}
+            accessibilityLabel={skipLabel}
           >
-            <Ionicons name="close-outline" size={14} color={Colors.textSecondary} />
+            <Ionicons name={skipBtnIcon} size={14} color={Colors.textSecondary} />
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}

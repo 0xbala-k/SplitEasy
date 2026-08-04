@@ -11,6 +11,7 @@ jest.mock('@/lib/worker', () => ({
   exchangeSplitwiseCode: jest.fn(),
 }));
 jest.mock('@/stores/plaidStore');
+jest.mock('@/stores/vacationStore');
 jest.mock('@/lib/splitwise');
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
@@ -20,6 +21,7 @@ import * as db from '@/lib/db';
 import * as worker from '@/lib/worker';
 import * as SecureStore from 'expo-secure-store';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { useVacationStore } from '@/stores/vacationStore';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { WorkerError } from '@/lib/worker';
 import * as splitwise from '@/lib/splitwise';
@@ -37,6 +39,7 @@ const mockDeleteExpense = splitwise.deleteExpense as jest.Mock;
 const mockDeleteSplitDecision = db.deleteSplitDecision as jest.Mock;
 const mockPersistCombined = db.persistCombinedSplit as jest.Mock;
 const mockRevertCombined = db.revertCombinedSplit as jest.Mock;
+const mockReconcile = jest.fn();
 
 function syncPage(overrides: Partial<{
   added: unknown[];
@@ -69,6 +72,11 @@ beforeEach(() => {
   mockDeleteSplitDecision.mockResolvedValue(undefined);
   mockPersistCombined.mockResolvedValue(undefined);
   mockRevertCombined.mockResolvedValue(undefined);
+  mockReconcile.mockResolvedValue(undefined);
+  (useVacationStore.getState as jest.Mock) = jest.fn().mockReturnValue({
+    reconcile: mockReconcile,
+    activeVacation: null,
+  });
 });
 
 test('load fetches new transactions from DB and updates store', async () => {
@@ -87,7 +95,7 @@ test('refresh calls worker, upserts added, deletes removed, updates cursor', asy
   }));
   await useTransactionStore.getState().refresh();
   expect(mockFetchTxs).toHaveBeenCalledWith('access-token', 'cur-0');
-  expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx2' })]));
+  expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx2' })]), null);
   expect(mockDeleteByIds).toHaveBeenCalledWith(['tx-old']);
   expect(mockSaveCursor).toHaveBeenCalledWith('acct_1', 'cur-next');
 });
@@ -106,8 +114,8 @@ test('refresh follows has_more pages and saves the final cursor', async () => {
   await useTransactionStore.getState().refresh();
   expect(mockFetchTxs).toHaveBeenNthCalledWith(1, 'access-token', 'cur-0');
   expect(mockFetchTxs).toHaveBeenNthCalledWith(2, 'access-token', 'cur-1');
-  expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx-a' })]));
-  expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx-b' })]));
+  expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx-a' })]), null);
+  expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx-b' })]), null);
   expect(mockSaveCursor).toHaveBeenLastCalledWith('acct_1', 'cur-2');
 });
 
@@ -130,6 +138,35 @@ test('first sync (no cursor) drains the backlog without storing transactions', a
   expect(mockDeleteByIds).not.toHaveBeenCalled();
   expect(mockSaveCursor).toHaveBeenCalledTimes(1);
   expect(mockSaveCursor).toHaveBeenCalledWith('acct_1', 'cur-2');
+});
+
+test('refresh reconciles vacation statuses before syncing', async () => {
+  mockFetchTxs.mockResolvedValue(syncPage());
+  await useTransactionStore.getState().refresh();
+  expect(mockReconcile).toHaveBeenCalledTimes(1);
+});
+
+test('refresh threads the active vacation id into upsertTransactions', async () => {
+  (useVacationStore.getState as jest.Mock).mockReturnValue({
+    reconcile: mockReconcile,
+    activeVacation: { id: 'vac1' },
+  });
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'tx2', merchant_name: 'Amazon', name: 'AMZN', amount: 29.99, iso_currency_code: 'USD', date: '2026-04-02' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockUpsert).toHaveBeenCalledWith(
+    expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx2' })]),
+    'vac1'
+  );
+});
+
+test('refresh passes null when no vacation is active', async () => {
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'tx2', merchant_name: 'Amazon', name: 'AMZN', amount: 29.99, iso_currency_code: 'USD', date: '2026-04-02' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockUpsert).toHaveBeenCalledWith(expect.any(Array), null);
 });
 
 test('refresh sets needs_reauth on ITEM_LOGIN_REQUIRED', async () => {
