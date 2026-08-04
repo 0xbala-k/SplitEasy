@@ -5,19 +5,23 @@ import { deleteExpense } from '@/lib/splitwise';
 import {
   getNewTransactions,
   upsertTransactions,
-  deleteTransactionsByPlaidIds,
   updateTransactionStatus,
   deleteSplitDecision,
   persistCombinedSplit,
   revertCombinedSplit,
+  rekeyTransaction,
+  markTransactionsReversed,
+  getReviewTransactions,
+  clearReview,
 } from '@/lib/db';
-import { Transaction, SplitDecision } from '@/lib/types';
+import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { useVacationStore } from '@/stores/vacationStore';
 
 interface TransactionState {
   transactions: Transaction[];
   isLoading: boolean;
+  review: ReviewItem[];
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   skip: (id: string) => Promise<void>;
@@ -25,11 +29,14 @@ interface TransactionState {
   commitCombinedSplit: (decisions: SplitDecision[]) => Promise<void>;
   deleteSplit: (transactionId: string, splitwiseExpenseId: string) => Promise<void>;
   deleteCombinedSplit: (transactionIds: string[], splitwiseExpenseId: string) => Promise<void>;
+  loadReview: () => Promise<void>;
+  resolveReview: (transactionIds: string[]) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
   transactions: [],
   isLoading: false,
+  review: [],
 
   load: async () => {
     set({ isLoading: true });
@@ -53,8 +60,26 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
         while (hasMore) {
           const res = await fetchTransactions(access_token, pageCursor);
           if (!isFirstSync) {
-            await upsertTransactions([...res.added, ...res.modified], activeVacationId);
-            await deleteTransactionsByPlaidIds(res.removed.map((r) => r.transaction_id));
+            const all = [...res.added, ...res.modified];
+            // 1. Rekey pending → posted BEFORE inserting anything, so the posted row
+            //    inherits status / vacation_id / split decision instead of arriving new.
+            const consumed = new Set<string>();
+            for (const tx of all) {
+              if (!tx.pending_transaction_id) continue;
+              const result = await rekeyTransaction(tx.pending_transaction_id, tx);
+              if (result !== 'not_found') consumed.add(tx.pending_transaction_id);
+            }
+            // 2. Upsert. Rekeyed rows already carry the posted id, so INSERT OR IGNORE
+            //    no-ops and the status-gated UPDATE leaves split rows alone.
+            await upsertTransactions(all, activeVacationId);
+            // 3. Delete removals, minus ids a rekey already consumed and minus ids that
+            //    reappear in this page's added/modified — some institutions reuse the
+            //    transaction id, and deleting there would drop the row we just kept.
+            const addedIds = new Set(all.map((t) => t.transaction_id));
+            const toRemove = res.removed
+              .map((r) => r.transaction_id)
+              .filter((rid) => !consumed.has(rid) && !addedIds.has(rid));
+            await markTransactionsReversed(toRemove);
             await usePlaidStore.getState().saveCursor(id, res.next_cursor);
           }
           pageCursor = res.next_cursor;
@@ -104,5 +129,15 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
     await deleteExpense(splitwiseExpenseId);
     await revertCombinedSplit(transactionIds);
     await get().load();
+  },
+
+  loadReview: async () => {
+    const items = await getReviewTransactions();
+    set({ review: items });
+  },
+
+  resolveReview: async (transactionIds) => {
+    await clearReview(transactionIds);
+    await get().loadReview();
   },
 }));

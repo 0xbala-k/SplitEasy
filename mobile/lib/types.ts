@@ -2,6 +2,13 @@
 
 export type TransactionStatus = 'new' | 'split' | 'skipped';
 
+export type ReviewReason = 'amount_changed' | 'reversed';
+
+// Outcome of rekeying a pending transaction's row onto its posted Plaid id.
+// 'conflict' = another transaction already occupies the posted id and holds its
+// own Splitwise expense; both rows are left untouched rather than clobbered.
+export type RekeyResult = 'unchanged' | 'changed' | 'not_found' | 'conflict';
+
 export interface Transaction {
   id: string;            // Plaid transaction_id
   merchant_name: string;
@@ -12,6 +19,8 @@ export interface Transaction {
   pending: boolean;
   created_at: string;    // ISO-8601 datetime; used for 6-month prune
   vacation_id?: string | null; // set while assigned to a vacation
+  review_reason?: ReviewReason | null; // set when a pending→posted transition needs user attention
+  amount_changed_from?: number | null; // previous amount, for "was $X → now $Y"; set alongside review_reason='amount_changed'
 }
 
 export interface SplitDecision {
@@ -44,6 +53,11 @@ export interface PlaidTransaction {
   iso_currency_code: string | null;
   date: string;
   pending: boolean;
+  // When Plaid transitions a pending transaction to posted, the posted
+  // transaction carries a new transaction_id and points back at the old
+  // (now-removed) pending id here. Used to rekey the local row instead of
+  // treating the posted transaction as brand new.
+  pending_transaction_id?: string | null;
 }
 
 export interface PlaidTransactionsResponse {
@@ -72,6 +86,23 @@ export interface HistoryItem {
   status: TransactionStatus;
   split?: { friend_names: string[]; amount_each: number };
   combined?: { expense_id: string; transaction_ids: string[]; count: number };
+}
+
+// A row in the "Needs review" queue: a transaction whose pending→posted
+// transition needs user attention (amount changed, or the pending charge was
+// reversed and never posted). A combined split's members collapse into a
+// single row keyed by the shared Splitwise expense, same as HistoryItem.
+export interface ReviewItem {
+  id: string;                  // tx id for single rows; expense id for combined
+  merchant_name: string;
+  amount: number;              // new total (summed for combined)
+  amount_changed_from: number | null;  // old total (summed for combined)
+  currency: string;
+  date: string;
+  reason: ReviewReason;
+  split: { friend_names: string[]; amount_each: number };
+  expense_id: string;
+  transaction_ids: string[];   // 1 entry for single, N for combined
 }
 
 export type VacationStatus = 'draft' | 'active' | 'ended';

@@ -30,6 +30,10 @@ const mockGetNew = db.getNewTransactions as jest.Mock;
 const mockUpsert = db.upsertTransactions as jest.Mock;
 const mockDeleteByIds = db.deleteTransactionsByPlaidIds as jest.Mock;
 const mockUpdateStatus = db.updateTransactionStatus as jest.Mock;
+const mockRekeyTransaction = db.rekeyTransaction as jest.Mock;
+const mockMarkReversed = db.markTransactionsReversed as jest.Mock;
+const mockGetReview = db.getReviewTransactions as jest.Mock;
+const mockClearReview = db.clearReview as jest.Mock;
 const mockFetchTxs = worker.fetchTransactions as jest.Mock;
 const mockSecureGet = SecureStore.getItemAsync as jest.Mock;
 const mockSetNeedsReauth = jest.fn();
@@ -66,6 +70,10 @@ beforeEach(() => {
   mockUpsert.mockResolvedValue(undefined);
   mockDeleteByIds.mockResolvedValue(undefined);
   mockUpdateStatus.mockResolvedValue(undefined);
+  mockRekeyTransaction.mockResolvedValue('not_found');
+  mockMarkReversed.mockResolvedValue([]);
+  mockGetReview.mockResolvedValue([]);
+  mockClearReview.mockResolvedValue(undefined);
   mockGetTokensAndCursors.mockResolvedValue([{ id: 'acct_1', access_token: 'access-token', cursor: 'cur-0' }]);
   mockSaveCursor.mockResolvedValue(undefined);
   mockDeleteExpense.mockResolvedValue(undefined);
@@ -88,7 +96,7 @@ test('load fetches new transactions from DB and updates store', async () => {
   expect(useTransactionStore.getState().transactions[0].id).toBe('tx1');
 });
 
-test('refresh calls worker, upserts added, deletes removed, updates cursor', async () => {
+test('refresh calls worker, upserts added, marks unmatched removed ids reversed, updates cursor', async () => {
   mockFetchTxs.mockResolvedValue(syncPage({
     added: [{ transaction_id: 'tx2', merchant_name: 'Amazon', name: 'AMZN', amount: 29.99, iso_currency_code: 'USD', date: '2026-04-02' }],
     removed: [{ transaction_id: 'tx-old' }],
@@ -96,8 +104,73 @@ test('refresh calls worker, upserts added, deletes removed, updates cursor', asy
   await useTransactionStore.getState().refresh();
   expect(mockFetchTxs).toHaveBeenCalledWith('access-token', 'cur-0');
   expect(mockUpsert).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ transaction_id: 'tx2' })]), null);
-  expect(mockDeleteByIds).toHaveBeenCalledWith(['tx-old']);
+  expect(mockMarkReversed).toHaveBeenCalledWith(['tx-old']);
   expect(mockSaveCursor).toHaveBeenCalledWith('acct_1', 'cur-next');
+});
+
+test('refresh rekeys a posted transaction using its pending_transaction_id before upserting', async () => {
+  mockRekeyTransaction.mockResolvedValue('changed');
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'new1', pending_transaction_id: 'old1', merchant_name: 'Cafe', name: 'CAFE', amount: 12.5, iso_currency_code: 'USD', date: '2026-04-02' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockRekeyTransaction).toHaveBeenCalledWith('old1', expect.objectContaining({ transaction_id: 'new1' }));
+  // The rekey must run before the upsert so the posted row inherits status/vacation_id/decision.
+  const rekeyOrder = mockRekeyTransaction.mock.invocationCallOrder[0];
+  const upsertOrder = mockUpsert.mock.invocationCallOrder[0];
+  expect(rekeyOrder).toBeLessThan(upsertOrder);
+});
+
+test('refresh skips rekey for a transaction with no pending_transaction_id', async () => {
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'tx2', merchant_name: 'Amazon', name: 'AMZN', amount: 29.99, iso_currency_code: 'USD', date: '2026-04-02' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockRekeyTransaction).not.toHaveBeenCalled();
+});
+
+test('refresh does not mark a rekey-consumed id as reversed', async () => {
+  mockRekeyTransaction.mockResolvedValue('changed');
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'new1', pending_transaction_id: 'old1', merchant_name: 'Cafe', name: 'CAFE', amount: 12.5, iso_currency_code: 'USD', date: '2026-04-02' }],
+    removed: [{ transaction_id: 'old1' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockMarkReversed).toHaveBeenCalledWith([]);
+});
+
+test('refresh does not mark an id as reversed when it reappears in this page\'s added/modified', async () => {
+  // Some institutions reuse transaction ids; deleting here would drop the row we just kept.
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'dup1', merchant_name: 'Cafe', name: 'CAFE', amount: 5, iso_currency_code: 'USD', date: '2026-04-02' }],
+    removed: [{ transaction_id: 'dup1' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockMarkReversed).toHaveBeenCalledWith([]);
+});
+
+test('refresh does not rekey when rekeyTransaction reports not_found', async () => {
+  mockRekeyTransaction.mockResolvedValue('not_found');
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'new1', pending_transaction_id: 'old1', merchant_name: 'Cafe', name: 'CAFE', amount: 12.5, iso_currency_code: 'USD', date: '2026-04-02' }],
+    removed: [{ transaction_id: 'old1' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  // 'not_found' means nothing was consumed, so the removed id still gets marked/deleted.
+  expect(mockMarkReversed).toHaveBeenCalledWith(['old1']);
+});
+
+test('refresh leaves the old row alone when rekeyTransaction reports conflict', async () => {
+  // A split row already occupies the posted id, so the rekey was refused. The
+  // pending row still holds its own Splitwise expense — marking it reversed
+  // would wrongly prompt to delete a live expense, so it must be left as is.
+  mockRekeyTransaction.mockResolvedValue('conflict');
+  mockFetchTxs.mockResolvedValue(syncPage({
+    added: [{ transaction_id: 'new1', pending_transaction_id: 'old1', merchant_name: 'Cafe', name: 'CAFE', amount: 12.5, iso_currency_code: 'USD', date: '2026-04-02' }],
+    removed: [{ transaction_id: 'old1' }],
+  }));
+  await useTransactionStore.getState().refresh();
+  expect(mockMarkReversed).toHaveBeenCalledWith([]);
 });
 
 test('refresh follows has_more pages and saves the final cursor', async () => {
@@ -246,4 +319,23 @@ test('commitCombinedSplit persists rows atomically then drops members from the l
   await useTransactionStore.getState().commitCombinedSplit(decisions);
   expect(mockPersistCombined).toHaveBeenCalledWith(decisions);
   expect(useTransactionStore.getState().transactions.map((t) => t.id)).toEqual(['txC']);
+});
+
+test('loadReview fetches review items from DB and updates the store', async () => {
+  const reviewItem = {
+    id: 'tx1', merchant_name: 'Cafe', amount: 12.5, amount_changed_from: 10, currency: 'USD',
+    date: '2026-04-01', reason: 'amount_changed' as const, split: { friend_names: ['Sam'], amount_each: 6.25 },
+    expense_id: 'exp1', transaction_ids: ['tx1'],
+  };
+  mockGetReview.mockResolvedValue([reviewItem]);
+  await useTransactionStore.getState().loadReview();
+  expect(useTransactionStore.getState().review).toEqual([reviewItem]);
+});
+
+test('resolveReview clears the review flag then reloads the queue', async () => {
+  mockGetReview.mockResolvedValue([]);
+  await useTransactionStore.getState().resolveReview(['tx1', 'tx2']);
+  expect(mockClearReview).toHaveBeenCalledWith(['tx1', 'tx2']);
+  expect(mockGetReview).toHaveBeenCalled();
+  expect(useTransactionStore.getState().review).toEqual([]);
 });

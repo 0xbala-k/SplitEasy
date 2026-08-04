@@ -1,6 +1,6 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
-import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem } from '@/lib/types';
+import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { VacationConflictError } from '@/lib/vacationErrors';
@@ -72,11 +72,18 @@ export async function initDb(): Promise<void> {
     // fresh installs.
     await _db.execAsync(`ALTER TABLE transactions ADD COLUMN vacation_id TEXT REFERENCES vacations(id);`);
   }
+  if (version < 5) {
+    // Same rationale as vacation_id above: review_reason/amount_changed_from
+    // are not in the base `version < 1` CREATE TABLE, so these ALTERs must
+    // run ungated so a fresh install (version 0) gets the columns too.
+    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN review_reason TEXT;`);
+    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN amount_changed_from REAL;`);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 4) {
-    await _db.execAsync(`PRAGMA user_version = 4;`);
+  if (version < 5) {
+    await _db.execAsync(`PRAGMA user_version = 5;`);
   }
 }
 
@@ -170,6 +177,85 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
     []
   );
   return groupHistoryRows(rows);
+}
+
+type ReviewRow = Transaction & {
+  splitwise_expense_id: string | null;
+  friend_names: string | null;
+  amount_each: number | null;
+};
+
+// null + null stays null (nothing to show); otherwise nulls contribute 0, so
+// a combined split where only some members changed amount still sums correctly.
+function addNullable(a: number | null, b: number | null): number | null {
+  if (a === null && b === null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
+
+// Groups review-eligible rows by shared Splitwise expense id, exactly as
+// groupHistoryRows does for history — one row per expense, amounts summed.
+function groupReviewRows(rows: ReviewRow[]): ReviewItem[] {
+  const items: ReviewItem[] = [];
+  const groups = new Map<string, ReviewItem>();
+
+  for (const r of rows) {
+    const key = r.splitwise_expense_id ?? r.id;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.amount += r.amount;
+      existing.amount_changed_from = addNullable(existing.amount_changed_from, r.amount_changed_from ?? null);
+      existing.transaction_ids.push(r.id);
+      // Mixed reasons across members of one expense: 'reversed' wins. A
+      // stranded Splitwise expense needs deleting, which outranks (and would
+      // otherwise be hidden behind) a mere amount change on a sibling member.
+      if (r.review_reason === 'reversed') existing.reason = 'reversed';
+    } else {
+      const item: ReviewItem = {
+        id: r.id,
+        merchant_name: r.merchant_name,
+        amount: r.amount,
+        amount_changed_from: r.amount_changed_from ?? null,
+        currency: r.currency,
+        date: r.date,
+        reason: (r.review_reason as ReviewReason) ?? 'amount_changed',
+        split: {
+          friend_names: r.friend_names ? JSON.parse(r.friend_names) : [],
+          amount_each: r.amount_each ?? 0,
+        },
+        expense_id: r.splitwise_expense_id ?? r.id,
+        transaction_ids: [r.id],
+      };
+      groups.set(key, item);
+      items.push(item);
+    }
+  }
+
+  for (const g of groups.values()) {
+    if (g.transaction_ids.length > 1) g.id = g.expense_id;
+  }
+
+  return items;
+}
+
+export async function getReviewTransactions(): Promise<ReviewItem[]> {
+  const rows = await db().getAllAsync<ReviewRow>(
+    `SELECT t.*, s.splitwise_expense_id, s.friend_names, s.amount_each
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     WHERE t.review_reason IS NOT NULL
+     ORDER BY t.date DESC`,
+    []
+  );
+  return groupReviewRows(rows);
+}
+
+export async function clearReview(transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const placeholders = transactionIds.map(() => '?').join(',');
+  await db().runAsync(
+    `UPDATE transactions SET review_reason = NULL, amount_changed_from = NULL WHERE id IN (${placeholders})`,
+    transactionIds
+  );
 }
 
 export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
@@ -280,6 +366,13 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
 export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const placeholders = ids.map(() => '?').join(',');
+  // Native never enables `PRAGMA foreign_keys`, so the ON DELETE CASCADE on
+  // split_decisions.transaction_id is inert — delete explicitly, mirroring
+  // db.web.ts's explicit DECISION_STORE delete.
+  await db().runAsync(
+    `DELETE FROM split_decisions WHERE transaction_id IN (${placeholders})`,
+    ids
+  );
   await db().runAsync(
     `DELETE FROM transactions WHERE id IN (${placeholders})`,
     ids
@@ -291,6 +384,104 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
     `UPDATE transactions SET status = ? WHERE id = ?`,
     [status, id]
   );
+}
+
+// Rekey a pending transaction's row to the id Plaid assigns once it posts.
+// Plaid's transaction_id is NOT stable across the pending → posted
+// transition: the posted transaction arrives with a brand-new id and only
+// `pending_transaction_id` links it back to the old one. Without this, the
+// posted transaction would insert as a fresh 'new' row and the pending row
+// (holding the split decision) would get deleted by the sync's `removed`
+// list — orphaning the Splitwise expense.
+//
+// One transaction: load the old row, rewrite its primary key and mutable
+// fields in place, and carry the split_decisions row along to the new id.
+// status/vacation_id are preserved by construction (never included in the
+// UPDATE). review_reason/amount_changed_from are only set when the amount
+// actually changed on a row that was already 'split' — a 'new' or 'skipped'
+// row has no Splitwise expense to reconcile, so it just takes the new amount.
+export async function rekeyTransaction(
+  oldId: string,
+  posted: PlaidTransaction
+): Promise<RekeyResult> {
+  const d = db();
+  let result: RekeyResult = 'not_found';
+  await d.withTransactionAsync(async () => {
+    const row = await d.getFirstAsync<{ id: string; amount: number; status: TransactionStatus }>(
+      `SELECT id, amount, status FROM transactions WHERE id = ?`,
+      [oldId]
+    );
+    if (!row) {
+      result = 'not_found';
+      return;
+    }
+    // A row can already occupy the posted id when Plaid inserts the posted
+    // transaction in one sync page and only reports its pending_transaction_id
+    // in a later one. Rewriting the primary key onto an occupied id would
+    // violate PRIMARY KEY and abort the whole sync, so resolve it here.
+    if (posted.transaction_id !== oldId) {
+      const occupant = await d.getFirstAsync<{ id: string; status: TransactionStatus }>(
+        `SELECT id, status FROM transactions WHERE id = ?`,
+        [posted.transaction_id]
+      );
+      if (occupant) {
+        // An occupant that is itself 'split' has its own Splitwise expense.
+        // Clobbering it would strand that expense, so leave both rows alone
+        // and let the caller keep the old row rather than destroy data.
+        if (occupant.status === 'split') {
+          result = 'conflict';
+          return;
+        }
+        // Otherwise it's the duplicate 'new'/'skipped' row this rekey is meant
+        // to supersede — no expense attached, safe to drop.
+        await deleteTransactionsByPlaidIds([posted.transaction_id]);
+      }
+    }
+    const name = posted.merchant_name ?? posted.name;
+    const changed = Math.round(row.amount * 100) !== Math.round(posted.amount * 100);
+    const reviewReason: ReviewReason | null = changed && row.status === 'split' ? 'amount_changed' : null;
+    const amountChangedFrom = reviewReason ? row.amount : null;
+
+    await d.runAsync(
+      `UPDATE transactions SET id = ?, merchant_name = ?, amount = ?, date = ?, pending = 0,
+       review_reason = ?, amount_changed_from = ? WHERE id = ?`,
+      [posted.transaction_id, name, posted.amount, posted.date, reviewReason, amountChangedFrom, oldId]
+    );
+    await d.runAsync(
+      `UPDATE split_decisions SET transaction_id = ? WHERE transaction_id = ?`,
+      [posted.transaction_id, oldId]
+    );
+    result = changed ? 'changed' : 'unchanged';
+  });
+  return result;
+}
+
+// A pending split transaction Plaid reports as `removed` without a matching
+// `added`/`modified` posting is a reversal: the charge never posted. A
+// 'split' row is kept and flagged so the queue can offer to delete the now-
+// stranded Splitwise expense; a 'new'/'skipped' row has no expense to
+// reconcile, so it's deleted today (mirrors the old unconditional delete).
+// Returns the ids that were kept, for logging/testing.
+export async function markTransactionsReversed(ids: string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const d = db();
+  const rows = await getTransactionsByIds(ids);
+  const keepIds = rows.filter((r) => r.status === 'split').map((r) => r.id);
+  const keepSet = new Set(keepIds);
+  const deleteIds = ids.filter((id) => !keepSet.has(id));
+  await d.withTransactionAsync(async () => {
+    if (keepIds.length > 0) {
+      const placeholders = keepIds.map(() => '?').join(',');
+      await d.runAsync(
+        `UPDATE transactions SET review_reason = 'reversed' WHERE id IN (${placeholders})`,
+        keepIds
+      );
+    }
+    if (deleteIds.length > 0) {
+      await deleteTransactionsByPlaidIds(deleteIds);
+    }
+  });
+  return keepIds;
 }
 
 export async function getSplitDecision(transactionId: string): Promise<SplitDecision | null> {

@@ -3,7 +3,7 @@
 // expo-sqlite's wasm build was rejected because it requires COOP/COEP
 // cross-origin isolation, which breaks Plaid Link popups (see design spec).
 import {
-  Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem,
+  Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult,
 } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
@@ -153,6 +153,77 @@ export async function getHistoryTransactions(): Promise<HistoryItem[]> {
   return groupHistoryRows(rows, decisions);
 }
 
+// null + null stays null (nothing to show); otherwise nulls contribute 0, so
+// a combined split where only some members changed amount still sums correctly.
+function addNullable(a: number | null, b: number | null): number | null {
+  if (a === null && b === null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
+
+// Groups review-eligible rows by shared Splitwise expense id, exactly as
+// groupHistoryRows does for history — one row per expense, amounts summed.
+function groupReviewRows(rows: Transaction[], decisions: SplitDecision[]): ReviewItem[] {
+  const byTxId = new Map(decisions.map((d) => [d.transaction_id, d]));
+  const items: ReviewItem[] = [];
+  const groups = new Map<string, ReviewItem>();
+
+  for (const t of rows) {
+    const d = byTxId.get(t.id);
+    const key = d?.splitwise_expense_id ?? t.id;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.amount += t.amount;
+      existing.amount_changed_from = addNullable(existing.amount_changed_from, t.amount_changed_from ?? null);
+      existing.transaction_ids.push(t.id);
+      // Mixed reasons across members of one expense: 'reversed' wins, matching
+      // lib/db.ts's groupReviewRows.
+      if (t.review_reason === 'reversed') existing.reason = 'reversed';
+    } else {
+      const item: ReviewItem = {
+        id: t.id,
+        merchant_name: t.merchant_name,
+        amount: t.amount,
+        amount_changed_from: t.amount_changed_from ?? null,
+        currency: t.currency,
+        date: t.date,
+        reason: (t.review_reason as ReviewReason) ?? 'amount_changed',
+        split: { friend_names: d?.friend_names ?? [], amount_each: d?.amount_each ?? 0 },
+        expense_id: d?.splitwise_expense_id ?? t.id,
+        transaction_ids: [t.id],
+      };
+      groups.set(key, item);
+      items.push(item);
+    }
+  }
+
+  for (const g of groups.values()) {
+    if (g.transaction_ids.length > 1) g.id = g.expense_id;
+  }
+
+  return items;
+}
+
+export async function getReviewTransactions(): Promise<ReviewItem[]> {
+  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all.filter((t) => t.review_reason != null).sort(byDateDesc);
+  return groupReviewRows(rows, decisions);
+}
+
+export async function clearReview(transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const tx = db().transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  for (const id of transactionIds) {
+    const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+    if (existing) store.put({ ...existing, review_reason: null, amount_changed_from: null });
+  }
+  await done(tx);
+}
+
 export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
   const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
   return all.filter((t) => t.status === 'new' && t.vacation_id === vacationId).sort(byDateDesc);
@@ -289,6 +360,87 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
   if (existing) store.put({ ...existing, status });
   await done(tx);
+}
+
+// Mirrors lib/db.ts's rekeyTransaction — see that function's comment for why
+// this exists. Deletes the old key and re-puts under the new key in both
+// stores, inside one readwrite transaction spanning both so a failure can't
+// leave the transaction row and its decision pointing at different ids.
+export async function rekeyTransaction(
+  oldId: string,
+  posted: PlaidTransaction
+): Promise<RekeyResult> {
+  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  const decStore = tx.objectStore(DECISION_STORE);
+  // Invariant: only await IDB requests belonging to this txn, so it stays active.
+  const existing = await req(txStore.get(oldId) as IDBRequest<Transaction | undefined>);
+  if (!existing) {
+    await done(tx);
+    return 'not_found';
+  }
+  // Same collision case the native implementation guards — see lib/db.ts. A
+  // put() here would silently overwrite rather than throw, which is worse:
+  // it would strand the occupant's Splitwise expense with no error.
+  if (posted.transaction_id !== oldId) {
+    const occupant = await req(
+      txStore.get(posted.transaction_id) as IDBRequest<Transaction | undefined>,
+    );
+    if (occupant && occupant.status === 'split') {
+      await done(tx);
+      return 'conflict';
+    }
+    // A non-split occupant is the duplicate this rekey supersedes; the put()
+    // below overwrites it, and its (nonexistent) decision needs no cleanup.
+  }
+  const decisionRow = await req(decStore.get(oldId) as IDBRequest<SplitDecision | undefined>);
+
+  const name = posted.merchant_name ?? posted.name;
+  const changed = Math.round(existing.amount * 100) !== Math.round(posted.amount * 100);
+  const reviewReason: ReviewReason | null = changed && existing.status === 'split' ? 'amount_changed' : null;
+  const amountChangedFrom = reviewReason ? existing.amount : null;
+
+  txStore.delete(oldId);
+  txStore.put({
+    ...existing,
+    id: posted.transaction_id,
+    merchant_name: name,
+    amount: posted.amount,
+    date: posted.date,
+    pending: false,
+    review_reason: reviewReason,
+    amount_changed_from: amountChangedFrom,
+  } satisfies Transaction);
+
+  if (decisionRow) {
+    decStore.delete(oldId);
+    decStore.put({ ...decisionRow, transaction_id: posted.transaction_id });
+  }
+
+  await done(tx);
+  return changed ? 'changed' : 'unchanged';
+}
+
+// Mirrors lib/db.ts's markTransactionsReversed.
+export async function markTransactionsReversed(ids: string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  const decStore = tx.objectStore(DECISION_STORE);
+  const kept: string[] = [];
+  // Invariant: only await IDB requests belonging to this txn inside the loop.
+  for (const id of ids) {
+    const existing = await req(txStore.get(id) as IDBRequest<Transaction | undefined>);
+    if (existing && existing.status === 'split') {
+      txStore.put({ ...existing, review_reason: 'reversed' as ReviewReason });
+      kept.push(id);
+    } else {
+      txStore.delete(id);
+      decStore.delete(id);
+    }
+  }
+  await done(tx);
+  return kept;
 }
 
 export async function getSplitDecision(transactionId: string): Promise<SplitDecision | null> {
