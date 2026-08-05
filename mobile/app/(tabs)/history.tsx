@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
-import Constants from 'expo-constants';
 import { useFocusEffect } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
@@ -31,6 +31,7 @@ function asTransaction(item: HistoryItem): Transaction {
 }
 
 export default function HistoryScreen() {
+  const insets = useSafeAreaInsets();
   const [rows, setRows] = useState<HistoryItem[]>([]);
   const [selected, setSelected] = useState<HistoryItem | null>(null);
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
@@ -159,7 +160,7 @@ export default function HistoryScreen() {
   }
 
   return (
-    <View style={[styles.root, { paddingTop: Constants.statusBarHeight }]}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
       <View style={styles.header}>
         <Text style={styles.headerTitle}>History</Text>
@@ -241,7 +242,7 @@ function HistoryRow({ item, onPress }: { item: HistoryItem; onPress: () => void 
         {isSplit ? (
           <View style={styles.splitBadge}>
             <Ionicons name="people-outline" size={11} color={Colors.success} style={{ marginRight: 3 }} />
-            <Text style={styles.splitText}>
+            <Text style={styles.splitText} numberOfLines={1}>
               {item.split!.friend_names.join(', ')} · ${item.split!.amount_each.toFixed(2)} each
             </Text>
           </View>

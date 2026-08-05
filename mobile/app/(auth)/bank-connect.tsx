@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { showDialog } from '@/lib/dialog';
 import { getLinkToken, WorkerError } from '@/lib/worker';
@@ -14,6 +15,7 @@ export default function BankConnectScreen() {
   const linkBank = usePlaidStore((s) => s.linkBank);
   const router = useRouter();
   const canGoBack = router.canGoBack();
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     return () => {
@@ -66,7 +68,7 @@ export default function BankConnectScreen() {
 
       {canGoBack && (
         <Pressable
-          style={styles.backBtn}
+          style={[styles.backBtn, { top: insets.top + Spacing.sm }]}
           onPress={() => router.back()}
           accessibilityRole="button"
           accessibilityLabel="Go back"
@@ -141,7 +143,6 @@ const styles = StyleSheet.create({
 
   backBtn: {
     position: 'absolute',
-    top: 56,
     left: Spacing.lg,
     zIndex: 10,
     width: 40,

@@ -544,7 +544,7 @@ const EqualRow = memo(function EqualRow({
       <View style={[styles.avatar, { backgroundColor: avatarColor + '18' }]}>
         <Text style={[styles.avatarText, { color: avatarColor }]}>{initial}</Text>
       </View>
-      <Text style={[styles.friendName, isSelected && styles.friendNameSelected]}>
+      <Text style={[styles.friendName, isSelected && styles.friendNameSelected]} numberOfLines={1}>
         {friend.display_name}
       </Text>
       <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>

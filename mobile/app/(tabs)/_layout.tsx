@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router';
 import { useEffect } from 'react';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useFriendStore } from '@/stores/friendStore';
 import { useVacationStore } from '@/stores/vacationStore';
@@ -11,6 +12,7 @@ export default function TabsLayout() {
   const count = useTransactionStore((s) => s.transactions.length);
   const loadFriends = useFriendStore((s) => s.load);
   const reconcileVacations = useVacationStore((s) => s.reconcile);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     loadFriends();
@@ -29,8 +31,10 @@ export default function TabsLayout() {
           borderTopColor: '#E2E8F0',
           borderTopWidth: 1,
           paddingTop: 6,
-          paddingBottom: 4,
-          height: 60,
+          // Account for the home-indicator inset so labels aren't rendered
+          // inside the 34pt home-indicator strip on iPhone X and later.
+          paddingBottom: insets.bottom + 4,
+          height: 60 + insets.bottom,
         },
         tabBarLabelStyle: {
           fontSize: 11,

@@ -32,8 +32,8 @@ export function VacationBanner() {
           <Ionicons name="airplane-outline" size={18} color={Colors.primary} />
         </View>
         <View style={styles.info}>
-          <Text style={styles.title}>{inProgress.name}</Text>
-          <Text style={styles.subtitle}>
+          <Text style={styles.title} numberOfLines={1}>{inProgress.name}</Text>
+          <Text style={styles.subtitle} numberOfLines={1}>
             {inProgress.start_date && inProgress.end_date
               ? `${inProgress.start_date} – ${inProgress.end_date}`
               : inProgress.status === 'active' ? 'Active vacation' : 'Not started yet'}
@@ -56,8 +56,9 @@ export function VacationBanner() {
           <Ionicons name="airplane-outline" size={18} color={Colors.primary} />
         </View>
         <View style={styles.info}>
-          <Text style={styles.title}>Track vacation spending separately</Text>
-          <Text style={styles.subtitle}>Create a vacation</Text>
+          {/* Static copy, not user data — let it wrap rather than truncate. */}
+          <Text style={styles.title} numberOfLines={2}>Track vacation spending separately</Text>
+          <Text style={styles.subtitle} numberOfLines={1}>Create a vacation</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
       </Pressable>

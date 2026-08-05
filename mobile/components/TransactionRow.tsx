@@ -47,9 +47,9 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
         </View>
         <View style={styles.info}>
           <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
-          <Text style={styles.date}>{date}</Text>
+          <Text style={styles.date} numberOfLines={1}>{date}</Text>
         </View>
-        <Text style={styles.amount}>{amount}</Text>
+        <Text style={styles.amount} numberOfLines={1}>{amount}</Text>
       </Pressable>
     );
   }
@@ -86,7 +86,7 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
         <View style={styles.info}>
           <Text style={styles.merchant} numberOfLines={1}>{transaction.merchant_name}</Text>
           <View style={styles.dateRow}>
-            <Text style={styles.date}>{date}</Text>
+            <Text style={styles.date} numberOfLines={1}>{date}</Text>
             {transaction.pending && (
               <View style={styles.pendingBadge}>
                 <Text style={styles.pendingText}>Pending</Text>
@@ -96,7 +96,7 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
         </View>
 
         {/* Amount */}
-        <Text style={styles.amount}>{amount}</Text>
+        <Text style={styles.amount} numberOfLines={1}>{amount}</Text>
 
         {/* Actions */}
         <View style={styles.actions}>
@@ -146,7 +146,12 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
   },
-  info: { flex: 1, marginRight: Spacing.sm },
+  // minWidth keeps the merchant name legible when the amount is unusually wide:
+  // without a floor, a large amount takes its intrinsic width first and crushes
+  // this column to a few pixels. Keep the floor below the ~75px this column gets
+  // naturally for a typical amount, or it steals width back and truncates every
+  // amount instead.
+  info: { flex: 1, minWidth: 64, marginRight: Spacing.sm },
   merchant: {
     fontSize: 15,
     fontWeight: '600',
@@ -167,6 +172,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     paddingHorizontal: 5,
     paddingVertical: 1,
+    flexShrink: 0,
   },
   pendingText: {
     fontSize: 10,
@@ -178,6 +184,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.textPrimary,
     marginRight: Spacing.md,
+    // Yields before the merchant name does, rather than pushing it off the row.
+    flexShrink: 1,
   },
   actions: { flexDirection: 'row', gap: 6 },
   btn: {

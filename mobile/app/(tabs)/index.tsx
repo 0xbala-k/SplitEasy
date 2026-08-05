@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
-import Constants from 'expo-constants';
 import NetInfo from '@react-native-community/netinfo';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { usePlaidStore } from '@/stores/plaidStore';
@@ -17,6 +17,9 @@ import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds } 
 import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
+
+// Clears the absolute-positioned selectBar so it doesn't cover the last row.
+const SELECT_BAR_CLEARANCE = 88;
 
 // Adapt a review item back to a Transaction for the picker's single-edit
 // flow. amount/currency/date come from the item (already the posted values
@@ -37,7 +40,7 @@ function reviewItemAsTransaction(item: ReviewItem): Transaction {
 
 export default function NewTransactionsScreen() {
   const router = useRouter();
-  const topInset = Constants.statusBarHeight;
+  const topInset = useSafeAreaInsets().top;
   const {
     transactions, isLoading, review, load, refresh, skip, loadReview, resolveReview,
     deleteSplit, deleteCombinedSplit,
@@ -240,7 +243,7 @@ export default function NewTransactionsScreen() {
         <FlatList
           data={transactions}
           keyExtractor={(t) => t.id}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[styles.list, selectMode && styles.listWithSelectBar]}
           extraData={listExtraData}
           refreshControl={
             <RefreshControl
@@ -391,7 +394,9 @@ function ReviewRow({ item, onPress }: { item: ReviewItem; onPress: () => void })
         {item.split.friend_names.length > 0 && (
           <View style={styles.reviewSplitBadge}>
             <Ionicons name="people-outline" size={11} color={Colors.textSecondary} style={{ marginRight: 3 }} />
-            <Text style={styles.reviewSplitText}>{item.split.friend_names.join(', ')}</Text>
+            <Text style={styles.reviewSplitText} numberOfLines={1}>
+              {item.split.friend_names.join(', ')}
+            </Text>
           </View>
         )}
       </View>
@@ -440,6 +445,7 @@ const styles = StyleSheet.create({
   },
 
   list: { padding: Spacing.lg, gap: 10 },
+  listWithSelectBar: { paddingBottom: SELECT_BAR_CLEARANCE },
 
   reviewSection: {
     marginBottom: Spacing.sm,
@@ -474,6 +480,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   reviewSplitText: {
+    flex: 1,
     fontSize: 12,
     color: Colors.textSecondary,
     fontWeight: '500',

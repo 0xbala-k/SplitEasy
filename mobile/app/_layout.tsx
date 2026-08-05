@@ -4,6 +4,7 @@ import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Slot, SplashScreen } from 'expo-router';
 import { useEffect } from 'react';
 import { Platform, StyleSheet } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ToastProvider } from '@/components/ToastProvider';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
@@ -44,11 +45,17 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={styles.flex}>
-      <ToastProvider>
-        <BottomSheetModalProvider>
-          <Slot />
-        </BottomSheetModalProvider>
-      </ToastProvider>
+      {/* FriendPickerSheet and AddToVacationSheet call useSafeAreaInsets and
+          currently only resolve via the navigator's implicit
+          SafeAreaProviderCompat; an explicit root provider makes insets
+          reliable everywhere. */}
+      <SafeAreaProvider>
+        <ToastProvider>
+          <BottomSheetModalProvider>
+            <Slot />
+          </BottomSheetModalProvider>
+        </ToastProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

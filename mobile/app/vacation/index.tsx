@@ -2,6 +2,7 @@
 import { useCallback } from 'react';
 import { FlatList, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useVacationStore } from '@/stores/vacationStore';
 import { Vacation } from '@/lib/types';
@@ -11,6 +12,7 @@ export default function VacationListScreen() {
   const router = useRouter();
   const vacations = useVacationStore((s) => s.vacations);
   const load = useVacationStore((s) => s.load);
+  const insets = useSafeAreaInsets();
 
   useFocusEffect(
     useCallback(() => {
@@ -24,7 +26,7 @@ export default function VacationListScreen() {
   return (
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
         <Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
         </Pressable>
@@ -70,8 +72,8 @@ function VacationRow({ vacation, onPress }: { vacation: Vacation; onPress: () =>
       accessibilityLabel={`Open ${vacation.name} vacation`}
     >
       <View style={styles.info}>
-        <Text style={styles.name}>{vacation.name}</Text>
-        {dates && <Text style={styles.dates}>{dates}</Text>}
+        <Text style={styles.name} numberOfLines={1}>{vacation.name}</Text>
+        {dates && <Text style={styles.dates} numberOfLines={1}>{dates}</Text>}
       </View>
       <View style={[styles.statusPill, vacation.status === 'active' && styles.statusPillActive]}>
         <Text style={[styles.statusText, vacation.status === 'active' && styles.statusTextActive]}>{statusLabel}</Text>
@@ -84,7 +86,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg, paddingTop: 56, paddingBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md,
   },
   headerTitle: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   list: { padding: Spacing.lg, gap: 8 },
