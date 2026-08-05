@@ -1,5 +1,36 @@
 // mobile/__tests__/components/AddToVacationSheet.test.tsx
-jest.mock('@gorhom/bottom-sheet', () => require('@gorhom/bottom-sheet/mock'));
+jest.mock('@gorhom/bottom-sheet', () => {
+  const React = require('react');
+  const actual = require('@gorhom/bottom-sheet/mock');
+
+  // The library's own test mock renders `children` only and silently drops
+  // `footerComponent`, so the confirm CTA (now rendered via `footerComponent`
+  // + `BottomSheetFooter`) would never appear in the tree. Extend the mock's
+  // BottomSheetModal to also render the footer, and stub BottomSheetFooter
+  // as a passthrough.
+  class BottomSheetModal extends actual.BottomSheetModal {
+    render() {
+      const content = super.render();
+      const Footer = this.props.footerComponent;
+      if (!Footer) return content;
+      return React.createElement(
+        React.Fragment,
+        null,
+        content,
+        React.createElement(Footer, { animatedFooterPosition: { value: 0 } })
+      );
+    }
+  }
+
+  return {
+    ...actual,
+    BottomSheetModal,
+    BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
+  };
+});
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock('@/lib/db');
 jest.mock('@expo/vector-icons', () => new Proxy({}, { get: () => () => null }));
 

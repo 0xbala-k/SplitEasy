@@ -1,5 +1,36 @@
 // mobile/__tests__/components/FriendPickerSheet.test.tsx
-jest.mock('@gorhom/bottom-sheet', () => require('@gorhom/bottom-sheet/mock'));
+jest.mock('@gorhom/bottom-sheet', () => {
+  const React = require('react');
+  const actual = require('@gorhom/bottom-sheet/mock');
+
+  // The library's own test mock renders `children` only and silently drops
+  // `footerComponent`, so the CTA (now rendered via `footerComponent` +
+  // `BottomSheetFooter`) would never appear in the tree. Extend the mock's
+  // BottomSheetModal to also render the footer, and stub BottomSheetFooter
+  // as a passthrough.
+  class BottomSheetModal extends actual.BottomSheetModal {
+    render() {
+      const content = super.render();
+      const Footer = this.props.footerComponent;
+      if (!Footer) return content;
+      return React.createElement(
+        React.Fragment,
+        null,
+        content,
+        React.createElement(Footer, { animatedFooterPosition: { value: 0 } })
+      );
+    }
+  }
+
+  return {
+    ...actual,
+    BottomSheetModal,
+    BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
+  };
+});
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock('@/lib/db');
 // Keep SplitwiseAuthError real (the component uses `instanceof`); mock the calls.
 jest.mock('@/lib/splitwise', () => ({
@@ -106,12 +137,15 @@ test('saving an edit updates the Splitwise expense and the local decision', asyn
 test('the CTA is reusable after a successful save (submitting is reset)', async () => {
   renderEdit();
   await waitFor(() => expect(mockGetExpense).toHaveBeenCalled());
-  const cta = screen.getByLabelText('Add split to Splitwise');
 
-  fireEvent.press(cta);
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
   await waitFor(() => expect(mockUpdateExpense).toHaveBeenCalledTimes(1));
 
-  fireEvent.press(cta);
+  // Re-query rather than reuse the pre-press node: the CTA is rendered via
+  // `footerComponent`, which the (real) library instantiates as a component
+  // type, so a `submitting` flip — an intentional dep of the memoized
+  // renderer — remounts the footer subtree with a fresh instance.
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
   await waitFor(() => expect(mockUpdateExpense).toHaveBeenCalledTimes(2));
 });
 
@@ -243,6 +277,28 @@ test('single create passes the edited title as the description', async () => {
   expect(mockCommitCombined.mock.calls[0][0]).toEqual([
     expect.objectContaining({ transaction_id: 'tx1', description: 'Groceries' }),
   ]);
+});
+
+// Regression: the CTA lives in the sheet's pinned footer, which the library
+// renders as a component type — so `renderFooter` is memoized on a narrow dep
+// list to avoid remounting the footer subtree on every keystroke. Editing the
+// title AFTER selecting a friend leaves `ctaDisabled` unchanged, so the footer
+// is not recreated; the press handler must still see the current title rather
+// than the closure captured when the CTA last became enabled.
+test('create uses the title edited after the CTA became enabled', async () => {
+  render(
+    <FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+  );
+  // Order matters: selecting first is what flips `ctaDisabled` and freezes the
+  // memoized footer. Reversing these two lines makes this test pass either way.
+  fireEvent.press(screen.getByLabelText('Sam'));
+  fireEvent.changeText(screen.getByLabelText('Split title'), 'Late edit');
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
+  expect(mockCreateExpense).toHaveBeenCalledWith(
+    expect.objectContaining({ description: 'Late edit' })
+  );
 });
 
 // Regression: the sheet renders null until it has a transaction, so every hook

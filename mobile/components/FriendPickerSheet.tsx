@@ -1,5 +1,5 @@
 // mobile/components/FriendPickerSheet.tsx
-import { forwardRef, memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -9,10 +9,12 @@ import {
 } from 'react-native';
 import {
   BottomSheetModal,
-  BottomSheetView,
   BottomSheetTextInput,
   BottomSheetFlatList,
+  BottomSheetFooter,
+  type BottomSheetFooterProps,
 } from '@gorhom/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -52,6 +54,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
     const commitCombinedSplit = useTransactionStore((s) => s.commitCombinedSplit);
+    const insets = useSafeAreaInsets();
 
     const members = useMemo(
       () =>
@@ -149,12 +152,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       });
     }, []);
 
-    // Every hook must run before this bail-out, or the render that first
-    // supplies a transaction adds hooks the previous render didn't have and
-    // React throws "rendered more hooks than during the previous render" —
-    // which unmounts the whole tree (blank screen) on tapping Split.
-    if (members.length === 0) return null;
-
+    // Derived CTA state is computed here (before the bail-out below) because
+    // the footer's useCallback is a hook and needs it, and every hook must
+    // run unconditionally before an early return.
     const totalCents = Math.round(totalAmount * 100);
     const n = selected.size + 1;
     const equalShareCents = selected.size > 0 ? Math.floor(totalCents / n) : 0;
@@ -170,6 +170,59 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const ownerShareCents = totalCents - friendTotalCents;
     const isOverBudget = ownerShareCents < -1;
     const ctaDisabled = selected.size === 0 || submitting || isOverBudget || title.trim() === '';
+
+    // The footer is rendered by the sheet as a component type, so whenever
+    // `renderFooter`'s identity changes the whole footer subtree remounts.
+    // That forces a narrow dep list — which would otherwise leave the CTA
+    // holding a stale `handleAddToSplitwise` (stale title/customAmounts/
+    // splitMode) whenever those change without flipping `ctaDisabled`.
+    // Routing the press through a ref keeps the handler current without
+    // widening the deps.
+    const submitRef = useRef<() => void>(() => {});
+
+    const renderFooter = useCallback(
+      // The footer style is opaque so list rows scrolling under the pinned
+      // footer don't show through in the gaps beside the button.
+      (footerProps: BottomSheetFooterProps) => (
+        <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.addBtn,
+              ctaDisabled && styles.addBtnDisabled,
+              pressed && !ctaDisabled && styles.addBtnPressed,
+            ]}
+            onPress={() => submitRef.current()}
+            disabled={ctaDisabled}
+            accessibilityRole="button"
+            accessibilityLabel="Add split to Splitwise"
+          >
+            {submitting ? (
+              <ActivityIndicator color={Colors.textInverse} />
+            ) : (
+              <>
+                <Ionicons
+                  name="checkmark-circle-outline"
+                  size={18}
+                  color={ctaDisabled ? Colors.textTertiary : Colors.textInverse}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
+                  {mode === 'edit' ? 'Save changes' : 'Add to Splitwise'}
+                </Text>
+              </>
+            )}
+          </Pressable>
+        </BottomSheetFooter>
+      ),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [ctaDisabled, submitting, mode, insets.bottom]
+    );
+
+    // Every hook must run before this bail-out, or the render that first
+    // supplies a transaction adds hooks the previous render didn't have and
+    // React throws "rendered more hooks than during the previous render" —
+    // which unmounts the whole tree (blank screen) on tapping Split.
+    if (members.length === 0) return null;
 
     function switchToCustom() {
       const baseShareCents = Math.floor(totalCents / n);
@@ -286,8 +339,144 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       }
     }
 
+    // Keep the pinned footer's press handler pointing at this render's
+    // closure (see submitRef above).
+    submitRef.current = handleAddToSplitwise;
+
     const titleColor = merchantColor(title || '?');
     const titleInitial = (title || '?')[0].toUpperCase();
+
+    // Header content differs by mode but must be a single element (not an
+    // inline component) — see the ListHeaderComponent prop below.
+    const listHeader = (
+      <View>
+        {/* Title + total */}
+        <View style={styles.txSummary}>
+          <View style={[styles.txAvatar, { backgroundColor: titleColor + '18' }]}>
+            <Text style={[styles.txAvatarText, { color: titleColor }]}>{titleInitial}</Text>
+          </View>
+          <View style={styles.txInfo}>
+            <BottomSheetTextInput
+              style={styles.titleInput}
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Split title"
+              placeholderTextColor={Colors.textTertiary}
+              accessibilityLabel="Split title"
+              returnKeyType="done"
+            />
+            <Text style={styles.txTotal}>${totalAmount.toFixed(2)}</Text>
+          </View>
+        </View>
+
+        {/* Equal / Custom segmented control */}
+        {selected.size > 0 && (
+          <View style={styles.segmented}>
+            <Pressable
+              style={[styles.segBtn, splitMode === 'equal' && styles.segBtnActive]}
+              onPress={() => setSplitMode('equal')}
+              accessibilityRole="button"
+              accessibilityState={{ selected: splitMode === 'equal' }}
+            >
+              <Text style={[styles.segText, splitMode === 'equal' && styles.segTextActive]}>
+                Equal
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.segBtn, splitMode === 'custom' && styles.segBtnActive]}
+              onPress={switchToCustom}
+              accessibilityRole="button"
+              accessibilityState={{ selected: splitMode === 'custom' }}
+            >
+              <Text style={[styles.segText, splitMode === 'custom' && styles.segTextActive]}>
+                Custom
+              </Text>
+            </Pressable>
+          </View>
+        )}
+
+        {splitMode === 'equal' ? (
+          <>
+            {/* Equal split preview */}
+            {selected.size > 0 && (
+              <View style={styles.splitPreview}>
+                <Ionicons
+                  name="people-outline"
+                  size={16}
+                  color={Colors.primary}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={styles.splitPreviewText}>
+                  ${(ownerShareCents / 100).toFixed(2)} each · {n} people
+                </Text>
+              </View>
+            )}
+
+            {/* Search */}
+            <View style={styles.searchRow}>
+              <Ionicons
+                name="search-outline"
+                size={16}
+                color={Colors.textTertiary}
+                style={styles.searchIcon}
+              />
+              <BottomSheetTextInput
+                style={styles.searchInput}
+                placeholder="Search friends…"
+                placeholderTextColor={Colors.textTertiary}
+                value={query}
+                onChangeText={setQuery}
+                autoCorrect={false}
+                clearButtonMode="while-editing"
+                returnKeyType="search"
+                accessibilityLabel="Search friends"
+              />
+            </View>
+
+            <Text style={styles.sectionLabel}>
+              {query !== '' && filtered.length === 0
+                ? `No results for "${query}"`
+                : 'Select friends to split with'}
+            </Text>
+          </>
+        ) : (
+          <>
+            {/* Owner share card */}
+            <View style={[styles.ownerCard, isOverBudget && styles.ownerCardError]}>
+              <View>
+                <Text style={[styles.ownerLabel, isOverBudget && styles.ownerLabelError]}>
+                  Your share
+                </Text>
+                {isOverBudget && (
+                  <Text style={styles.ownerHint}>Reduce friend amounts to balance</Text>
+                )}
+              </View>
+              <Text style={[styles.ownerAmount, isOverBudget && styles.ownerAmountError]}>
+                {isOverBudget ? '—' : `$${(ownerShareCents / 100).toFixed(2)}`}
+              </Text>
+            </View>
+
+            <Text style={styles.sectionLabel}>Custom amounts</Text>
+          </>
+        )}
+      </View>
+    );
+
+    // isLoading/empty replace the list body only in equal mode (custom mode's
+    // data is the already-selected friends, which is never empty in practice).
+    const listEmpty =
+      splitMode === 'equal' ? (
+        isLoading ? (
+          <ActivityIndicator color={Colors.primary} style={styles.spinner} />
+        ) : friends.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="people-outline" size={32} color={Colors.textTertiary} />
+            <Text style={styles.emptyText}>No Splitwise friends found.</Text>
+          </View>
+        ) : null
+      ) : null;
+
+    const data = splitMode === 'equal' ? filtered : selectedFriends;
 
     return (
       <BottomSheetModal
@@ -299,186 +488,30 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         backgroundStyle={styles.sheetBg}
         keyboardBehavior="interactive"
         keyboardBlurBehavior="restore"
+        footerComponent={renderFooter}
       >
-        <BottomSheetView style={styles.container}>
-          {/* Title + total */}
-          <View style={styles.txSummary}>
-            <View style={[styles.txAvatar, { backgroundColor: titleColor + '18' }]}>
-              <Text style={[styles.txAvatarText, { color: titleColor }]}>{titleInitial}</Text>
-            </View>
-            <View style={styles.txInfo}>
-              <BottomSheetTextInput
-                style={styles.titleInput}
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Split title"
-                placeholderTextColor={Colors.textTertiary}
-                accessibilityLabel="Split title"
-                returnKeyType="done"
-              />
-              <Text style={styles.txTotal}>${totalAmount.toFixed(2)}</Text>
-            </View>
-          </View>
-
-          {/* Equal / Custom segmented control */}
-          {selected.size > 0 && (
-            <View style={styles.segmented}>
-              <Pressable
-                style={[styles.segBtn, splitMode === 'equal' && styles.segBtnActive]}
-                onPress={() => setSplitMode('equal')}
-                accessibilityRole="button"
-                accessibilityState={{ selected: splitMode === 'equal' }}
-              >
-                <Text style={[styles.segText, splitMode === 'equal' && styles.segTextActive]}>
-                  Equal
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.segBtn, splitMode === 'custom' && styles.segBtnActive]}
-                onPress={switchToCustom}
-                accessibilityRole="button"
-                accessibilityState={{ selected: splitMode === 'custom' }}
-              >
-                <Text style={[styles.segText, splitMode === 'custom' && styles.segTextActive]}>
-                  Custom
-                </Text>
-              </Pressable>
-            </View>
-          )}
-
-          {splitMode === 'equal' ? (
-            <>
-              {/* Equal split preview */}
-              {selected.size > 0 && (
-                <View style={styles.splitPreview}>
-                  <Ionicons
-                    name="people-outline"
-                    size={16}
-                    color={Colors.primary}
-                    style={{ marginRight: 6 }}
-                  />
-                  <Text style={styles.splitPreviewText}>
-                    ${(ownerShareCents / 100).toFixed(2)} each · {n} people
-                  </Text>
-                </View>
-              )}
-
-              {/* Search */}
-              <View style={styles.searchRow}>
-                <Ionicons
-                  name="search-outline"
-                  size={16}
-                  color={Colors.textTertiary}
-                  style={styles.searchIcon}
-                />
-                <BottomSheetTextInput
-                  style={styles.searchInput}
-                  placeholder="Search friends…"
-                  placeholderTextColor={Colors.textTertiary}
-                  value={query}
-                  onChangeText={setQuery}
-                  autoCorrect={false}
-                  clearButtonMode="while-editing"
-                  returnKeyType="search"
-                  accessibilityLabel="Search friends"
-                />
-              </View>
-
-              <Text style={styles.sectionLabel}>
-                {query !== '' && filtered.length === 0
-                  ? `No results for "${query}"`
-                  : 'Select friends to split with'}
-              </Text>
-
-              {isLoading ? (
-                <ActivityIndicator color={Colors.primary} style={styles.spinner} />
-              ) : friends.length === 0 ? (
-                <View style={styles.emptyContainer}>
-                  <Ionicons name="people-outline" size={32} color={Colors.textTertiary} />
-                  <Text style={styles.emptyText}>No Splitwise friends found.</Text>
-                </View>
-              ) : (
-                <BottomSheetFlatList
-                  data={filtered}
-                  keyExtractor={(f) => f.id}
-                  style={styles.list}
-                  keyboardShouldPersistTaps="handled"
-                  renderItem={({ item }) => (
-                    <EqualRow
-                      friend={item}
-                      isSelected={selected.has(item.id)}
-                      onToggle={toggle}
-                    />
-                  )}
-                />
-              )}
-            </>
-          ) : (
-            <>
-              {/* Owner share card */}
-              <View style={[styles.ownerCard, isOverBudget && styles.ownerCardError]}>
-                <View>
-                  <Text style={[styles.ownerLabel, isOverBudget && styles.ownerLabelError]}>
-                    Your share
-                  </Text>
-                  {isOverBudget && (
-                    <Text style={styles.ownerHint}>Reduce friend amounts to balance</Text>
-                  )}
-                </View>
-                <Text style={[styles.ownerAmount, isOverBudget && styles.ownerAmountError]}>
-                  {isOverBudget ? '—' : `$${(ownerShareCents / 100).toFixed(2)}`}
-                </Text>
-              </View>
-
-              <Text style={styles.sectionLabel}>Custom amounts</Text>
-
-              <BottomSheetFlatList
-                data={selectedFriends}
-                keyExtractor={(f) => f.id}
-                style={styles.list}
-                keyboardShouldPersistTaps="handled"
-                renderItem={({ item }) => (
-                  <CustomRow
-                    friend={item}
-                    amount={customAmounts[item.id] ?? 0}
-                    onDecrease={() => adjustAmount(item.id, -STEP)}
-                    onIncrease={() => adjustAmount(item.id, STEP)}
-                    onCommit={(v) => commitAmount(item.id, v)}
-                  />
-                )}
-              />
-            </>
-          )}
-
-          {/* CTA */}
-          <Pressable
-            style={({ pressed }) => [
-              styles.addBtn,
-              ctaDisabled && styles.addBtnDisabled,
-              pressed && !ctaDisabled && styles.addBtnPressed,
-            ]}
-            onPress={handleAddToSplitwise}
-            disabled={ctaDisabled}
-            accessibilityRole="button"
-            accessibilityLabel="Add split to Splitwise"
-          >
-            {submitting ? (
-              <ActivityIndicator color={Colors.textInverse} />
+        <BottomSheetFlatList
+          data={data}
+          keyExtractor={(f) => f.id}
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={listHeader}
+          ListEmptyComponent={listEmpty}
+          renderItem={({ item }) =>
+            splitMode === 'equal' ? (
+              <EqualRow friend={item} isSelected={selected.has(item.id)} onToggle={toggle} />
             ) : (
-              <>
-                <Ionicons
-                  name="checkmark-circle-outline"
-                  size={18}
-                  color={ctaDisabled ? Colors.textTertiary : Colors.textInverse}
-                  style={{ marginRight: 6 }}
-                />
-                <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
-                  {mode === 'edit' ? 'Save changes' : 'Add to Splitwise'}
-                </Text>
-              </>
-            )}
-          </Pressable>
-        </BottomSheetView>
+              <CustomRow
+                friend={item}
+                amount={customAmounts[item.id] ?? 0}
+                onDecrease={() => adjustAmount(item.id, -STEP)}
+                onIncrease={() => adjustAmount(item.id, STEP)}
+                onCommit={(v) => commitAmount(item.id, v)}
+              />
+            )
+          }
+        />
       </BottomSheetModal>
     );
   }
@@ -600,7 +633,8 @@ function CustomRow({
 const styles = StyleSheet.create({
   indicator: { backgroundColor: Colors.border, width: 36 },
   sheetBg: { backgroundColor: Colors.surface },
-  container: { flex: 1, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
+  listContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, paddingBottom: 90 },
+  footer: { backgroundColor: Colors.surface },
 
   txSummary: {
     flexDirection: 'row',
@@ -803,6 +837,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    marginHorizontal: Spacing.xl,
     marginTop: Spacing.md,
     marginBottom: Spacing.md,
     minHeight: 52,
