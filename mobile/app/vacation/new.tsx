@@ -22,6 +22,7 @@ export default function NewVacationScreen() {
   const [endDate, setEndDate] = useState('');
   const [groups, setGroups] = useState<SplitwiseGroup[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<SplitwiseGroup | null>(null);
+  const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -104,22 +105,61 @@ export default function NewVacationScreen() {
         {groups.length > 0 && (
           <>
             <Text style={styles.label}>Splitwise group (optional)</Text>
-            {groups.map((g) => {
-              const isSelected = selectedGroup?.id === g.id;
-              return (
-                <Pressable
-                  key={g.id}
-                  style={[styles.groupRow, isSelected && styles.groupRowSelected]}
-                  onPress={() => setSelectedGroup(isSelected ? null : g)}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: isSelected }}
-                  accessibilityLabel={g.name}
-                >
-                  <Text style={styles.groupName}>{g.name}</Text>
-                  {isSelected && <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />}
-                </Pressable>
-              );
-            })}
+            <Pressable
+              style={styles.groupTrigger}
+              onPress={() => setGroupPickerOpen((open) => !open)}
+              accessibilityRole="button"
+              accessibilityLabel="Select Splitwise group"
+              accessibilityState={{ expanded: groupPickerOpen }}
+            >
+              <Text style={selectedGroup ? styles.groupTriggerText : styles.groupTriggerPlaceholder}>
+                {selectedGroup ? selectedGroup.name : 'None'}
+              </Text>
+              <Ionicons
+                name={groupPickerOpen ? 'chevron-up' : 'chevron-down'}
+                size={18}
+                color={Colors.textSecondary}
+              />
+            </Pressable>
+
+            {groupPickerOpen && (
+              <View style={styles.groupPanel}>
+                <ScrollView nestedScrollEnabled style={styles.groupPanelScroll}>
+                  <Pressable
+                    style={[styles.groupRow, !selectedGroup && styles.groupRowSelected]}
+                    onPress={() => {
+                      setSelectedGroup(null);
+                      setGroupPickerOpen(false);
+                    }}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: !selectedGroup }}
+                    accessibilityLabel="None"
+                  >
+                    <Text style={styles.groupName}>None</Text>
+                    {!selectedGroup && <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />}
+                  </Pressable>
+                  {groups.map((g) => {
+                    const isSelected = selectedGroup?.id === g.id;
+                    return (
+                      <Pressable
+                        key={g.id}
+                        style={[styles.groupRow, isSelected && styles.groupRowSelected]}
+                        onPress={() => {
+                          setSelectedGroup(isSelected ? null : g);
+                          setGroupPickerOpen(false);
+                        }}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: isSelected }}
+                        accessibilityLabel={g.name}
+                      >
+                        <Text style={styles.groupName}>{g.name}</Text>
+                        {isSelected && <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
           </>
         )}
       </ScrollView>
@@ -154,6 +194,18 @@ const styles = StyleSheet.create({
   dateRow: { flexDirection: 'row', gap: Spacing.md },
   dateInput: { flex: 1 },
   error: { fontSize: 12, color: Colors.error, marginTop: Spacing.sm },
+  groupTrigger: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.surface, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: Spacing.md, paddingVertical: 12,
+  },
+  groupTriggerText: { fontSize: 15, color: Colors.textPrimary },
+  groupTriggerPlaceholder: { fontSize: 15, color: Colors.textTertiary },
+  groupPanel: {
+    marginTop: Spacing.sm, maxHeight: 240, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surface, ...Shadow.sm,
+  },
+  groupPanelScroll: { padding: Spacing.sm },
   groupRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: Colors.surface, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,

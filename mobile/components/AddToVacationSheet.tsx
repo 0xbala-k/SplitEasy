@@ -1,7 +1,13 @@
 // mobile/components/AddToVacationSheet.tsx
-import { forwardRef, useEffect, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { BottomSheetModal, BottomSheetView, BottomSheetFlatList } from '@gorhom/bottom-sheet';
+import {
+  BottomSheetModal,
+  BottomSheetFlatList,
+  BottomSheetFooter,
+  type BottomSheetFooterProps,
+} from '@gorhom/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getNewTransactions, assignTransactionsToVacation } from '@/lib/db';
 import { useToast } from '@/components/ToastProvider';
@@ -17,6 +23,7 @@ interface Props {
 export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
   ({ vacationId, openToken, onDone }, ref) => {
     const toast = useToast();
+    const insets = useSafeAreaInsets();
     const [candidates, setCandidates] = useState<Transaction[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [submitting, setSubmitting] = useState(false);
@@ -47,55 +54,26 @@ export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
       }
     }
 
-    return (
-      <BottomSheetModal
-        ref={ref}
-        snapPoints={['70%']}
-        enableDynamicSizing={false}
-        enablePanDownToClose
-        handleIndicatorStyle={styles.indicator}
-        backgroundStyle={styles.sheetBg}
-      >
-        <BottomSheetView style={styles.container}>
-          <Text style={styles.title}>Add transactions</Text>
-          {candidates.length === 0 ? (
-            <Text style={styles.empty}>No unassigned transactions to add.</Text>
-          ) : (
-            <BottomSheetFlatList
-              data={candidates}
-              keyExtractor={(t) => t.id}
-              style={styles.list}
-              renderItem={({ item }) => {
-                const isSelected = selected.has(item.id);
-                const color = merchantColor(item.merchant_name);
-                return (
-                  <Pressable
-                    style={[styles.row, isSelected && styles.rowSelected]}
-                    onPress={() => toggle(item.id)}
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: isSelected }}
-                    accessibilityLabel={`Select ${item.merchant_name}`}
-                  >
-                    <View style={[styles.avatar, { backgroundColor: color + '18' }]}>
-                      <Text style={[styles.avatarText, { color }]}>{item.merchant_name[0].toUpperCase()}</Text>
-                    </View>
-                    <Text style={styles.name} numberOfLines={1}>{item.merchant_name}</Text>
-                    <Text style={styles.amount}>${item.amount.toFixed(2)}</Text>
-                    <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                      {isSelected && <Ionicons name="checkmark" size={13} color={Colors.textInverse} />}
-                    </View>
-                  </Pressable>
-                );
-              }}
-            />
-          )}
+    // The sheet renders the footer as a component type, so a change to
+    // `renderFooter`'s identity remounts the footer subtree. Keep the deps to
+    // what actually affects rendering and route the press through a ref, so
+    // the handler never goes stale on `vacationId`/`onDone` (the parent
+    // passes `onDone` as an inline arrow — a new identity every render).
+    const confirmRef = useRef(confirm);
+    confirmRef.current = confirm;
+
+    const renderFooter = useCallback(
+      // The footer style is opaque so list rows scrolling under the pinned
+      // footer don't show through in the gaps beside the button.
+      (footerProps: BottomSheetFooterProps) => (
+        <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
           <Pressable
             style={({ pressed }) => [
               styles.confirmBtn,
               (selected.size === 0 || submitting) && styles.confirmBtnDisabled,
               pressed && selected.size > 0 && styles.confirmBtnPressed,
             ]}
-            onPress={confirm}
+            onPress={() => confirmRef.current()}
             disabled={selected.size === 0 || submitting}
             accessibilityRole="button"
             accessibilityLabel="Add to vacation"
@@ -104,7 +82,52 @@ export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
               Add {selected.size > 0 ? `(${selected.size})` : ''}
             </Text>
           </Pressable>
-        </BottomSheetView>
+        </BottomSheetFooter>
+      ),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [selected, submitting, insets.bottom]
+    );
+
+    return (
+      <BottomSheetModal
+        ref={ref}
+        snapPoints={['70%']}
+        enableDynamicSizing={false}
+        enablePanDownToClose
+        handleIndicatorStyle={styles.indicator}
+        backgroundStyle={styles.sheetBg}
+        footerComponent={renderFooter}
+      >
+        <BottomSheetFlatList
+          data={candidates}
+          keyExtractor={(t) => t.id}
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+          ListHeaderComponent={<Text style={styles.title}>Add transactions</Text>}
+          ListEmptyComponent={<Text style={styles.empty}>No unassigned transactions to add.</Text>}
+          renderItem={({ item }) => {
+            const isSelected = selected.has(item.id);
+            const color = merchantColor(item.merchant_name);
+            return (
+              <Pressable
+                style={[styles.row, isSelected && styles.rowSelected]}
+                onPress={() => toggle(item.id)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: isSelected }}
+                accessibilityLabel={`Select ${item.merchant_name}`}
+              >
+                <View style={[styles.avatar, { backgroundColor: color + '18' }]}>
+                  <Text style={[styles.avatarText, { color }]}>{item.merchant_name[0].toUpperCase()}</Text>
+                </View>
+                <Text style={styles.name} numberOfLines={1}>{item.merchant_name}</Text>
+                <Text style={styles.amount}>${item.amount.toFixed(2)}</Text>
+                <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                  {isSelected && <Ionicons name="checkmark" size={13} color={Colors.textInverse} />}
+                </View>
+              </Pressable>
+            );
+          }}
+        />
       </BottomSheetModal>
     );
   }
@@ -113,10 +136,10 @@ export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
 const styles = StyleSheet.create({
   indicator: { backgroundColor: Colors.border, width: 36 },
   sheetBg: { backgroundColor: Colors.surface },
-  container: { flex: 1, paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
   title: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary, marginBottom: Spacing.md },
   empty: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginTop: Spacing.xxl },
   list: { flex: 1 },
+  listContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, paddingBottom: 90 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -136,9 +159,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.surface,
   },
   checkboxSelected: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  footer: { backgroundColor: Colors.surface },
   confirmBtn: {
     backgroundColor: Colors.primary, borderRadius: Radius.lg, paddingVertical: 16,
-    justifyContent: 'center', alignItems: 'center', marginTop: Spacing.md, marginBottom: Spacing.md, ...Shadow.sm,
+    justifyContent: 'center', alignItems: 'center',
+    marginHorizontal: Spacing.xl, marginTop: Spacing.md, marginBottom: Spacing.md, ...Shadow.sm,
   },
   confirmBtnDisabled: { backgroundColor: Colors.surfaceMuted },
   confirmBtnPressed: { backgroundColor: Colors.primaryDark },
