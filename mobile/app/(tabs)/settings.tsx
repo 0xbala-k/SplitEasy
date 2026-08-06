@@ -1,6 +1,6 @@
 import { Image, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
-import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { showDialog } from '@/lib/dialog';
 import { useAuthStore } from '@/stores/authStore';
@@ -11,6 +11,7 @@ export default function SettingsScreen() {
   const { display_name, avatar_url, signOut } = useAuthStore();
   const { accounts, isLinked, disconnect } = usePlaidStore();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   function confirmSignOut() {
     showDialog(
@@ -57,7 +58,7 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView
-      style={[styles.root, { paddingTop: Constants.statusBarHeight }]}
+      style={[styles.root, { paddingTop: insets.top }]}
       contentContainerStyle={styles.scrollContent}
     >
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
@@ -76,7 +77,7 @@ export default function SettingsScreen() {
           </View>
         )}
         <View style={styles.profileInfo}>
-          <Text style={styles.profileName}>{display_name ?? 'Unknown'}</Text>
+          <Text style={styles.profileName} numberOfLines={1}>{display_name ?? 'Unknown'}</Text>
           <Text style={styles.profileSub}>Splitwise account</Text>
         </View>
         <View style={styles.splitwiseBadge}>
@@ -98,7 +99,7 @@ export default function SettingsScreen() {
                     <Ionicons name="business-outline" size={18} color={Colors.primary} />
                   </View>
                   <View style={styles.settingContent}>
-                    <Text style={styles.settingTitle}>{acct.institution_name}</Text>
+                    <Text style={styles.settingTitle} numberOfLines={1}>{acct.institution_name}</Text>
                     <Text style={styles.settingDesc}>Synced via Plaid</Text>
                   </View>
                   <Pressable

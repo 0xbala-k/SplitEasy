@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
 import { getVacationPendingTransactions, getVacationHistory, removeTransactionFromVacation } from '@/lib/db';
@@ -15,10 +16,13 @@ import { useToast } from '@/components/ToastProvider';
 import { HistoryItem, Transaction } from '@/lib/types';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
+const SELECT_BAR_CONTENT_HEIGHT = 88;
+
 export default function VacationDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const toast = useToast();
+  const insets = useSafeAreaInsets();
   const vacations = useVacationStore((s) => s.vacations);
   const loadVacations = useVacationStore((s) => s.load);
   const startVacation = useVacationStore((s) => s.startVacation);
@@ -173,7 +177,7 @@ export default function VacationDetailScreen() {
   return (
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.bg} />
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
         <Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
         </Pressable>
@@ -202,7 +206,7 @@ export default function VacationDetailScreen() {
         {vacation.splitwise_group_name && (
           <View style={styles.groupChip}>
             <Ionicons name="people-outline" size={12} color={Colors.primary} />
-            <Text style={styles.groupChipText}>{vacation.splitwise_group_name}</Text>
+            <Text style={styles.groupChipText} numberOfLines={1}>{vacation.splitwise_group_name}</Text>
           </View>
         )}
       </View>
@@ -231,7 +235,7 @@ export default function VacationDetailScreen() {
       <FlatList
         data={pending}
         keyExtractor={(t) => t.id}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, selectMode && { paddingBottom: SELECT_BAR_CONTENT_HEIGHT + insets.bottom }]}
         ListHeaderComponent={
           pending.length > 0 ? (
             <View style={styles.sectionHeaderRow}>
@@ -272,7 +276,7 @@ export default function VacationDetailScreen() {
       />
 
       {selectMode && (
-        <View style={styles.selectBar}>
+        <View style={[styles.selectBar, { paddingBottom: Spacing.lg + insets.bottom }]}>
           <Pressable
             style={styles.selectCancel}
             onPress={() => { setSelectMode(false); setSelectedIds(new Set()); }}
@@ -322,7 +326,7 @@ function HistoryRecapRow({ item }: { item: HistoryItem }) {
       <View style={styles.recapInfo}>
         <Text style={styles.recapName} numberOfLines={1}>{item.merchant_name}</Text>
         {item.split && (
-          <Text style={styles.recapSplit}>
+          <Text style={styles.recapSplit} numberOfLines={1}>
             {item.split.friend_names.join(', ')} · ${item.split.amount_each.toFixed(2)} each
           </Text>
         )}
@@ -337,7 +341,7 @@ const styles = StyleSheet.create({
   notFound: { marginTop: 100, textAlign: 'center', color: Colors.textSecondary },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg, paddingTop: 56, paddingBottom: Spacing.sm,
+    paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm,
   },
   headerTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: Colors.textPrimary, marginHorizontal: Spacing.md, textAlign: 'center' },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
@@ -347,8 +351,10 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 11, fontWeight: '600', color: Colors.textSecondary },
   statusTextActive: { color: Colors.success },
   dates: { fontSize: 12, color: Colors.textTertiary },
-  groupChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.primaryMuted, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4 },
-  groupChipText: { fontSize: 11, fontWeight: '600', color: Colors.primary },
+  // The chip must be allowed to shrink, or a long group name grows it past the
+  // screen edge; numberOfLines can only ellipsize once the width is bounded.
+  groupChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.primaryMuted, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4, flexShrink: 1, maxWidth: '100%' },
+  groupChipText: { fontSize: 11, fontWeight: '600', color: Colors.primary, flexShrink: 1, minWidth: 0 },
   lifecycleRow: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, marginBottom: Spacing.md },
   lifecycleBtn: { backgroundColor: Colors.primary, borderRadius: Radius.md, paddingVertical: 10, paddingHorizontal: Spacing.lg },
   lifecycleBtnText: { color: Colors.textInverse, fontSize: 13, fontWeight: '700' },
