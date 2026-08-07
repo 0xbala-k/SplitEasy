@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { Ionicons } from '@expo/vector-icons';
 import { Transaction } from '@/lib/types';
+import { formatDayLabel } from '@/lib/date';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
 interface Props {
@@ -18,10 +19,7 @@ interface Props {
 
 export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, selectMode, selected, onToggleSelect, variant = 'skip' }: Props) {
   const amount = `$${transaction.amount.toFixed(2)}`;
-  const date = new Date(transaction.date).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
+  const date = formatDayLabel(transaction.date);
   const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
   const avatarBg = merchantColor(transaction.merchant_name ?? '?');
   const removeMode = variant === 'remove';

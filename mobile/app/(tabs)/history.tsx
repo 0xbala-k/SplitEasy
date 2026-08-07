@@ -7,6 +7,7 @@ import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
 import { getHistoryTransactions, getSplitDecision, getTransactionsByIds } from '@/lib/db';
 import { HistoryItem, SplitDecision, Transaction } from '@/lib/types';
+import { formatDayLabel } from '@/lib/date';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { HistoryActionSheet } from '@/components/HistoryActionSheet';
@@ -214,7 +215,7 @@ function EmptyState() {
 }
 
 function HistoryRow({ item, onPress }: { item: HistoryItem; onPress: () => void }) {
-  const date = new Date(item.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const date = formatDayLabel(item.date);
   const isSplit = item.status === 'split' && item.split;
   const initial = (item.merchant_name ?? '?')[0].toUpperCase();
   const avatarColor = merchantColor(item.merchant_name ?? '?');

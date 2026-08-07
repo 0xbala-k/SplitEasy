@@ -7,6 +7,7 @@ import {
 } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
+import { todayLocal } from '@/lib/date';
 import { VacationConflictError } from '@/lib/vacationErrors';
 
 const DB_NAME = 'spliteasy';
@@ -263,7 +264,10 @@ export async function removeTransactionFromVacation(transactionId: string): Prom
 }
 
 export async function reconcileVacationStatuses(): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  // `today` is the device's local calendar date, so a vacation starts and ends
+  // at the user's midnight rather than UTC's (see lib/date.ts). `now` is an
+  // instant and stays UTC.
+  const today = todayLocal();
   const now = new Date().toISOString();
   const tx = db().transaction(VACATION_STORE, 'readwrite');
   const store = tx.objectStore(VACATION_STORE);

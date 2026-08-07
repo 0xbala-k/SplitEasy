@@ -3,6 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
+import { todayLocal } from '@/lib/date';
 import { VacationConflictError } from '@/lib/vacationErrors';
 
 let _db: SQLite.SQLiteDatabase | null = null;
@@ -295,7 +296,10 @@ export async function removeTransactionFromVacation(transactionId: string): Prom
 }
 
 export async function reconcileVacationStatuses(): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  // `today` is the device's local calendar date, so a vacation starts and ends
+  // at the user's midnight rather than UTC's (see lib/date.ts). `now` is an
+  // instant and stays UTC.
+  const today = todayLocal();
   const now = new Date().toISOString();
   await db().withTransactionAsync(async () => {
     // 1. A draft whose entire window has already elapsed (past start AND
