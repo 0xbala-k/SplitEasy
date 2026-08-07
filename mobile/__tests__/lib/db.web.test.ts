@@ -12,7 +12,19 @@ import {
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
+import { toLocalDateString } from '@/lib/date';
 import { VacationConflictError } from '@/lib/vacationErrors';
+
+// Relative calendar dates have to be built in local time, the same way
+// reconcileVacationStatuses computes "today". Deriving them from
+// `toISOString()` instead makes these tests fail whenever the device's date
+// and the UTC date disagree — e.g. any evening in US Pacific, where "yesterday"
+// via UTC comes back as today's local date and nothing looks elapsed.
+function localDate(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return toLocalDateString(d);
+}
 
 function plaidTx(id: string, over: Partial<PlaidTransaction> = {}): PlaidTransaction {
   return {
@@ -559,19 +571,16 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
   });
 
   it('reconcileVacationStatuses activates a draft whose start date has arrived', async () => {
-    const past = new Date(); past.setDate(past.getDate() - 1);
-    const v = await createVacation({ name: 'Hawaii', start_date: past.toISOString().slice(0, 10), end_date: '2099-01-01' });
+    const v = await createVacation({ name: 'Hawaii', start_date: localDate(-1), end_date: '2099-01-01' });
     await reconcileVacationStatuses();
     expect((await getVacation(v.id))?.status).toBe('active');
   });
 
   it('reconcileVacationStatuses ends an active vacation whose end date has passed', async () => {
-    const past = new Date(); past.setDate(past.getDate() - 5);
-    const pastEnd = new Date(); pastEnd.setDate(pastEnd.getDate() - 1);
     const v = await createVacation({
       name: 'Hawaii',
-      start_date: past.toISOString().slice(0, 10),
-      end_date: pastEnd.toISOString().slice(0, 10),
+      start_date: localDate(-5),
+      end_date: localDate(-1),
     });
     await startVacation(v.id);
     await reconcileVacationStatuses();
@@ -588,8 +597,7 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
     // Both have start_date in the past and no end_date, so createVacation's
     // overlap check (which only runs when both dates are set) never rejects
     // the second one — this is the scenario the native LIMIT-1 fix guards.
-    const past = new Date(); past.setDate(past.getDate() - 3);
-    const startDate = past.toISOString().slice(0, 10);
+    const startDate = localDate(-3);
     const a = await createVacation({ name: 'A', start_date: startDate });
     const b = await createVacation({ name: 'B', start_date: startDate });
     await reconcileVacationStatuses();
@@ -598,14 +606,11 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
   });
 
   it('reconcileVacationStatuses ends a draft immediately if both its dates have already elapsed, without blocking a later activation', async () => {
-    const wayPast = new Date(); wayPast.setDate(wayPast.getDate() - 10);
-    const stillPast = new Date(); stillPast.setDate(stillPast.getDate() - 5);
-    const recentPast = new Date(); recentPast.setDate(recentPast.getDate() - 1);
     const elapsed = await createVacation({
-      name: 'Elapsed', start_date: wayPast.toISOString().slice(0, 10), end_date: stillPast.toISOString().slice(0, 10),
+      name: 'Elapsed', start_date: localDate(-10), end_date: localDate(-5),
     });
     const current = await createVacation({
-      name: 'Current', start_date: recentPast.toISOString().slice(0, 10),
+      name: 'Current', start_date: localDate(-1),
     });
     await reconcileVacationStatuses();
     expect((await getVacation(elapsed.id))?.status).toBe('ended');
@@ -613,14 +618,11 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
   });
 
   it('reconcileVacationStatuses activates a new draft the same day an active vacation elapses', async () => {
-    const farPast = new Date(); farPast.setDate(farPast.getDate() - 10);
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-    const today = new Date().toISOString().slice(0, 10);
     const a = await createVacation({
-      name: 'A', start_date: farPast.toISOString().slice(0, 10), end_date: yesterday.toISOString().slice(0, 10),
+      name: 'A', start_date: localDate(-10), end_date: localDate(-1),
     });
     await startVacation(a.id);
-    const b = await createVacation({ name: 'B', start_date: today, end_date: null });
+    const b = await createVacation({ name: 'B', start_date: localDate(0), end_date: null });
     await reconcileVacationStatuses();
     expect((await getVacation(a.id))?.status).toBe('ended');
     expect((await getVacation(b.id))?.status).toBe('active');
