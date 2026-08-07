@@ -55,3 +55,65 @@ export function formatDayLabel(value: string): string {
     day: 'numeric',
   });
 }
+
+/** "Aug 6, 2026"-style label, used where the year matters. */
+export function formatDayLabelWithYear(value: string): string {
+  return parseLocalDate(value).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Month-grid helpers, for the calendar range picker.
+// `month` is 0-indexed throughout, matching Date's own convention.
+// ---------------------------------------------------------------------------
+
+export interface YearMonth {
+  year: number;
+  month: number;
+}
+
+/** The year/month `delta` months away from the given one. */
+export function addMonths({ year, month }: YearMonth, delta: number): YearMonth {
+  // Day 1 keeps this away from the end-of-month clamping that makes naive
+  // month arithmetic skip (Jan 31 + 1 month landing in March).
+  const d = new Date(year, month + delta, 1);
+  return { year: d.getFullYear(), month: d.getMonth() };
+}
+
+/** The year/month a stored date falls in, or the current one for null. */
+export function yearMonthOf(value: string | null): YearMonth {
+  const d = value ? parseLocalDate(value) : new Date();
+  return { year: d.getFullYear(), month: d.getMonth() };
+}
+
+/** "August 2026" heading for a month. */
+export function formatMonthLabel({ year, month }: YearMonth): string {
+  return new Date(year, month, 1).toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+/**
+ * A month laid out as calendar weeks, Sunday-first. Each cell is a
+ * "YYYY-MM-DD" date string, or null for the leading/trailing padding that
+ * keeps real days under the right weekday column.
+ */
+export function monthGrid({ year, month }: YearMonth): (string | null)[][] {
+  const firstWeekday = new Date(year, month, 1).getDay();
+  // Day 0 of the next month is the last day of this one.
+  const dayCount = new Date(year, month + 1, 0).getDate();
+
+  const cells: (string | null)[] = Array(firstWeekday).fill(null);
+  for (let day = 1; day <= dayCount; day++) {
+    cells.push(toLocalDateString(new Date(year, month, day)));
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const weeks: (string | null)[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
