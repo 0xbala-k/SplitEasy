@@ -9,6 +9,7 @@ const mockCreateVacation = db.createVacation as jest.Mock;
 const mockStart = db.startVacation as jest.Mock;
 const mockEnd = db.endVacation as jest.Mock;
 const mockDelete = db.deleteVacation as jest.Mock;
+const mockUpdateDates = db.updateVacationDates as jest.Mock;
 const mockReconcile = db.reconcileVacationStatuses as jest.Mock;
 
 function vac(over: Partial<Vacation> = {}): Vacation {
@@ -27,6 +28,7 @@ beforeEach(() => {
   mockStart.mockResolvedValue(undefined);
   mockEnd.mockResolvedValue(undefined);
   mockDelete.mockResolvedValue(undefined);
+  mockUpdateDates.mockResolvedValue(undefined);
   mockReconcile.mockResolvedValue(undefined);
 });
 
@@ -88,4 +90,19 @@ test('deleteVacation calls db.deleteVacation and reloads', async () => {
   await useVacationStore.getState().deleteVacation('v1');
   expect(mockDelete).toHaveBeenCalledWith('v1');
   expect(mockGetVacations).toHaveBeenCalled();
+});
+
+test('updateDates writes the dates then reconciles', async () => {
+  await useVacationStore.getState().updateDates('v1', '2030-01-01', '2030-01-10');
+  expect(mockUpdateDates).toHaveBeenCalledWith('v1', '2030-01-01', '2030-01-10');
+  // Reconciling rather than reloading is the point: edited dates can make a
+  // draft due now, or push an active vacation's end into the past, and status
+  // has to follow the dates the same way it does on create.
+  expect(mockReconcile).toHaveBeenCalledTimes(1);
+});
+
+test('updateDates propagates an overlap conflict without reconciling', async () => {
+  mockUpdateDates.mockRejectedValue(new Error('overlap'));
+  await expect(useVacationStore.getState().updateDates('v1', '2030-01-01', '2030-01-10')).rejects.toThrow();
+  expect(mockReconcile).not.toHaveBeenCalled();
 });

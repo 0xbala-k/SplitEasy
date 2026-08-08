@@ -30,6 +30,7 @@ import {
   assignTransactionsToVacation,
   removeTransactionFromVacation,
   reconcileVacationStatuses,
+  updateVacationDates,
   rekeyTransaction,
   markTransactionsReversed,
   getReviewTransactions,
@@ -802,6 +803,31 @@ describe('vacation transaction capture & history', () => {
     mockDb.runAsync.mockClear();
     await assignTransactionsToVacation('vac1', []);
     expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('updateVacationDates excludes the vacation itself from the overlap check', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([]);
+    await updateVacationDates('vac1', '2030-01-01', '2030-01-10');
+    const [sql, params] = mockDb.getAllAsync.mock.calls.find(([s]: [string]) =>
+      s.includes('start_date <= ?')
+    )!;
+    // Without `id != ?` a vacation always conflicts with its own saved range,
+    // making every date edit impossible.
+    expect(sql).toContain('id != ?');
+    expect(params).toEqual(['vac1', '2030-01-10', '2030-01-01']);
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SET start_date = ?, end_date = ?'),
+      ['2030-01-01', '2030-01-10', 'vac1']
+    );
+  });
+
+  test('updateVacationDates skips the overlap query when clearing dates', async () => {
+    await updateVacationDates('vac1', null, null);
+    expect(mockDb.getAllAsync).not.toHaveBeenCalled();
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SET start_date = ?, end_date = ?'),
+      [null, null, 'vac1']
+    );
   });
 
   test('removeTransactionFromVacation clears vacation_id for a pending row', async () => {

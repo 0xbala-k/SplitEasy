@@ -13,7 +13,9 @@ import { TransactionRow } from '@/components/TransactionRow';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { AddToVacationSheet } from '@/components/AddToVacationSheet';
 import { useToast } from '@/components/ToastProvider';
+import { EditDatesSheet } from '@/components/EditDatesSheet';
 import { HistoryItem, Transaction } from '@/lib/types';
+import { formatDayLabel, formatDayLabelWithYear } from '@/lib/date';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
 const SELECT_BAR_CONTENT_HEIGHT = 88;
@@ -28,6 +30,7 @@ export default function VacationDetailScreen() {
   const startVacation = useVacationStore((s) => s.startVacation);
   const endVacation = useVacationStore((s) => s.endVacation);
   const deleteVacation = useVacationStore((s) => s.deleteVacation);
+  const updateDates = useVacationStore((s) => s.updateDates);
   const activeVacation = useVacationStore((s) => s.activeVacation);
 
   const vacation = vacations.find((v) => v.id === id) ?? null;
@@ -39,9 +42,11 @@ export default function VacationDetailScreen() {
   const [combineTxs, setCombineTxs] = useState<Transaction[] | null>(null);
   const [pickerToken, setPickerToken] = useState(0);
   const [addToken, setAddToken] = useState(0);
-  const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add'>(null);
+  const [datesToken, setDatesToken] = useState(0);
+  const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add' | 'dates'>(null);
   const pickerRef = useRef<BottomSheetModal>(null);
   const addRef = useRef<BottomSheetModal>(null);
+  const datesRef = useRef<BottomSheetModal>(null);
 
   const refresh = useCallback(() => {
     if (!id) return;
@@ -64,6 +69,9 @@ export default function VacationDetailScreen() {
       setPendingPresent(null);
     } else if (pendingPresent === 'add') {
       addRef.current?.present();
+      setPendingPresent(null);
+    } else if (pendingPresent === 'dates') {
+      datesRef.current?.present();
       setPendingPresent(null);
     }
   }, [pendingPresent]);
@@ -169,8 +177,26 @@ export default function VacationDetailScreen() {
     );
   };
 
+  const handleSaveDates = async (start: string | null, end: string | null) => {
+    try {
+      await updateDates(vacation.id, start, end);
+      datesRef.current?.dismiss();
+      toast.show(start && end ? 'Dates updated' : 'Dates removed', 'success');
+    } catch (err) {
+      toast.show(
+        err instanceof VacationConflictError
+          ? 'Those dates overlap another vacation.'
+          : 'Could not update dates. Please try again.',
+        'error'
+      );
+    }
+  };
+
   const canStart = vacation.status === 'draft' && !activeVacation;
   const canEnd = vacation.status === 'active';
+  // An ended trip's dates are history — editing them would only invite a
+  // reconcile that can no longer act on them.
+  const canEditDates = vacation.status !== 'ended';
   const statusLabel = vacation.status === 'active' ? 'Active' : vacation.status === 'draft' ? 'Draft' : 'Ended';
   const mixedCurrency = new Set(pending.map((t) => t.currency)).size > 1;
 
@@ -200,8 +226,26 @@ export default function VacationDetailScreen() {
         <View style={[styles.statusPill, vacation.status === 'active' && styles.statusPillActive]}>
           <Text style={[styles.statusText, vacation.status === 'active' && styles.statusTextActive]}>{statusLabel}</Text>
         </View>
-        {vacation.start_date && vacation.end_date && (
-          <Text style={styles.dates}>{vacation.start_date} – {vacation.end_date}</Text>
+        {canEditDates ? (
+          <Pressable
+            style={styles.datesBtn}
+            onPress={() => { setDatesToken((t) => t + 1); setPendingPresent('dates'); }}
+            accessibilityRole="button"
+            accessibilityLabel={vacation.start_date ? 'Edit dates' : 'Add dates'}
+          >
+            <Ionicons name="calendar-outline" size={12} color={Colors.textSecondary} />
+            <Text style={styles.dates} numberOfLines={1}>
+              {vacation.start_date && vacation.end_date
+                ? `${formatDayLabel(vacation.start_date)} – ${formatDayLabelWithYear(vacation.end_date)}`
+                : 'Add dates'}
+            </Text>
+          </Pressable>
+        ) : (
+          vacation.start_date && vacation.end_date && (
+            <Text style={styles.dates} numberOfLines={1}>
+              {formatDayLabel(vacation.start_date)} – {formatDayLabelWithYear(vacation.end_date)}
+            </Text>
+          )
         )}
         {vacation.splitwise_group_name && (
           <View style={styles.groupChip}>
@@ -312,6 +356,13 @@ export default function VacationDetailScreen() {
         openToken={addToken}
         onDone={() => { addRef.current?.dismiss(); refresh(); }}
       />
+      <EditDatesSheet
+        ref={datesRef}
+        startDate={vacation.start_date}
+        endDate={vacation.end_date}
+        openToken={datesToken}
+        onSave={handleSaveDates}
+      />
     </View>
   );
 }
@@ -350,7 +401,10 @@ const styles = StyleSheet.create({
   statusPillActive: { backgroundColor: Colors.successLight },
   statusText: { fontSize: 11, fontWeight: '600', color: Colors.textSecondary },
   statusTextActive: { color: Colors.success },
-  dates: { fontSize: 12, color: Colors.textTertiary },
+  // flexShrink lets a long date range give way to the group chip beside it
+  // rather than pushing it off the row.
+  datesBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, flexShrink: 1, minWidth: 0 },
+  dates: { flexShrink: 1, minWidth: 0, fontSize: 12, color: Colors.textTertiary },
   // The chip must be allowed to shrink, or a long group name grows it past the
   // screen edge; numberOfLines can only ellipsize once the width is bounded.
   groupChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.primaryMuted, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 4, flexShrink: 1, maxWidth: '100%' },

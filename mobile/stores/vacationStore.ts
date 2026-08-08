@@ -6,6 +6,7 @@ import {
   startVacation as dbStartVacation,
   endVacation as dbEndVacation,
   deleteVacation as dbDeleteVacation,
+  updateVacationDates as dbUpdateVacationDates,
   reconcileVacationStatuses,
 } from '@/lib/db';
 import { Vacation, CreateVacationInput } from '@/lib/types';
@@ -20,6 +21,7 @@ interface VacationState {
   startVacation: (id: string) => Promise<void>;
   endVacation: (id: string) => Promise<void>;
   deleteVacation: (id: string) => Promise<void>;
+  updateDates: (id: string, startDate: string | null, endDate: string | null) => Promise<void>;
 }
 
 export const useVacationStore = create<VacationState>((set, get) => ({
@@ -60,5 +62,13 @@ export const useVacationStore = create<VacationState>((set, get) => ({
   deleteVacation: async (id) => {
     await dbDeleteVacation(id);
     await get().load();
+  },
+
+  updateDates: async (id, startDate, endDate) => {
+    await dbUpdateVacationDates(id, startDate, endDate);
+    // Reconcile rather than reload: the edited dates can make a draft due
+    // now, or push an active vacation's end into the past, and status has to
+    // follow the dates the same way it does on create.
+    await get().reconcile();
   },
 }));
