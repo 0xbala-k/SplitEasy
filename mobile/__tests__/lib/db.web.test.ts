@@ -8,7 +8,7 @@ import {
   persistCombinedSplit, revertCombinedSplit,
   createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
-  removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates,
+  removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
@@ -57,9 +57,53 @@ async function seedRaw(store: string, value: object) {
   d.close();
 }
 
+describe('opening the database', () => {
+  beforeEach(() => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    resetDbForTests(); // drop the handle onto the previous factory
+  });
+
+  it('a query with no prior initDb() opens the database instead of throwing', async () => {
+    // The deep-link/refresh bug: React runs effects child-first, so a route's
+    // mount effect queries before the root layout's effect has opened the
+    // database. This used to throw "DB not initialized — call initDb() first"
+    // and leave the screen blank.
+    await expect(getNewTransactions()).resolves.toEqual([]);
+  });
+
+  it('concurrent first callers share a single open', async () => {
+    const spy = jest.spyOn(indexedDB, 'open');
+    await Promise.all([getNewTransactions(), getVacations(), getHistoryTransactions()]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('initDb is idempotent and does not reopen an already-open database', async () => {
+    await initDb();
+    const spy = jest.spyOn(indexedDB, 'open');
+    await initDb();
+    await initDb();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('a failed open is retried rather than cached forever', async () => {
+    const real = indexedDB.open.bind(indexedDB);
+    const spy = jest.spyOn(indexedDB, 'open').mockImplementationOnce(() => {
+      throw new Error('quota exceeded');
+    });
+    await expect(getNewTransactions()).rejects.toThrow('quota exceeded');
+    spy.mockImplementation(real);
+    // A transient failure must not poison every later query.
+    await expect(getNewTransactions()).resolves.toEqual([]);
+    spy.mockRestore();
+  });
+});
+
 describe('db.web (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
     await initDb();
   });
 
@@ -223,6 +267,7 @@ describe('db.web (IndexedDB)', () => {
 describe('rekeyTransaction (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    resetDbForTests(); // drop the handle onto the previous factory
     await initDb();
   });
 
@@ -327,6 +372,7 @@ describe('rekeyTransaction (IndexedDB)', () => {
 describe('markTransactionsReversed (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    resetDbForTests(); // drop the handle onto the previous factory
     await initDb();
   });
 
@@ -363,6 +409,7 @@ describe('markTransactionsReversed (IndexedDB)', () => {
 describe('getReviewTransactions / clearReview (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+    resetDbForTests(); // drop the handle onto the previous factory
     await initDb();
   });
 
@@ -445,6 +492,7 @@ describe('getReviewTransactions / clearReview (IndexedDB)', () => {
 describe('vacation CRUD (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
     await initDb();
   });
 
@@ -512,6 +560,7 @@ describe('vacation CRUD (IndexedDB)', () => {
 describe('vacation transaction capture & history (IndexedDB)', () => {
   beforeEach(async () => {
     (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
     await initDb();
   });
 
