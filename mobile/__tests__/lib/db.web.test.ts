@@ -8,7 +8,7 @@ import {
   persistCombinedSplit, revertCombinedSplit,
   createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
-  removeTransactionFromVacation, reconcileVacationStatuses,
+  removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
@@ -568,6 +568,47 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
     const history = await getVacationHistory(v.id);
     expect(history).toHaveLength(1);
     expect(history[0].combined?.count).toBe(2);
+  });
+
+  it('updateVacationDates rewrites the dates of an existing vacation', async () => {
+    const v = await createVacation({ name: 'Hawaii', start_date: '2030-01-01', end_date: '2030-01-10' });
+    await updateVacationDates(v.id, '2030-02-01', '2030-02-14');
+    const updated = await getVacation(v.id);
+    expect([updated?.start_date, updated?.end_date]).toEqual(['2030-02-01', '2030-02-14']);
+  });
+
+  it('updateVacationDates clears both dates, turning the vacation manual', async () => {
+    const v = await createVacation({ name: 'Hawaii', start_date: '2030-01-01', end_date: '2030-01-10' });
+    await updateVacationDates(v.id, null, null);
+    const updated = await getVacation(v.id);
+    expect([updated?.start_date, updated?.end_date]).toEqual([null, null]);
+  });
+
+  it('updateVacationDates rejects a range overlapping another vacation', async () => {
+    await createVacation({ name: 'A', start_date: '2030-01-01', end_date: '2030-01-10' });
+    const b = await createVacation({ name: 'B', start_date: '2030-02-01', end_date: '2030-02-10' });
+    await expect(updateVacationDates(b.id, '2030-01-05', '2030-01-15')).rejects.toBeInstanceOf(
+      VacationConflictError
+    );
+    // The rejected write must not have landed.
+    expect((await getVacation(b.id))?.start_date).toBe('2030-02-01');
+  });
+
+  it('updateVacationDates does not treat a vacation as overlapping itself', async () => {
+    const v = await createVacation({ name: 'Hawaii', start_date: '2030-01-01', end_date: '2030-01-10' });
+    // Same range re-saved, and a range that still covers its own old one: both
+    // only "overlap" this vacation, which the self-exclusion has to ignore.
+    await expect(updateVacationDates(v.id, '2030-01-01', '2030-01-10')).resolves.toBeUndefined();
+    await expect(updateVacationDates(v.id, '2030-01-05', '2030-01-20')).resolves.toBeUndefined();
+    expect((await getVacation(v.id))?.end_date).toBe('2030-01-20');
+  });
+
+  it('updateVacationDates ignores overlap with an ended vacation', async () => {
+    const a = await createVacation({ name: 'A', start_date: '2030-01-01', end_date: '2030-01-10' });
+    await endVacation(a.id);
+    const b = await createVacation({ name: 'B', start_date: '2030-02-01', end_date: '2030-02-10' });
+    // Only draft and active vacations claim a date range, matching createVacation.
+    await expect(updateVacationDates(b.id, '2030-01-05', '2030-01-15')).resolves.toBeUndefined();
   });
 
   it('reconcileVacationStatuses activates a draft whose start date has arrived', async () => {

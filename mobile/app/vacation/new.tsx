@@ -9,9 +9,8 @@ import { getGroups } from '@/lib/splitwise';
 import { VacationConflictError } from '@/lib/vacationErrors';
 import { SplitwiseGroup } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
+import { DateRangePicker } from '@/components/DateRangePicker';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export default function NewVacationScreen() {
   const router = useRouter();
@@ -20,8 +19,8 @@ export default function NewVacationScreen() {
   const insets = useSafeAreaInsets();
 
   const [name, setName] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState<string | null>(null);
+  const [endDate, setEndDate] = useState<string | null>(null);
   const [groups, setGroups] = useState<SplitwiseGroup[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<SplitwiseGroup | null>(null);
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
@@ -31,9 +30,10 @@ export default function NewVacationScreen() {
     getGroups().then(setGroups).catch(() => setGroups([]));
   }, []);
 
-  const datesValid =
-    (startDate === '' && endDate === '') ||
-    (DATE_RE.test(startDate) && DATE_RE.test(endDate) && startDate <= endDate);
+  // The picker can only ever produce an ordered range, so the old format and
+  // ordering checks are gone. The one reachable invalid state is a half-picked
+  // range — a start with no end yet.
+  const datesValid = !startDate === !endDate;
   const canSave = name.trim() !== '' && datesValid && !submitting;
 
   async function handleSave() {
@@ -42,8 +42,8 @@ export default function NewVacationScreen() {
     try {
       const vacation = await create({
         name: name.trim(),
-        start_date: startDate || null,
-        end_date: endDate || null,
+        start_date: startDate,
+        end_date: endDate,
         splitwise_group_id: selectedGroup?.id ?? null,
         splitwise_group_name: selectedGroup?.name ?? null,
         splitwise_group_member_ids: selectedGroup?.member_ids ?? null,
@@ -88,25 +88,17 @@ export default function NewVacationScreen() {
 
           <Text style={styles.label}>Dates (optional)</Text>
           <Text style={styles.hint}>If set, the vacation starts and ends automatically on these dates.</Text>
-          <View style={styles.dateRow}>
-            <TextInput
-              style={[styles.input, styles.dateInput]}
-              value={startDate}
-              onChangeText={setStartDate}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor={Colors.textTertiary}
-              accessibilityLabel="Start date"
-            />
-            <TextInput
-              style={[styles.input, styles.dateInput]}
-              value={endDate}
-              onChangeText={setEndDate}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor={Colors.textTertiary}
-              accessibilityLabel="End date"
-            />
-          </View>
-          {!datesValid && <Text style={styles.error}>Enter both dates as YYYY-MM-DD, end on or after start.</Text>}
+          <DateRangePicker
+            startDate={startDate}
+            endDate={endDate}
+            onChange={(start, end) => {
+              setStartDate(start);
+              setEndDate(end);
+            }}
+          />
+          {startDate && !endDate && (
+            <Text style={styles.error}>Pick an end date to finish the range.</Text>
+          )}
 
           {groups.length > 0 && (
             <>
@@ -209,11 +201,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
     paddingHorizontal: Spacing.md, paddingVertical: 12, fontSize: 15, color: Colors.textPrimary,
   },
-  dateRow: { flexDirection: 'row', gap: Spacing.md },
-  // minWidth: 0 is required on web: flex items default to min-width:auto there,
-  // so a TextInput refuses to shrink below its intrinsic width and overflows the
-  // row. React Native has no such rule, so this is a no-op on native.
-  dateInput: { flex: 1, minWidth: 0 },
   error: { fontSize: 12, color: Colors.error, marginTop: Spacing.sm },
   groupTrigger: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

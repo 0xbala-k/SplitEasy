@@ -616,6 +616,31 @@ export async function endVacation(id: string): Promise<void> {
   await done(tx);
 }
 
+export async function updateVacationDates(
+  id: string,
+  startDate: string | null,
+  endDate: string | null
+): Promise<void> {
+  if (startDate && endDate) {
+    // The same overlap rule createVacation applies, minus this vacation
+    // itself — every trip overlaps its own dates.
+    const all = await getVacations();
+    const conflict = all.some(
+      (v) =>
+        v.id !== id &&
+        (v.status === 'draft' || v.status === 'active') &&
+        v.start_date && v.end_date &&
+        rangesOverlap(v.start_date, v.end_date, startDate, endDate)
+    );
+    if (conflict) throw new VacationConflictError('overlap', 'Dates overlap an existing vacation.');
+  }
+  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
+  if (existing) store.put({ ...existing, start_date: startDate, end_date: endDate });
+  await done(tx);
+}
+
 export async function deleteVacation(id: string): Promise<void> {
   const tx = db().transaction([TX_STORE, VACATION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
