@@ -2,10 +2,9 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Slot, SplashScreen } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Platform, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StartupScreen } from '@/components/StartupScreen';
 import { ToastProvider } from '@/components/ToastProvider';
 import { useAuthStore } from '@/stores/authStore';
 import { usePlaidStore } from '@/stores/plaidStore';
@@ -18,19 +17,16 @@ if (Platform.OS !== 'web') {
 export default function RootLayout() {
   const { hydrate: hydrateAuth } = useAuthStore();
   const { hydrate: hydratePlaid } = usePlaidStore();
-  const [dbSettled, setDbSettled] = useState(false);
 
   useEffect(() => {
     async function init() {
       try {
+        // Only a warm-up: lib/db opens on first use, so screens that query
+        // before this resolves await the same open rather than failing.
         await initDb();
       } catch (e) {
         console.error('initDb failed', e);
       }
-      // Settled, not succeeded: a database that failed to open must not
-      // strand the user on the startup screen forever. Screens surface their
-      // own load errors from there.
-      setDbSettled(true);
       await Promise.all([hydrateAuth(), hydratePlaid()]);
     }
     void init();
@@ -58,12 +54,12 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <ToastProvider>
           <BottomSheetModalProvider>
-            {/* Nothing may render until the database has been opened. Routes
-                query it from mount effects, so a route rendered in the same
-                tick as this layout — which is what a deep link or a browser
-                refresh does — would otherwise throw "DB not initialized" and
-                leave the screen empty until something re-focused it. */}
-            {dbSettled ? <Slot /> : <StartupScreen status="Opening your data…" />}
+            {/* Slot must render on the very first render — expo-router
+                registers the root navigator here, and anything that defers it
+                makes the first router.replace() throw "Attempted to navigate
+                before mounting the Root Layout component". Waiting for the
+                database happens in lib/db instead, which opens on first use. */}
+            <Slot />
           </BottomSheetModalProvider>
         </ToastProvider>
       </SafeAreaProvider>

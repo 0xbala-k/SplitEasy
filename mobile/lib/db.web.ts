@@ -17,6 +17,7 @@ const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';
 
 let _db: IDBDatabase | null = null;
+let _opening: Promise<IDBDatabase> | null = null;
 
 function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -36,13 +37,42 @@ function done(tx: IDBTransaction): Promise<void> {
   });
 }
 
-function db(): IDBDatabase {
-  if (!_db) throw new Error('DB not initialized — call initDb() first');
+/**
+ * The open database, opening it on first use.
+ *
+ * Callers must not have to sequence themselves behind initDb(). React runs
+ * effects child-first, so a route's mount effect queries the database *before*
+ * the root layout's effect has had a chance to open it — the module owns its
+ * own readiness instead. Concurrent callers share one in-flight open.
+ */
+async function dbReady(): Promise<IDBDatabase> {
+  if (_db) return _db;
+  if (!_opening) {
+    // Cleared on failure so a later call can retry rather than replaying a
+    // rejected promise forever.
+    _opening = openDatabase().catch((e) => {
+      _opening = null;
+      throw e;
+    });
+  }
+  _db = await _opening;
   return _db;
 }
 
+/** Opens (and migrates) the database. Idempotent — safe to call repeatedly. */
 export async function initDb(): Promise<void> {
-  _db = await new Promise<IDBDatabase>((resolve, reject) => {
+  await dbReady();
+}
+
+/** Drops the cached handle so the next call reopens. Tests only. */
+export function resetDbForTests(): void {
+  _db?.close();
+  _db = null;
+  _opening = null;
+}
+
+function openDatabase(): Promise<IDBDatabase> {
+  return new Promise<IDBDatabase>((resolve, reject) => {
     const open = indexedDB.open(DB_NAME, DB_VERSION);
     open.onupgradeneeded = () => {
       const d = open.result;
@@ -77,13 +107,13 @@ function byDateDesc(a: Transaction, b: Transaction): number {
 }
 
 export async function getNewTransactions(): Promise<Transaction[]> {
-  const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
+  const all = await req((await dbReady()).transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
   return all.filter((t) => t.status === 'new' && !t.vacation_id).sort(byDateDesc);
 }
 
 export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
   if (ids.length === 0) return [];
-  const store = db().transaction(TX_STORE).objectStore(TX_STORE);
+  const store = (await dbReady()).transaction(TX_STORE).objectStore(TX_STORE);
   const rows = await Promise.all(
     ids.map((id) => req(store.get(id) as IDBRequest<Transaction | undefined>)),
   );
@@ -145,7 +175,7 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
 }
 
 export async function getHistoryTransactions(): Promise<HistoryItem[]> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE]);
   const [all, decisions] = await Promise.all([
     req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
     req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
@@ -205,7 +235,7 @@ function groupReviewRows(rows: Transaction[], decisions: SplitDecision[]): Revie
 }
 
 export async function getReviewTransactions(): Promise<ReviewItem[]> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE]);
   const [all, decisions] = await Promise.all([
     req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
     req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
@@ -216,7 +246,7 @@ export async function getReviewTransactions(): Promise<ReviewItem[]> {
 
 export async function clearReview(transactionIds: string[]): Promise<void> {
   if (transactionIds.length === 0) return;
-  const tx = db().transaction(TX_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   for (const id of transactionIds) {
     const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
@@ -226,12 +256,12 @@ export async function clearReview(transactionIds: string[]): Promise<void> {
 }
 
 export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
-  const all = await req(db().transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
+  const all = await req((await dbReady()).transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
   return all.filter((t) => t.status === 'new' && t.vacation_id === vacationId).sort(byDateDesc);
 }
 
 export async function getVacationHistory(vacationId: string): Promise<HistoryItem[]> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE]);
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE]);
   const [all, decisions] = await Promise.all([
     req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
     req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
@@ -244,7 +274,7 @@ export async function getVacationHistory(vacationId: string): Promise<HistoryIte
 
 export async function assignTransactionsToVacation(vacationId: string, transactionIds: string[]): Promise<void> {
   if (transactionIds.length === 0) return;
-  const tx = db().transaction(TX_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   for (const id of transactionIds) {
     const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
@@ -256,7 +286,7 @@ export async function assignTransactionsToVacation(vacationId: string, transacti
 }
 
 export async function removeTransactionFromVacation(transactionId: string): Promise<void> {
-  const tx = db().transaction(TX_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const existing = await req(store.get(transactionId) as IDBRequest<Transaction | undefined>);
   if (existing && existing.status === 'new') store.put({ ...existing, vacation_id: null });
@@ -269,7 +299,7 @@ export async function reconcileVacationStatuses(): Promise<void> {
   // instant and stays UTC.
   const today = todayLocal();
   const now = new Date().toISOString();
-  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(VACATION_STORE, 'readwrite');
   const store = tx.objectStore(VACATION_STORE);
   const all = await req(store.getAll() as IDBRequest<Vacation[]>);
 
@@ -319,7 +349,7 @@ export async function reconcileVacationStatuses(): Promise<void> {
 }
 
 export async function upsertTransactions(txs: PlaidTransaction[], activeVacationId: string | null = null): Promise<void> {
-  const tx = db().transaction(TX_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const now = new Date().toISOString();
   // Invariant: only await IDB requests belonging to this txn inside the loop, so the txn stays active.
@@ -349,7 +379,7 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
 
 export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   for (const id of ids) {
     tx.objectStore(TX_STORE).delete(id);
     // SQLite cascades split_decisions via ON DELETE CASCADE; mirror that here.
@@ -359,7 +389,7 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
 }
 
 export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
-  const tx = db().transaction(TX_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
   if (existing) store.put({ ...existing, status });
@@ -374,7 +404,7 @@ export async function rekeyTransaction(
   oldId: string,
   posted: PlaidTransaction
 ): Promise<RekeyResult> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   const decStore = tx.objectStore(DECISION_STORE);
   // Invariant: only await IDB requests belonging to this txn, so it stays active.
@@ -428,7 +458,7 @@ export async function rekeyTransaction(
 // Mirrors lib/db.ts's markTransactionsReversed.
 export async function markTransactionsReversed(ids: string[]): Promise<string[]> {
   if (ids.length === 0) return [];
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   const decStore = tx.objectStore(DECISION_STORE);
   const kept: string[] = [];
@@ -449,13 +479,13 @@ export async function markTransactionsReversed(ids: string[]): Promise<string[]>
 
 export async function getSplitDecision(transactionId: string): Promise<SplitDecision | null> {
   const row = await req(
-    db().transaction(DECISION_STORE).objectStore(DECISION_STORE).get(transactionId) as IDBRequest<SplitDecision | undefined>,
+    (await dbReady()).transaction(DECISION_STORE).objectStore(DECISION_STORE).get(transactionId) as IDBRequest<SplitDecision | undefined>,
   );
   return row ?? null;
 }
 
 export async function insertSplitDecision(decision: SplitDecision): Promise<void> {
-  const tx = db().transaction(DECISION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(DECISION_STORE, 'readwrite');
   // add() (not put) rejects on duplicate transaction_id, matching SQLite's
   // plain INSERT which throws on the UNIQUE(transaction_id) constraint.
   tx.objectStore(DECISION_STORE).add(decision);
@@ -463,13 +493,13 @@ export async function insertSplitDecision(decision: SplitDecision): Promise<void
 }
 
 export async function upsertSplitDecision(decision: SplitDecision): Promise<void> {
-  const tx = db().transaction(DECISION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(DECISION_STORE, 'readwrite');
   tx.objectStore(DECISION_STORE).put(decision);
   await done(tx);
 }
 
 export async function deleteSplitDecision(transactionId: string): Promise<void> {
-  const tx = db().transaction(DECISION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(DECISION_STORE, 'readwrite');
   tx.objectStore(DECISION_STORE).delete(transactionId);
   await done(tx);
 }
@@ -479,7 +509,7 @@ export async function deleteSplitDecision(transactionId: string): Promise<void> 
 // withTransactionAsync version: any failure aborts the whole group.
 export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<void> {
   if (decisions.length === 0) return;
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   // Read every row up front, then issue all writes: a write that fails aborts
   // the txn, and a later get() on an aborting txn would reject with a less
@@ -501,7 +531,7 @@ export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<
 // 'new'. Single transaction so a failure can't leave the group half-reverted.
 export async function revertCombinedSplit(transactionIds: string[]): Promise<void> {
   if (transactionIds.length === 0) return;
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   const rows = await Promise.all(
     transactionIds.map((id) => req(txStore.get(id) as IDBRequest<Transaction | undefined>)),
@@ -518,7 +548,7 @@ export async function pruneOldTransactions(): Promise<void> {
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
   const cutoffIso = cutoff.toISOString();
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const all = await req(store.getAll() as IDBRequest<Transaction[]>);
   for (const t of all) {
@@ -531,7 +561,7 @@ export async function pruneOldTransactions(): Promise<void> {
 }
 
 export async function deleteAllTransactions(): Promise<void> {
-  const tx = db().transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   tx.objectStore(TX_STORE).clear();
   // Parity with SQLite ON DELETE CASCADE.
   tx.objectStore(DECISION_STORE).clear();
@@ -544,7 +574,7 @@ function rangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: strin
 
 export async function createVacation(input: CreateVacationInput): Promise<Vacation> {
   if (input.start_date && input.end_date) {
-    const all = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
+    const all = await req((await dbReady()).transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
     const conflict = all.some(
       (v) =>
         (v.status === 'draft' || v.status === 'active') &&
@@ -566,7 +596,7 @@ export async function createVacation(input: CreateVacationInput): Promise<Vacati
     started_at: null,
     ended_at: null,
   };
-  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(VACATION_STORE, 'readwrite');
   tx.objectStore(VACATION_STORE).add(vacation);
   await done(tx);
   return vacation;
@@ -582,12 +612,12 @@ function byVacationOrder(a: Vacation, b: Vacation): number {
 }
 
 export async function getVacations(): Promise<Vacation[]> {
-  const all = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
+  const all = await req((await dbReady()).transaction(VACATION_STORE).objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>);
   return all.sort(byVacationOrder);
 }
 
 export async function getVacation(id: string): Promise<Vacation | null> {
-  const row = await req(db().transaction(VACATION_STORE).objectStore(VACATION_STORE).get(id) as IDBRequest<Vacation | undefined>);
+  const row = await req((await dbReady()).transaction(VACATION_STORE).objectStore(VACATION_STORE).get(id) as IDBRequest<Vacation | undefined>);
   return row ?? null;
 }
 
@@ -601,7 +631,7 @@ export async function startVacation(id: string): Promise<void> {
   if (all.some((v) => v.status === 'active' && v.id !== id)) {
     throw new VacationConflictError('already_active', 'Another vacation is already active.');
   }
-  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(VACATION_STORE, 'readwrite');
   const store = tx.objectStore(VACATION_STORE);
   const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
   if (existing) store.put({ ...existing, status: 'active' as VacationStatus, started_at: new Date().toISOString() });
@@ -609,7 +639,7 @@ export async function startVacation(id: string): Promise<void> {
 }
 
 export async function endVacation(id: string): Promise<void> {
-  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(VACATION_STORE, 'readwrite');
   const store = tx.objectStore(VACATION_STORE);
   const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
   if (existing) store.put({ ...existing, status: 'ended' as VacationStatus, ended_at: new Date().toISOString() });
@@ -634,7 +664,7 @@ export async function updateVacationDates(
     );
     if (conflict) throw new VacationConflictError('overlap', 'Dates overlap an existing vacation.');
   }
-  const tx = db().transaction(VACATION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction(VACATION_STORE, 'readwrite');
   const store = tx.objectStore(VACATION_STORE);
   const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
   if (existing) store.put({ ...existing, start_date: startDate, end_date: endDate });
@@ -642,7 +672,7 @@ export async function updateVacationDates(
 }
 
 export async function deleteVacation(id: string): Promise<void> {
-  const tx = db().transaction([TX_STORE, VACATION_STORE], 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, VACATION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   const all = await req(txStore.getAll() as IDBRequest<Transaction[]>);
   for (const t of all) {

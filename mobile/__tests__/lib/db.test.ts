@@ -31,6 +31,7 @@ import {
   removeTransactionFromVacation,
   reconcileVacationStatuses,
   updateVacationDates,
+  resetDbForTests,
   rekeyTransaction,
   markTransactionsReversed,
   getReviewTransactions,
@@ -51,6 +52,7 @@ const mockDb = {
 beforeEach(() => {
   jest.clearAllMocks();
   (SQLite.openDatabaseAsync as jest.Mock).mockResolvedValue(mockDb);
+  resetDbForTests();
 });
 
 test('initDb opens database and runs migrations', async () => {

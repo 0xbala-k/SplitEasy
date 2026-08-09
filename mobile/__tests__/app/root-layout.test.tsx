@@ -1,9 +1,18 @@
-// mobile/__tests__/app/root-layout.test.tsx
+// mobile/app/_layout.tsx must render <Slot /> on its very first render:
+// expo-router registers the root navigator there, and deferring it makes the
+// first router.replace() throw "Attempted to navigate before mounting the Root
+// Layout component" — which blanks the whole app, not just one route.
+// Tracked on globalThis because a jest.mock factory may not close over
+// module-scope variables.
+type Probe = { rootRenders: number; slotFirstRender: boolean | null };
+const probe = () => (globalThis as unknown as { __probe: Probe }).__probe;
+(globalThis as unknown as { __probe: Probe }).__probe = { rootRenders: 0, slotFirstRender: null };
+
 jest.mock('expo-router', () => ({
-  // A stand-in for whatever route is being rendered, so the test can assert
-  // whether children mounted at all.
   Slot: () => {
     const { Text } = require('react-native');
+    const p = (globalThis as unknown as { __probe: Probe }).__probe;
+    if (p.slotFirstRender === null) p.slotFirstRender = p.rootRenders === 1;
     return <Text>ROUTE CONTENT</Text>;
   },
   SplashScreen: { preventAutoHideAsync: jest.fn(), hideAsync: jest.fn() },
@@ -20,7 +29,7 @@ jest.mock('@/lib/db', () => ({ initDb: jest.fn() }));
 jest.mock('@/stores/authStore', () => ({ useAuthStore: jest.fn() }));
 jest.mock('@/stores/plaidStore', () => ({ usePlaidStore: jest.fn() }));
 
-import { render, screen, waitFor, act } from '@testing-library/react-native';
+import { render, screen, waitFor } from '@testing-library/react-native';
 import RootLayout from '@/app/_layout';
 import { initDb } from '@/lib/db';
 import { useAuthStore } from '@/stores/authStore';
@@ -28,9 +37,18 @@ import { usePlaidStore } from '@/stores/plaidStore';
 
 const mockInitDb = initDb as jest.Mock;
 
+// Counting root renders from the outside, so the Slot mock can tell whether it
+// was reached on render #1.
+function Counted() {
+  probe().rootRenders += 1;
+  return <RootLayout />;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(console, 'error').mockImplementation(() => {});
+  probe().rootRenders = 0;
+  probe().slotFirstRender = null;
   (useAuthStore as unknown as jest.Mock).mockReturnValue({ hydrate: jest.fn().mockResolvedValue(undefined) });
   (usePlaidStore as unknown as jest.Mock).mockReturnValue({ hydrate: jest.fn().mockResolvedValue(undefined) });
 });
@@ -39,39 +57,31 @@ afterEach(() => {
   (console.error as jest.Mock).mockRestore();
 });
 
-test('no route renders until the database has opened', async () => {
-  // Held open, standing in for the real async open.
-  let resolveInit: () => void = () => {};
-  mockInitDb.mockReturnValue(new Promise<void>((res) => { resolveInit = res; }));
+test('Slot renders on the first render, before the database has opened', () => {
+  // Held open: the database is still opening while the tree first renders.
+  mockInitDb.mockReturnValue(new Promise<void>(() => {}));
 
-  render(<RootLayout />);
+  render(<Counted />);
 
-  // The regression: routes query the DB from their mount effects, so a route
-  // that mounts in this window throws "DB not initialized" and renders empty.
-  // That is what a deep link or a browser refresh does.
-  expect(screen.queryByText('ROUTE CONTENT')).toBeNull();
-  expect(screen.getByLabelText('SplitEasy startup')).toBeTruthy();
-
-  await act(async () => { resolveInit(); });
-
+  expect(probe().slotFirstRender).toBe(true);
   expect(screen.getByText('ROUTE CONTENT')).toBeTruthy();
 });
 
-test('a database that fails to open still lets the app render', async () => {
+test('Slot still renders when the database fails to open', async () => {
   mockInitDb.mockRejectedValue(new Error('quota exceeded'));
 
-  render(<RootLayout />);
+  render(<Counted />);
 
-  // Gating on "settled" rather than "succeeded" — otherwise a failed open
-  // strands the user on the startup screen with no way forward.
-  await waitFor(() => expect(screen.getByText('ROUTE CONTENT')).toBeTruthy());
+  expect(screen.getByText('ROUTE CONTENT')).toBeTruthy();
+  await waitFor(() => expect(console.error).toHaveBeenCalled());
+  // Still mounted after the rejection is handled.
+  expect(screen.getByText('ROUTE CONTENT')).toBeTruthy();
 });
 
-test('the database is opened exactly once', async () => {
+test('the database warm-up runs once', async () => {
   mockInitDb.mockResolvedValue(undefined);
 
-  render(<RootLayout />);
+  render(<Counted />);
 
-  await waitFor(() => expect(screen.getByText('ROUTE CONTENT')).toBeTruthy());
-  expect(mockInitDb).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(mockInitDb).toHaveBeenCalledTimes(1));
 });

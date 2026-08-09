@@ -7,19 +7,50 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError } from '@/lib/vacationErrors';
 
 let _db: SQLite.SQLiteDatabase | null = null;
+let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
 
-function db(): SQLite.SQLiteDatabase {
-  if (!_db) throw new Error('DB not initialized — call initDb() first');
+/**
+ * The open database, opening it on first use.
+ *
+ * Callers must not have to sequence themselves behind initDb(). React runs
+ * effects child-first, so a route's mount effect queries the database *before*
+ * the root layout's effect has had a chance to open it — the module owns its
+ * own readiness instead. Concurrent callers share one in-flight open.
+ */
+async function dbReady(): Promise<SQLite.SQLiteDatabase> {
+  if (_db) return _db;
+  if (!_opening) {
+    // Cleared on failure so a later call can retry rather than replaying a
+    // rejected promise forever.
+    _opening = openDatabase().catch((e) => {
+      _opening = null;
+      throw e;
+    });
+  }
+  _db = await _opening;
   return _db;
 }
 
+/** Opens (and migrates) the database. Idempotent — safe to call repeatedly. */
 export async function initDb(): Promise<void> {
-  _db = await SQLite.openDatabaseAsync('spliteasy.db');
-  await _db.execAsync('PRAGMA journal_mode = WAL;');
-  const row = await _db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  await dbReady();
+}
+
+/** Drops the cached handle so the next call reopens. Tests only. */
+export function resetDbForTests(): void {
+  _db = null;
+  _opening = null;
+}
+
+// The handle is local until every migration has run, so a concurrent caller
+// awaiting dbReady() can never be handed a half-migrated database.
+async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
+  const d = await SQLite.openDatabaseAsync('spliteasy.db');
+  await d.execAsync('PRAGMA journal_mode = WAL;');
+  const row = await d.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const version = row?.user_version ?? 0;
   if (version < 1) {
-    await _db.execAsync(`
+    await d.execAsync(`
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY,
         merchant_name TEXT,
@@ -43,13 +74,13 @@ export async function initDb(): Promise<void> {
     `);
   }
   if (version >= 1 && version < 2) {
-    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN pending INTEGER DEFAULT 0;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN pending INTEGER DEFAULT 0;`);
   }
   if (version >= 1 && version < 3) {
-    await _db.execAsync(`ALTER TABLE split_decisions ADD COLUMN description TEXT;`);
+    await d.execAsync(`ALTER TABLE split_decisions ADD COLUMN description TEXT;`);
   }
   if (version < 4) {
-    await _db.execAsync(`
+    await d.execAsync(`
       CREATE TABLE IF NOT EXISTS vacations (
         id TEXT PRIMARY KEY,
         name TEXT,
@@ -71,25 +102,26 @@ export async function initDb(): Promise<void> {
     // adds vacation_id to the base CREATE TABLE, this ALTER must move behind
     // a `version >= 1` guard or it will fail with "duplicate column name" on
     // fresh installs.
-    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN vacation_id TEXT REFERENCES vacations(id);`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN vacation_id TEXT REFERENCES vacations(id);`);
   }
   if (version < 5) {
     // Same rationale as vacation_id above: review_reason/amount_changed_from
     // are not in the base `version < 1` CREATE TABLE, so these ALTERs must
     // run ungated so a fresh install (version 0) gets the columns too.
-    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN review_reason TEXT;`);
-    await _db.execAsync(`ALTER TABLE transactions ADD COLUMN amount_changed_from REAL;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN review_reason TEXT;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN amount_changed_from REAL;`);
   }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
   if (version < 5) {
-    await _db.execAsync(`PRAGMA user_version = 5;`);
+    await d.execAsync(`PRAGMA user_version = 5;`);
   }
+  return d;
 }
 
 export async function getNewTransactions(): Promise<Transaction[]> {
-  const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
+  const rows = await (await dbReady()).getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
     `SELECT * FROM transactions WHERE status = 'new' AND vacation_id IS NULL ORDER BY date DESC`,
     []
   );
@@ -99,7 +131,7 @@ export async function getNewTransactions(): Promise<Transaction[]> {
 export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
   if (ids.length === 0) return [];
   const placeholders = ids.map(() => '?').join(',');
-  const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
+  const rows = await (await dbReady()).getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
     `SELECT * FROM transactions WHERE id IN (${placeholders})`,
     ids
   );
@@ -169,7 +201,7 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
 }
 
 export async function getHistoryTransactions(): Promise<HistoryItem[]> {
-  const rows = await db().getAllAsync<HistoryRow>(
+  const rows = await (await dbReady()).getAllAsync<HistoryRow>(
     `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
      FROM transactions t
      LEFT JOIN split_decisions s ON s.transaction_id = t.id
@@ -239,7 +271,7 @@ function groupReviewRows(rows: ReviewRow[]): ReviewItem[] {
 }
 
 export async function getReviewTransactions(): Promise<ReviewItem[]> {
-  const rows = await db().getAllAsync<ReviewRow>(
+  const rows = await (await dbReady()).getAllAsync<ReviewRow>(
     `SELECT t.*, s.splitwise_expense_id, s.friend_names, s.amount_each
      FROM transactions t
      LEFT JOIN split_decisions s ON s.transaction_id = t.id
@@ -253,14 +285,14 @@ export async function getReviewTransactions(): Promise<ReviewItem[]> {
 export async function clearReview(transactionIds: string[]): Promise<void> {
   if (transactionIds.length === 0) return;
   const placeholders = transactionIds.map(() => '?').join(',');
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `UPDATE transactions SET review_reason = NULL, amount_changed_from = NULL WHERE id IN (${placeholders})`,
     transactionIds
   );
 }
 
 export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
-  const rows = await db().getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
+  const rows = await (await dbReady()).getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
     `SELECT * FROM transactions WHERE status = 'new' AND vacation_id = ? ORDER BY date DESC`,
     [vacationId]
   );
@@ -268,7 +300,7 @@ export async function getVacationPendingTransactions(vacationId: string): Promis
 }
 
 export async function getVacationHistory(vacationId: string): Promise<HistoryItem[]> {
-  const rows = await db().getAllAsync<HistoryRow>(
+  const rows = await (await dbReady()).getAllAsync<HistoryRow>(
     `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
      FROM transactions t
      LEFT JOIN split_decisions s ON s.transaction_id = t.id
@@ -282,14 +314,14 @@ export async function getVacationHistory(vacationId: string): Promise<HistoryIte
 export async function assignTransactionsToVacation(vacationId: string, transactionIds: string[]): Promise<void> {
   if (transactionIds.length === 0) return;
   const placeholders = transactionIds.map(() => '?').join(',');
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `UPDATE transactions SET vacation_id = ? WHERE id IN (${placeholders}) AND status = 'new' AND vacation_id IS NULL`,
     [vacationId, ...transactionIds]
   );
 }
 
 export async function removeTransactionFromVacation(transactionId: string): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `UPDATE transactions SET vacation_id = NULL WHERE id = ? AND status = 'new'`,
     [transactionId]
   );
@@ -301,11 +333,11 @@ export async function reconcileVacationStatuses(): Promise<void> {
   // instant and stays UTC.
   const today = todayLocal();
   const now = new Date().toISOString();
-  await db().withTransactionAsync(async () => {
+  await (await dbReady()).withTransactionAsync(async () => {
     // 1. A draft whose entire window has already elapsed (past start AND
     //    past end) goes straight to 'ended' — it never needs the single
     //    active slot at all.
-    await db().runAsync(
+    await (await dbReady()).runAsync(
       `UPDATE vacations SET status = 'ended', ended_at = ?
        WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
          AND end_date IS NOT NULL AND end_date < ?`,
@@ -316,7 +348,7 @@ export async function reconcileVacationStatuses(): Promise<void> {
     //    between two dated vacations (e.g. A ends 08-10, B starts 08-11)
     //    frees the active slot within this same reconcile call instead of
     //    stranding B in 'draft' for one extra cycle.
-    await db().runAsync(
+    await (await dbReady()).runAsync(
       `UPDATE vacations SET status = 'ended', ended_at = ?
        WHERE status = 'active' AND end_date IS NOT NULL AND end_date < ?`,
       [now, today]
@@ -331,7 +363,7 @@ export async function reconcileVacationStatuses(): Promise<void> {
     //    consideration here, and phase 2 already ended any expired active
     //    vacation, so this statement's NOT EXISTS check sees an up-to-date
     //    picture within this same transaction.
-    await db().runAsync(
+    await (await dbReady()).runAsync(
       `UPDATE vacations SET status = 'active', started_at = ?
        WHERE status = 'draft' AND start_date IS NOT NULL AND start_date <= ?
          AND NOT EXISTS (SELECT 1 FROM vacations v2 WHERE v2.status = 'active')
@@ -346,7 +378,7 @@ export async function reconcileVacationStatuses(): Promise<void> {
 }
 
 export async function upsertTransactions(txs: PlaidTransaction[], activeVacationId: string | null = null): Promise<void> {
-  const d = db();
+  const d = await dbReady();
   const now = new Date().toISOString();
   for (const tx of txs) {
     const name = tx.merchant_name ?? tx.name;
@@ -373,18 +405,18 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
   // Native never enables `PRAGMA foreign_keys`, so the ON DELETE CASCADE on
   // split_decisions.transaction_id is inert — delete explicitly, mirroring
   // db.web.ts's explicit DECISION_STORE delete.
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `DELETE FROM split_decisions WHERE transaction_id IN (${placeholders})`,
     ids
   );
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `DELETE FROM transactions WHERE id IN (${placeholders})`,
     ids
   );
 }
 
 export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `UPDATE transactions SET status = ? WHERE id = ?`,
     [status, id]
   );
@@ -408,7 +440,7 @@ export async function rekeyTransaction(
   oldId: string,
   posted: PlaidTransaction
 ): Promise<RekeyResult> {
-  const d = db();
+  const d = await dbReady();
   let result: RekeyResult = 'not_found';
   await d.withTransactionAsync(async () => {
     const row = await d.getFirstAsync<{ id: string; amount: number; status: TransactionStatus }>(
@@ -468,7 +500,7 @@ export async function rekeyTransaction(
 // Returns the ids that were kept, for logging/testing.
 export async function markTransactionsReversed(ids: string[]): Promise<string[]> {
   if (ids.length === 0) return [];
-  const d = db();
+  const d = await dbReady();
   const rows = await getTransactionsByIds(ids);
   const keepIds = rows.filter((r) => r.status === 'split').map((r) => r.id);
   const keepSet = new Set(keepIds);
@@ -489,7 +521,7 @@ export async function markTransactionsReversed(ids: string[]): Promise<string[]>
 }
 
 export async function getSplitDecision(transactionId: string): Promise<SplitDecision | null> {
-  const row = await db().getFirstAsync<{
+  const row = await (await dbReady()).getFirstAsync<{
     id: string;
     transaction_id: string;
     splitwise_expense_id: string;
@@ -514,7 +546,7 @@ export async function getSplitDecision(transactionId: string): Promise<SplitDeci
 export async function insertSplitDecision(
   decision: SplitDecision
 ): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at, description)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -531,7 +563,7 @@ export async function insertSplitDecision(
 }
 
 export async function upsertSplitDecision(decision: SplitDecision): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `INSERT INTO split_decisions (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at, description)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(transaction_id) DO UPDATE SET
@@ -554,7 +586,7 @@ export async function upsertSplitDecision(decision: SplitDecision): Promise<void
 }
 
 export async function deleteSplitDecision(transactionId: string): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `DELETE FROM split_decisions WHERE transaction_id = ?`,
     [transactionId]
   );
@@ -564,7 +596,7 @@ export async function deleteSplitDecision(transactionId: string): Promise<void> 
 // 'split'. Wrapped in a single SQLite transaction so a mid-batch failure rolls
 // back the whole combined split locally (no half-written members).
 export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<void> {
-  await db().withTransactionAsync(async () => {
+  await (await dbReady()).withTransactionAsync(async () => {
     for (const d of decisions) {
       await insertSplitDecision(d);
       await updateTransactionStatus(d.transaction_id, 'split');
@@ -575,7 +607,7 @@ export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<
 // Atomically delete every member's decision row and revert its transaction to
 // 'new'. Single transaction so a failure can't leave the group half-reverted.
 export async function revertCombinedSplit(transactionIds: string[]): Promise<void> {
-  await db().withTransactionAsync(async () => {
+  await (await dbReady()).withTransactionAsync(async () => {
     for (const id of transactionIds) {
       await deleteSplitDecision(id);
       await updateTransactionStatus(id, 'new');
@@ -584,14 +616,14 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
 }
 
 export async function pruneOldTransactions(): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `DELETE FROM transactions WHERE created_at < datetime('now', '-6 months')`,
     []
   );
 }
 
 export async function deleteAllTransactions(): Promise<void> {
-  await db().runAsync(`DELETE FROM transactions`, []);
+  await (await dbReady()).runAsync(`DELETE FROM transactions`, []);
 }
 
 function mapVacationRow(row: {
@@ -608,7 +640,7 @@ function mapVacationRow(row: {
 }
 
 export async function createVacation(input: CreateVacationInput): Promise<Vacation> {
-  const d = db();
+  const d = await dbReady();
   if (input.start_date && input.end_date) {
     // Overlap = existing.start <= new.end AND new.start <= existing.end.
     const conflicts = await d.getAllAsync(
@@ -650,7 +682,7 @@ export async function createVacation(input: CreateVacationInput): Promise<Vacati
 }
 
 export async function getVacations(): Promise<Vacation[]> {
-  const rows = await db().getAllAsync<Parameters<typeof mapVacationRow>[0]>(
+  const rows = await (await dbReady()).getAllAsync<Parameters<typeof mapVacationRow>[0]>(
     `SELECT * FROM vacations
      ORDER BY CASE status WHEN 'ended' THEN 1 ELSE 0 END, COALESCE(start_date, created_at) DESC`,
     []
@@ -659,7 +691,7 @@ export async function getVacations(): Promise<Vacation[]> {
 }
 
 export async function getVacation(id: string): Promise<Vacation | null> {
-  const row = await db().getFirstAsync<Parameters<typeof mapVacationRow>[0]>(
+  const row = await (await dbReady()).getFirstAsync<Parameters<typeof mapVacationRow>[0]>(
     `SELECT * FROM vacations WHERE id = ?`,
     [id]
   );
@@ -667,7 +699,7 @@ export async function getVacation(id: string): Promise<Vacation | null> {
 }
 
 export async function getActiveVacation(): Promise<Vacation | null> {
-  const row = await db().getFirstAsync<Parameters<typeof mapVacationRow>[0]>(
+  const row = await (await dbReady()).getFirstAsync<Parameters<typeof mapVacationRow>[0]>(
     `SELECT * FROM vacations WHERE status = 'active'`,
     []
   );
@@ -675,21 +707,21 @@ export async function getActiveVacation(): Promise<Vacation | null> {
 }
 
 export async function startVacation(id: string): Promise<void> {
-  const others = await db().getAllAsync<{ id: string }>(
+  const others = await (await dbReady()).getAllAsync<{ id: string }>(
     `SELECT id FROM vacations WHERE status = 'active' AND id != ?`,
     [id]
   );
   if (others.length > 0) {
     throw new VacationConflictError('already_active', 'Another vacation is already active.');
   }
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `UPDATE vacations SET status = 'active', started_at = ? WHERE id = ?`,
     [new Date().toISOString(), id]
   );
 }
 
 export async function endVacation(id: string): Promise<void> {
-  await db().runAsync(
+  await (await dbReady()).runAsync(
     `UPDATE vacations SET status = 'ended', ended_at = ? WHERE id = ?`,
     [new Date().toISOString(), id]
   );
@@ -700,7 +732,7 @@ export async function updateVacationDates(
   startDate: string | null,
   endDate: string | null
 ): Promise<void> {
-  const d = db();
+  const d = await dbReady();
   if (startDate && endDate) {
     // The same overlap rule createVacation applies, minus this vacation
     // itself — every trip overlaps its own dates.
@@ -723,11 +755,11 @@ export async function updateVacationDates(
 }
 
 export async function deleteVacation(id: string): Promise<void> {
-  await db().withTransactionAsync(async () => {
-    await db().runAsync(
+  await (await dbReady()).withTransactionAsync(async () => {
+    await (await dbReady()).runAsync(
       `UPDATE transactions SET vacation_id = NULL WHERE vacation_id = ? AND status = 'new'`,
       [id]
     );
-    await db().runAsync(`DELETE FROM vacations WHERE id = ?`, [id]);
+    await (await dbReady()).runAsync(`DELETE FROM vacations WHERE id = ?`, [id]);
   });
 }
