@@ -30,6 +30,12 @@ export interface ReceiptComputeResult {
   tipShareCents: Record<string, number>;
   totalPerParticipantCents: Record<string, number>;
   itemsTotalCents: number;
+  // Display-only sum of every item's priceCents, assigned or not. Unlike
+  // `itemsTotalCents` (assigned-only, feeds the `Σ totalPerParticipantCents
+  // === receiptTotalCents` invariant), this exists purely so the UI can show
+  // the true entered/scanned total before assignment is complete — see
+  // FriendPickerSheet's `ReceiptSummary itemsTotalCents` prop.
+  enteredItemsTotalCents: number;
   receiptTotalCents: number; // items + tax + tip
   unassignedItemIds: string[];
 }
@@ -84,8 +90,10 @@ export function computeReceiptShares(input: ReceiptComputeInput): ReceiptCompute
 
   const unassignedItemIds: string[] = [];
   let itemsTotalCents = 0;
+  let enteredItemsTotalCents = 0;
 
   for (const item of items) {
+    enteredItemsTotalCents += item.priceCents;
     if (!item.assignees || item.assignees.length === 0) {
       unassignedItemIds.push(item.id);
       continue;
@@ -132,6 +140,7 @@ export function computeReceiptShares(input: ReceiptComputeInput): ReceiptCompute
     tipShareCents,
     totalPerParticipantCents,
     itemsTotalCents,
+    enteredItemsTotalCents,
     receiptTotalCents,
     unassignedItemIds,
   };

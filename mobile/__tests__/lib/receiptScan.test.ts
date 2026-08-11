@@ -70,6 +70,20 @@ test('library pick does not request camera permission', async () => {
   expect(mockRequestCameraPermissions).not.toHaveBeenCalled();
 });
 
+test('launchCameraAsync rejecting (e.g. native picker-already-presenting error) returns {status: "failed", reason: "image"} instead of rejecting', async () => {
+  mockLaunchCamera.mockRejectedValue(new Error('Different Image Picker is already presenting'));
+  const outcome = await scanReceipt('camera');
+  expect(outcome).toEqual({ status: 'failed', reason: 'image' });
+  expect(mockManipulate).not.toHaveBeenCalled();
+});
+
+test('requestCameraPermissionsAsync rejecting returns {status: "failed", reason: "image"} instead of rejecting', async () => {
+  mockRequestCameraPermissions.mockRejectedValue(new Error('native permission error'));
+  const outcome = await scanReceipt('camera');
+  expect(outcome).toEqual({ status: 'failed', reason: 'image' });
+  expect(mockLaunchCamera).not.toHaveBeenCalled();
+});
+
 test('manipulator throwing returns {status: "failed", reason: "image"}', async () => {
   mockLaunchLibrary.mockResolvedValue({ canceled: false, assets: [mockAsset()] });
   mockManipulate.mockRejectedValue(new Error('manipulation failed'));

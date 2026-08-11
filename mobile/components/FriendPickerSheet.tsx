@@ -671,7 +671,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             ) : (
               <>
                 <ReceiptSummary
-                  itemsTotalCents={receipt.itemsTotalCents}
+                  itemsTotalCents={receipt.enteredItemsTotalCents}
                   taxCents={taxCents}
                   tipCents={tipCents}
                   onChangeTaxCents={setTaxCents}
@@ -680,6 +680,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                   useReceiptTotal={useReceiptTotal}
                   onChangeUseReceiptTotal={setUseReceiptTotal}
                   onRetakePhoto={handleRetakePhoto}
+                  hasUnassignedItems={receipt.unassignedItemIds.length > 0}
                 />
                 <Pressable
                   style={({ pressed }) => [styles.addItemBtn, pressed && styles.addItemBtnPressed]}

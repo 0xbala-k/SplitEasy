@@ -25,6 +25,10 @@ interface Props {
   useReceiptTotal: boolean;
   onChangeUseReceiptTotal: (value: boolean) => void;
   onRetakePhoto: () => void;
+  // While true, the reconciliation card is suppressed — with items still
+  // unassigned, `itemsTotalCents`/`receiptTotalCents` (assigned-only) don't
+  // yet reflect the full receipt, so any delta shown would be bogus.
+  hasUnassignedItems: boolean;
 }
 
 function MoneyField({
@@ -86,15 +90,21 @@ export function ReceiptSummary({
   useReceiptTotal,
   onChangeUseReceiptTotal,
   onRetakePhoto,
+  hasUnassignedItems,
 }: Props) {
   const receiptTotalCents = itemsTotalCents + taxCents + tipCents;
   const deltaCents = receiptTotalCents - chargedCents; // > 0: receipt exceeds the charge
-  const showReconciliation = deltaCents !== 0;
+  // Suppressed while items remain unassigned — the delta isn't meaningful
+  // until assignment is complete (see the `hasUnassignedItems` prop doc).
+  // 1-cent tolerance matches FriendPickerSheet's `isOverBudget` (`< -1`)
+  // convention from Equal/Custom mode, so the card's red styling and the
+  // CTA's disabled state agree at the boundary.
+  const showReconciliation = deltaCents !== 0 && !hasUnassignedItems;
   // Only the "receipt exceeds charge, still charging the bank amount" case
   // pushes the owner's share into the red (decision (A) in the plan) — a
   // receipt total below the charge is the existing, unchanged, non-error
   // "owner absorbs the difference" behavior.
-  const overBudget = deltaCents > 0 && !useReceiptTotal;
+  const overBudget = deltaCents > 1 && !useReceiptTotal;
 
   return (
     <View style={styles.container}>

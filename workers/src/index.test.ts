@@ -686,6 +686,22 @@ describe('POST /receipt/parse', () => {
     await handler.fetch(req, makeEnv({ RECEIPT_LIMITER: { limit } }), {} as ExecutionContext);
     expect(limit).toHaveBeenCalledWith({ key: 'anon' });
   });
+
+  it('fails open (does not 5xx, still calls Gemini) when the RECEIPT_LIMITER binding itself is missing', async () => {
+    mockFetch.mockResolvedValueOnce(geminiResponse({ items: [] }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(
+      req,
+      makeEnv({ RECEIPT_LIMITER: undefined as unknown as Env['RECEIPT_LIMITER'] }),
+      {} as ExecutionContext
+    );
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalled();
+  });
 });
 
 describe('parseMoneyToCents', () => {

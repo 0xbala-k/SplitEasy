@@ -99,6 +99,7 @@ describe('computeReceiptShares', () => {
     };
     const r = computeReceiptShares(input);
     expect(r.itemsTotalCents).toBe(0);
+    expect(r.enteredItemsTotalCents).toBe(0);
     expect(sum(r.itemSubtotalCents)).toBe(0);
     expect(r.receiptTotalCents).toBe(input.taxCents + input.tipCents);
   });
@@ -116,6 +117,22 @@ describe('computeReceiptShares', () => {
     expect(r.itemSubtotalCents['A']).toBe(500);
     expect(r.itemSubtotalCents['B']).toBe(0);
     expect(r.itemsTotalCents).toBe(500);
+  });
+
+  test('8b. enteredItemsTotalCents sums every item regardless of assignment, unlike itemsTotalCents', () => {
+    const input: ReceiptComputeInput = {
+      ownerId: 'A',
+      friendIds: ['B'],
+      items: [item('i1', 500, ['A']), item('i2', 999, []), item('i3', 250, [])],
+      taxCents: 0,
+      tipCents: 0,
+    };
+    const r = computeReceiptShares(input);
+    expect(r.unassignedItemIds).toEqual(['i2', 'i3']);
+    // Assigned-only, feeds the invariant.
+    expect(r.itemsTotalCents).toBe(500);
+    // Display-only, includes the unassigned items too.
+    expect(r.enteredItemsTotalCents).toBe(500 + 999 + 250);
   });
 
   test('9. single participant (owner only): owner gets 100%, toFriendShares is empty', () => {

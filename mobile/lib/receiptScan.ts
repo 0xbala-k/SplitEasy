@@ -23,24 +23,36 @@ export type ReceiptScanOutcome =
 const MAX_DIMENSION = 1600;
 
 export async function scanReceipt(source: 'camera' | 'library'): Promise<ReceiptScanOutcome> {
-  if (source === 'camera') {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      return { status: 'failed', reason: 'image' };
+  // Picker/permission calls can reject with native OS errors (e.g. "Different
+  // Image Picker is already presenting", Android activity failures) rather
+  // than resolving — wrap them so `scanReceipt` always resolves to a
+  // ReceiptScanOutcome and never rejects, matching the manipulator/parseReceipt
+  // try/catches below and keeping callers (e.g. FriendPickerSheet's
+  // runReceiptScan, which has no `catch`) from being left with an unhandled
+  // rejection and no user feedback.
+  let result: ImagePicker.ImagePickerResult;
+  try {
+    if (source === 'camera') {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        return { status: 'failed', reason: 'image' };
+      }
     }
+
+    const pickerOptions: ImagePicker.ImagePickerOptions = {
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+      allowsEditing: false,
+      base64: false,
+    };
+
+    result =
+      source === 'camera'
+        ? await ImagePicker.launchCameraAsync(pickerOptions)
+        : await ImagePicker.launchImageLibraryAsync(pickerOptions);
+  } catch {
+    return { status: 'failed', reason: 'image' };
   }
-
-  const pickerOptions: ImagePicker.ImagePickerOptions = {
-    mediaTypes: ImagePicker.MediaTypeOptions.Images,
-    quality: 1,
-    allowsEditing: false,
-    base64: false,
-  };
-
-  const result =
-    source === 'camera'
-      ? await ImagePicker.launchCameraAsync(pickerOptions)
-      : await ImagePicker.launchImageLibraryAsync(pickerOptions);
 
   if (result.canceled) {
     return { status: 'cancelled' };

@@ -225,7 +225,10 @@ async function handleReceiptParse(req: Request, env: Env): Promise<Response> {
   // legitimate caller. Cap by client IP to keep this from being an open
   // proxy to the Gemini quota.
   const ip = req.headers.get('CF-Connecting-IP') ?? 'anon';
-  const { success } = await env.RECEIPT_LIMITER.limit({ key: ip });
+  // Fail OPEN if the binding itself is absent (e.g. deploy config drift) —
+  // that's a config bug, not a signal to reject every request with an
+  // unhandled TypeError that escapes the top-level error handler as a 5xx.
+  const { success } = (await env.RECEIPT_LIMITER?.limit({ key: ip })) ?? { success: true };
   if (!success) {
     return json({ error: 'RATE_LIMITED' }, 429);
   }
