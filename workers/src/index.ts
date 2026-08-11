@@ -1,5 +1,9 @@
 import { callGemini, normalizeReceipt } from './receipt';
 
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface Env {
   PLAID_CLIENT_ID: string;
   PLAID_SECRET: string;
@@ -10,6 +14,11 @@ export interface Env {
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
   ALLOWED_ORIGIN?: string;
+  // `ratelimit` binding (wrangler.toml `[[unsafe.bindings]]`), guarding
+  // /receipt/parse. WORKER_API_KEY is embedded in the web bundle and thus
+  // extractable, so auth alone doesn't stop an abusive caller from burning
+  // Gemini quota — this caps requests per client IP on top of it.
+  RECEIPT_LIMITER: RateLimiter;
 }
 
 function plaidBase(env: Env): string {
@@ -211,6 +220,16 @@ interface GeminiGenerateContentResponse {
 }
 
 async function handleReceiptParse(req: Request, env: Env): Promise<Response> {
+  // Rate-limited ahead of body parsing: WORKER_API_KEY is extractable from
+  // the web bundle, so a valid Authorization header alone doesn't prove a
+  // legitimate caller. Cap by client IP to keep this from being an open
+  // proxy to the Gemini quota.
+  const ip = req.headers.get('CF-Connecting-IP') ?? 'anon';
+  const { success } = await env.RECEIPT_LIMITER.limit({ key: ip });
+  if (!success) {
+    return json({ error: 'RATE_LIMITED' }, 429);
+  }
+
   const { image_base64, mime_type } = await req.json() as { image_base64?: string; mime_type?: string };
 
   if (!image_base64 || typeof image_base64 !== 'string') {

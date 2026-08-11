@@ -15,6 +15,9 @@ const makeEnv = (overrides: Partial<Env> = {}): Env => ({
   GEMINI_API_KEY: 'test_gemini_key',
   // GEMINI_MODEL intentionally left unset by default so tests can verify
   // the 'gemini-2.5-flash' fallback.
+  // Allows every call by default; individual tests override with a
+  // rejecting mock to exercise the 429 path.
+  RECEIPT_LIMITER: { limit: vi.fn().mockResolvedValue({ success: true }) },
   ...overrides,
 });
 
@@ -640,6 +643,48 @@ describe('POST /receipt/parse', () => {
     expect(res.status).toBe(502);
     const body = await res.json() as { error: string };
     expect(body.error).toBe('RECEIPT_PARSE_FAILED');
+  });
+
+  it('returns 429 RATE_LIMITED when RECEIPT_LIMITER denies the request, without calling Gemini', async () => {
+    const limit = vi.fn().mockResolvedValue({ success: false });
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv({ RECEIPT_LIMITER: { limit } }), {} as ExecutionContext);
+    expect(res.status).toBe(429);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('RATE_LIMITED');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('keys RECEIPT_LIMITER.limit by the CF-Connecting-IP header', async () => {
+    const limit = vi.fn().mockResolvedValue({ success: true });
+    mockFetch.mockResolvedValueOnce(geminiResponse({ items: [] }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test_api_key',
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': '203.0.113.7',
+      },
+      body: validBody(),
+    });
+    await handler.fetch(req, makeEnv({ RECEIPT_LIMITER: { limit } }), {} as ExecutionContext);
+    expect(limit).toHaveBeenCalledWith({ key: '203.0.113.7' });
+  });
+
+  it('falls back to "anon" as the RECEIPT_LIMITER key when CF-Connecting-IP is absent', async () => {
+    const limit = vi.fn().mockResolvedValue({ success: true });
+    mockFetch.mockResolvedValueOnce(geminiResponse({ items: [] }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    await handler.fetch(req, makeEnv({ RECEIPT_LIMITER: { limit } }), {} as ExecutionContext);
+    expect(limit).toHaveBeenCalledWith({ key: 'anon' });
   });
 });
 
