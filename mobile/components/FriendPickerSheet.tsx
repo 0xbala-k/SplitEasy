@@ -92,11 +92,30 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const autoToggledRef = useRef(false);
     const toast = useToast();
 
-    useEffect(() => {
-      // Receipt-mode state is never loaded from a persisted edit decision (see
-      // getExpense below — it only reconstructs friend shares, not items/tax/
-      // tip), so it resets on every open regardless of create vs. edit, unlike
-      // selected/customAmounts/splitMode which the edit branch below re-fills.
+    // Receipt-mode state is never loaded from a persisted edit decision (see
+    // getExpense below — it only reconstructs friend shares, not items/tax/
+    // tip), so it must reset on every open regardless of create vs. edit,
+    // unlike selected/customAmounts/splitMode which the effect below re-fills.
+    //
+    // This reset runs during RENDER (not as a useEffect), deliberately. If it
+    // ran as an effect instead, it would sit in the same commit's effect-flush
+    // as the reconciliation auto-toggle effect further down — and that effect
+    // closes over *this render's* `items`/`receiptDeltaCents`, computed from
+    // the *previous* session's (not-yet-reset) items, while `autoToggledRef`
+    // would already have been synchronously cleared by the earlier-declared
+    // reset effect. That combination (stale positive delta + freshly-cleared
+    // latch, both visible in the same pass) let a brand-new, unscanned sheet
+    // inherit `useReceiptTotal: true` from the session that was just closed.
+    // A render-phase update avoids the two-effects-same-stale-closure window
+    // entirely: React discards this in-progress render and restarts the
+    // component synchronously with the reset state before committing or
+    // running ANY effect for this commit, so every effect that runs afterward
+    // — including the auto-toggle effect — only ever observes already-reset
+    // state for a new `openToken`. This is the state-adjustment-during-render
+    // pattern the React docs use for a getDerivedStateFromProps replacement.
+    const [resetOpenToken, setResetOpenToken] = useState(openToken);
+    if (openToken !== resetOpenToken) {
+      setResetOpenToken(openToken);
       setReceiptStage('capture');
       setScanning(false);
       setItems([]);
@@ -104,7 +123,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       setTipCents(0);
       setUseReceiptTotal(false);
       autoToggledRef.current = false;
+    }
 
+    useEffect(() => {
       if (mode !== 'edit' || !editDecision) {
         // Reset so an edit session's pre-fill never leaks into a later create.
         setSelected(new Set());
@@ -219,12 +240,18 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     // than a cent above the bank-charged amount, default to charging the
     // receipt total once (the owner otherwise silently eats the difference).
     // Fires only once per open/scan; after that the user's manual toggle wins.
+    // `items.length > 0` is a belt-and-suspenders guard (the primary defense
+    // against firing on stale/pre-reset data is the render-phase reset above,
+    // which guarantees `items` is already [] for any effect in a fresh
+    // open's first committed render) — real items are required for a
+    // trustworthy receipt total in the first place, since an empty receipt
+    // can only show a negative delta if tax/tip alone exceed the charge.
     useEffect(() => {
-      if (receiptDeltaCents < -1 && !autoToggledRef.current) {
+      if (items.length > 0 && receiptDeltaCents < -1 && !autoToggledRef.current) {
         autoToggledRef.current = true;
         setUseReceiptTotal(true);
       }
-    }, [receiptDeltaCents]);
+    }, [items.length, receiptDeltaCents]);
 
     // Derived CTA state is computed here (before the bail-out below) because
     // the footer's useCallback is a hook and needs it, and every hook must
