@@ -36,6 +36,7 @@ All routes require `Authorization: Bearer <WORKER_API_KEY>`.
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`npm install -g wrangler`)
 - A [Plaid](https://dashboard.plaid.com) developer account (sandbox is free)
 - A [Splitwise](https://secure.splitwise.com/oauth_clients) OAuth application
+- A [Gemini API](https://aistudio.google.com/apikey) key (for receipt parsing)
 
 ---
 
@@ -67,6 +68,8 @@ SPLITWISE_CLIENT_SECRET=<your splitwise client secret>
 PLAID_CLIENT_ID=<your plaid client id>
 PLAID_SECRET=<your plaid sandbox secret>
 PLAID_ENV=sandbox
+GEMINI_API_KEY=<your gemini api key>
+GEMINI_MODEL=gemini-2.5-flash    # optional, defaults to gemini-2.5-flash
 ```
 
 Start the Worker locally:
@@ -134,6 +137,8 @@ npx wrangler secret put PLAID_ENV          # production
 npx wrangler secret put WORKER_API_KEY
 npx wrangler secret put SPLITWISE_CLIENT_ID
 npx wrangler secret put SPLITWISE_CLIENT_SECRET
+npx wrangler secret put GEMINI_API_KEY     # required for receipt parsing
+npx wrangler secret put GEMINI_MODEL       # optional, defaults to gemini-2.5-flash
 ```
 
 ### Web app (PWA — primary distribution, via Vercel)

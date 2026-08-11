@@ -36,7 +36,11 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-splash-screen"
+      "expo-splash-screen",
+      ["expo-image-picker", {
+        "photosPermission": "SplitEasy needs access to your photos so you can attach a receipt to a split.",
+        "cameraPermission": "SplitEasy needs camera access so you can photograph a receipt."
+      }]
     ]
   }
 }
