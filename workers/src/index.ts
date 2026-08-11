@@ -1,3 +1,5 @@
+import { callGemini, normalizeReceipt } from './receipt';
+
 export interface Env {
   PLAID_CLIENT_ID: string;
   PLAID_SECRET: string;
@@ -5,6 +7,8 @@ export interface Env {
   WORKER_API_KEY: string;
   SPLITWISE_CLIENT_ID: string;
   SPLITWISE_CLIENT_SECRET: string;
+  GEMINI_API_KEY: string;
+  GEMINI_MODEL?: string;
   ALLOWED_ORIGIN?: string;
 }
 
@@ -199,6 +203,57 @@ async function handleSplitwiseProxy(req: Request, apiPath: string): Promise<Resp
   });
 }
 
+const SUPPORTED_RECEIPT_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic']);
+const MAX_IMAGE_BASE64_LENGTH = 7_000_000;
+
+interface GeminiGenerateContentResponse {
+  candidates?: { content?: { parts?: { text?: string }[] } }[];
+}
+
+async function handleReceiptParse(req: Request, env: Env): Promise<Response> {
+  const { image_base64, mime_type } = await req.json() as { image_base64?: string; mime_type?: string };
+
+  if (!image_base64 || typeof image_base64 !== 'string') {
+    return json({ error: 'MISSING_IMAGE' }, 400);
+  }
+  if (image_base64.length > MAX_IMAGE_BASE64_LENGTH) {
+    return json({ error: 'IMAGE_TOO_LARGE' }, 413);
+  }
+  if (!mime_type || !SUPPORTED_RECEIPT_MIME_TYPES.has(mime_type)) {
+    return json({ error: 'UNSUPPORTED_MIME_TYPE' }, 400);
+  }
+  if (!env.GEMINI_API_KEY) {
+    return json({ error: 'RECEIPT_PARSE_UNAVAILABLE' }, 503);
+  }
+
+  let geminiRes: Response;
+  try {
+    geminiRes = await callGemini(env, image_base64, mime_type);
+  } catch {
+    // Network failure or AbortSignal.timeout firing (AbortError).
+    return json({ error: 'RECEIPT_PARSE_FAILED' }, 502);
+  }
+  if (!geminiRes.ok) {
+    return json({ error: 'RECEIPT_PARSE_FAILED' }, 502);
+  }
+
+  const geminiData = await geminiRes.json() as GeminiGenerateContentResponse;
+  const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  // Kept in its own try/catch, separate from the top-level SyntaxError
+  // handler below (which is for the *incoming* request body), so a
+  // malformed Gemini response is correctly reported as 502, not 400.
+  let raw: unknown;
+  try {
+    if (typeof text !== 'string') throw new Error('missing candidate text');
+    raw = JSON.parse(text);
+  } catch {
+    return json({ error: 'RECEIPT_PARSE_FAILED' }, 502);
+  }
+
+  return json(normalizeReceipt(raw));
+}
+
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     if (req.method === 'OPTIONS') {
@@ -215,7 +270,8 @@ export default {
       else if (req.method === 'POST' && path === '/splitwise/exchange') res = await handleSplitwiseExchange(req, env);
       else if ((req.method === 'GET' || req.method === 'POST') && path.startsWith('/splitwise/api/')) {
         res = await handleSplitwiseProxy(req, path.slice('/splitwise/api'.length) + url.search);
-      } else res = json({ error: 'Not Found' }, 404);
+      } else if (req.method === 'POST' && path === '/receipt/parse') res = await handleReceiptParse(req, env);
+      else res = json({ error: 'Not Found' }, 404);
       return withCors(res, env);
     } catch (err) {
       if (err instanceof SyntaxError) {

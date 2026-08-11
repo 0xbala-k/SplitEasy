@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import handler, { type Env } from './index';
+import { parseMoneyToCents, normalizeReceipt } from './receipt';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -11,6 +12,9 @@ const makeEnv = (overrides: Partial<Env> = {}): Env => ({
   WORKER_API_KEY: 'test_api_key',
   SPLITWISE_CLIENT_ID: 'sw_client_id',
   SPLITWISE_CLIENT_SECRET: 'sw_secret',
+  GEMINI_API_KEY: 'test_gemini_key',
+  // GEMINI_MODEL intentionally left unset by default so tests can verify
+  // the 'gemini-2.5-flash' fallback.
   ...overrides,
 });
 
@@ -458,5 +462,265 @@ describe('link-token platform', () => {
     expect(res.status).toBe(200);
     const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toHaveProperty('android_package_name', 'com.spliteasy.app');
+  });
+});
+
+function geminiResponse(rawReceipt: unknown, status = 200): Response {
+  return new Response(JSON.stringify({
+    candidates: [
+      { content: { role: 'model', parts: [{ text: JSON.stringify(rawReceipt) }] } },
+    ],
+  }), { status });
+}
+
+describe('POST /receipt/parse', () => {
+  const validBody = () => JSON.stringify({ image_base64: 'ZmFrZS1pbWFnZS1kYXRh', mime_type: 'image/jpeg' });
+
+  it('returns 401 without auth', async () => {
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(401);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 MISSING_IMAGE when image_base64 is absent', async () => {
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mime_type: 'image/jpeg' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('MISSING_IMAGE');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 413 IMAGE_TOO_LARGE when image_base64 exceeds 7,000,000 chars', async () => {
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_base64: 'a'.repeat(7_000_001), mime_type: 'image/jpeg' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(413);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('IMAGE_TOO_LARGE');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 UNSUPPORTED_MIME_TYPE for an unsupported mime type', async () => {
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_base64: 'ZmFrZQ==', mime_type: 'image/gif' }),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('UNSUPPORTED_MIME_TYPE');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 RECEIPT_PARSE_UNAVAILABLE when GEMINI_API_KEY is unset', async () => {
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv({ GEMINI_API_KEY: '' }), {} as ExecutionContext);
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('RECEIPT_PARSE_UNAVAILABLE');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('happy path: calls Gemini with the right model/headers/config and returns normalized shape', async () => {
+    mockFetch.mockResolvedValueOnce(geminiResponse({
+      merchant: 'Trader Joes',
+      currency: 'USD',
+      items: [
+        { name: 'Bananas', quantity: 2, price: '3.50' },
+        { name: 'Milk', quantity: 1, price: '4.25' },
+      ],
+      subtotal: '7.75',
+      tax: '0.65',
+      tip: null,
+      total: '8.40',
+    }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(200);
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('gemini-2.5-flash');
+    expect(url).toContain('generativelanguage.googleapis.com');
+    expect((init.headers as Record<string, string>)['x-goog-api-key']).toBe('test_gemini_key');
+    const sentBody = JSON.parse(init.body as string);
+    expect(sentBody.generationConfig.responseMimeType).toBe('application/json');
+    expect(sentBody.contents[0].parts[0].inline_data.data).toBe('ZmFrZS1pbWFnZS1kYXRh');
+
+    const body = await res.json() as {
+      merchant: string | null;
+      items: { name: string; quantity: number; price_cents: number }[];
+      subtotal_cents: number | null;
+      tax_cents: number;
+      tip_cents: number;
+      total_cents: number | null;
+    };
+    expect(body.merchant).toBe('Trader Joes');
+    expect(body.items).toEqual([
+      { name: 'Bananas', quantity: 2, price_cents: 350 },
+      { name: 'Milk', quantity: 1, price_cents: 425 },
+    ]);
+    expect(body.subtotal_cents).toBe(775);
+    expect(body.tax_cents).toBe(65);
+    expect(body.tip_cents).toBe(0);
+    expect(body.total_cents).toBe(840);
+  });
+
+  it('honors GEMINI_MODEL override in the outbound URL', async () => {
+    mockFetch.mockResolvedValueOnce(geminiResponse({ items: [] }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    await handler.fetch(req, makeEnv({ GEMINI_MODEL: 'gemini-custom-model' }), {} as ExecutionContext);
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toContain('gemini-custom-model');
+  });
+
+  it('returns 502 RECEIPT_PARSE_FAILED when Gemini responds non-2xx', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'bad request' }), { status: 400 }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('RECEIPT_PARSE_FAILED');
+  });
+
+  it('returns 502 RECEIPT_PARSE_FAILED when Gemini candidate text is not valid JSON (not conflated with INVALID_REQUEST_BODY)', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      candidates: [{ content: { role: 'model', parts: [{ text: 'not valid json {' }] } }],
+    }), { status: 200 }));
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('RECEIPT_PARSE_FAILED');
+  });
+
+  it('returns 502 RECEIPT_PARSE_FAILED when fetch rejects with an AbortError', async () => {
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    mockFetch.mockRejectedValueOnce(abortError);
+    const req = new Request('https://worker.example.com/receipt/parse', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test_api_key', 'Content-Type': 'application/json' },
+      body: validBody(),
+    });
+    const res = await handler.fetch(req, makeEnv(), {} as ExecutionContext);
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('RECEIPT_PARSE_FAILED');
+  });
+});
+
+describe('parseMoneyToCents', () => {
+  it('parses a plain dollar string', () => {
+    expect(parseMoneyToCents('$12.99')).toBe(1299);
+  });
+
+  it('parses a comma-thousands string', () => {
+    expect(parseMoneyToCents('1,234.50')).toBe(123450);
+  });
+
+  it('returns null for unparseable input', () => {
+    expect(parseMoneyToCents('abc')).toBeNull();
+  });
+
+  it('returns null for null input', () => {
+    expect(parseMoneyToCents(null)).toBeNull();
+  });
+});
+
+describe('normalizeReceipt', () => {
+  it('derives tax from total - subtotal - tip when tax is absent, clamped >= 0', () => {
+    const result = normalizeReceipt({
+      items: [{ name: 'Widget', quantity: 1, price: '10.00' }],
+      subtotal: '10.00',
+      tax: null,
+      tip: '2.00',
+      total: '12.50',
+    });
+    // total - subtotal - tip = 12.50 - 10.00 - 2.00 = 0.50 -> 50 cents
+    expect(result.tax_cents).toBe(50);
+  });
+
+  it('clamps derived tax to >= 0 when total undershoots subtotal + tip', () => {
+    const result = normalizeReceipt({
+      items: [{ name: 'Widget', quantity: 1, price: '10.00' }],
+      subtotal: '10.00',
+      tax: null,
+      tip: '5.00',
+      total: '11.00',
+    });
+    expect(result.tax_cents).toBe(0);
+  });
+
+  it('drops items with a blank name', () => {
+    const result = normalizeReceipt({
+      items: [
+        { name: '', quantity: 1, price: '5.00' },
+        { name: 'Valid Item', quantity: 1, price: '5.00' },
+      ],
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].name).toBe('Valid Item');
+  });
+
+  it('drops items with an unparseable price', () => {
+    const result = normalizeReceipt({
+      items: [
+        { name: 'Bad Price', quantity: 1, price: 'n/a' },
+        { name: 'Valid Item', quantity: 1, price: '5.00' },
+      ],
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].name).toBe('Valid Item');
+  });
+
+  it('caps items at 200', () => {
+    const items = Array.from({ length: 250 }, (_, i) => ({ name: `Item ${i}`, quantity: 1, price: '1.00' }));
+    const result = normalizeReceipt({ items });
+    expect(result.items).toHaveLength(200);
+  });
+
+  it('never throws on malformed raw input', () => {
+    expect(() => normalizeReceipt({})).not.toThrow();
+    expect(() => normalizeReceipt({ items: null })).not.toThrow();
+    expect(() => normalizeReceipt(null)).not.toThrow();
+  });
+
+  it('defaults tip_cents to 0 when tip is absent/unparseable', () => {
+    const result = normalizeReceipt({ items: [], tip: null });
+    expect(result.tip_cents).toBe(0);
   });
 });
