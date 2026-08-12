@@ -7,3 +7,4 @@ export const getLinkToken = jest.fn();
 export const exchangePublicToken = jest.fn();
 export const fetchTransactions = jest.fn();
 export const exchangeSplitwiseCode = jest.fn();
+export const parseReceipt = jest.fn();

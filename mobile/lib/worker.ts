@@ -1,7 +1,7 @@
 // mobile/lib/worker.ts
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import { PlaidTransactionsResponse, SplitwiseAuthResponse } from '@/lib/types';
+import { ParsedReceipt, PlaidTransactionsResponse, SplitwiseAuthResponse } from '@/lib/types';
 
 function getConfig() {
   return {
@@ -63,4 +63,11 @@ export async function exchangeSplitwiseCode(
   redirect_uri: string
 ): Promise<SplitwiseAuthResponse> {
   return post('/splitwise/exchange', { code, redirect_uri });
+}
+
+export async function parseReceipt(
+  image_base64: string,
+  mime_type = 'image/jpeg'
+): Promise<ParsedReceipt> {
+  return post('/receipt/parse', { image_base64, mime_type });
 }

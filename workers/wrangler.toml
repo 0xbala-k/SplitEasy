@@ -5,3 +5,17 @@ compatibility_date = "2026-03-25"
 # Secrets set via `wrangler secret put`:
 # PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV (sandbox|development|production)
 # WORKER_API_KEY, SPLITWISE_CLIENT_ID, SPLITWISE_CLIENT_SECRET
+# GEMINI_API_KEY (required for receipt parsing)
+# GEMINI_MODEL (optional, defaults to gemini-2.5-flash)
+
+# Rate limit for POST /receipt/parse, keyed by CF-Connecting-IP.
+# WORKER_API_KEY is embedded in the web bundle (extractable from the PWA's
+# JS), so it doesn't prove a legitimate caller on its own; this caps how
+# much Gemini quota a single IP can burn through the route. 20 requests
+# per 60s per IP — generous for a person scanning receipts, tight enough
+# to blunt scripted abuse. See README.md's "Rate limiting" note.
+[[unsafe.bindings]]
+name = "RECEIPT_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }

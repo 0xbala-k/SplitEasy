@@ -136,3 +136,19 @@ export interface SplitwiseGroup {
   member_ids: string[];
   member_names: string[];
 }
+
+// Mirrors the Worker's ParsedItem/ParsedReceipt shape (workers/src/receipt.ts).
+export interface ParsedItem {
+  name: string;
+  quantity: number;
+  price_cents: number;
+}
+
+export interface ParsedReceipt {
+  merchant: string | null;
+  items: ParsedItem[];
+  subtotal_cents: number | null;
+  tax_cents: number;
+  tip_cents: number;
+  total_cents: number | null;
+}

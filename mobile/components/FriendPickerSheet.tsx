@@ -24,8 +24,15 @@ import { createExpense, updateExpense, deleteExpense, getExpense, SplitwiseAuthE
 import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
+import { OWNER_FALLBACK_ID, ReceiptItem, computeReceiptShares, toFriendShares } from '@/lib/receipt';
+import { scanReceipt } from '@/lib/receiptScan';
+import { generateId } from '@/lib/id';
+import { ReceiptCapture } from '@/components/ReceiptCapture';
+import { ReceiptItemRow, ReceiptParticipant } from '@/components/ReceiptItemRow';
+import { ReceiptSummary } from '@/components/ReceiptSummary';
 
-type SplitMode = 'equal' | 'custom';
+type SplitMode = 'equal' | 'custom' | 'receipt';
+type ReceiptStage = 'capture' | 'assign';
 const STEP = 0.5;
 
 function summarizeMerchants(members: Transaction[]): string {
@@ -76,7 +83,47 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [submitting, setSubmitting] = useState(false);
     const [splitMode, setSplitMode] = useState<SplitMode>('equal');
     const [customAmounts, setCustomAmounts] = useState<Record<string, number>>({});
+    const [receiptStage, setReceiptStage] = useState<ReceiptStage>('capture');
+    const [scanning, setScanning] = useState(false);
+    const [items, setItems] = useState<ReceiptItem[]>([]);
+    const [taxCents, setTaxCents] = useState(0);
+    const [tipCents, setTipCents] = useState(0);
+    const [useReceiptTotal, setUseReceiptTotal] = useState(false);
+    const autoToggledRef = useRef(false);
     const toast = useToast();
+
+    // Receipt-mode state is never loaded from a persisted edit decision (see
+    // getExpense below — it only reconstructs friend shares, not items/tax/
+    // tip), so it must reset on every open regardless of create vs. edit,
+    // unlike selected/customAmounts/splitMode which the effect below re-fills.
+    //
+    // This reset runs during RENDER (not as a useEffect), deliberately. If it
+    // ran as an effect instead, it would sit in the same commit's effect-flush
+    // as the reconciliation auto-toggle effect further down — and that effect
+    // closes over *this render's* `items`/`receiptDeltaCents`, computed from
+    // the *previous* session's (not-yet-reset) items, while `autoToggledRef`
+    // would already have been synchronously cleared by the earlier-declared
+    // reset effect. That combination (stale positive delta + freshly-cleared
+    // latch, both visible in the same pass) let a brand-new, unscanned sheet
+    // inherit `useReceiptTotal: true` from the session that was just closed.
+    // A render-phase update avoids the two-effects-same-stale-closure window
+    // entirely: React discards this in-progress render and restarts the
+    // component synchronously with the reset state before committing or
+    // running ANY effect for this commit, so every effect that runs afterward
+    // — including the auto-toggle effect — only ever observes already-reset
+    // state for a new `openToken`. This is the state-adjustment-during-render
+    // pattern the React docs use for a getDerivedStateFromProps replacement.
+    const [resetOpenToken, setResetOpenToken] = useState(openToken);
+    if (openToken !== resetOpenToken) {
+      setResetOpenToken(openToken);
+      setReceiptStage('capture');
+      setScanning(false);
+      setItems([]);
+      setTaxCents(0);
+      setTipCents(0);
+      setUseReceiptTotal(false);
+      autoToggledRef.current = false;
+    }
 
     useEffect(() => {
       if (mode !== 'edit' || !editDecision) {
@@ -152,15 +199,71 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       });
     }, []);
 
+    // Receipt math (Task 6). These must run unconditionally, alongside the
+    // CTA-state hooks below, before the bail-out further down.
+    const ownerId = user_id ?? OWNER_FALLBACK_ID;
+    const friendIdsOrdered = useMemo(() => selectedFriends.map((f) => f.id), [selectedFriends]);
+    const receiptParticipants: ReceiptParticipant[] = useMemo(
+      () => [{ id: ownerId, label: 'You' }, ...selectedFriends.map((f) => ({ id: f.id, label: f.display_name }))],
+      [ownerId, selectedFriends]
+    );
+    const receipt = useMemo(
+      () => computeReceiptShares({ ownerId, friendIds: friendIdsOrdered, items, taxCents, tipCents }),
+      [ownerId, friendIdsOrdered, items, taxCents, tipCents]
+    );
+    // The bank-charged amount, independent of `effectiveTotal` below (which
+    // itself depends on `useReceiptTotal`) — this is what ReceiptSummary
+    // reconciles the receipt total against.
+    const chargedCents = Math.round(totalAmount * 100);
+    const receiptDeltaCents = chargedCents - receipt.receiptTotalCents;
+    const effectiveTotal =
+      splitMode === 'receipt' && useReceiptTotal ? receipt.receiptTotalCents / 100 : totalAmount;
+
+    // Drop assignee ids that no longer correspond to a selected friend (or the
+    // owner) whenever the friend selection changes, so a deselected friend's
+    // items don't silently keep charging them.
+    useEffect(() => {
+      const valid = new Set([ownerId, ...friendIdsOrdered]);
+      setItems((prev) => {
+        let dirty = false;
+        const next = prev.map((it) => {
+          const kept = it.assignees.filter((a) => valid.has(a));
+          if (kept.length === it.assignees.length) return it;
+          dirty = true;
+          return { ...it, assignees: kept };
+        });
+        return dirty ? next : prev; // identity-stable when nothing changed, so `receipt`'s memo doesn't re-run needlessly
+      });
+    }, [ownerId, friendIdsOrdered]);
+
+    // Reconciliation auto-toggle: if the itemized receipt total ends up more
+    // than a cent above the bank-charged amount, default to charging the
+    // receipt total once (the owner otherwise silently eats the difference).
+    // Fires only once per open/scan; after that the user's manual toggle wins.
+    // `items.length > 0` is a belt-and-suspenders guard (the primary defense
+    // against firing on stale/pre-reset data is the render-phase reset above,
+    // which guarantees `items` is already [] for any effect in a fresh
+    // open's first committed render) — real items are required for a
+    // trustworthy receipt total in the first place, since an empty receipt
+    // can only show a negative delta if tax/tip alone exceed the charge.
+    useEffect(() => {
+      if (items.length > 0 && receiptDeltaCents < -1 && !autoToggledRef.current) {
+        autoToggledRef.current = true;
+        setUseReceiptTotal(true);
+      }
+    }, [items.length, receiptDeltaCents]);
+
     // Derived CTA state is computed here (before the bail-out below) because
     // the footer's useCallback is a hook and needs it, and every hook must
     // run unconditionally before an early return.
-    const totalCents = Math.round(totalAmount * 100);
+    const totalCents = Math.round(effectiveTotal * 100);
     const n = selected.size + 1;
     const equalShareCents = selected.size > 0 ? Math.floor(totalCents / n) : 0;
 
     const friendTotalCents =
-      splitMode === 'custom'
+      splitMode === 'receipt'
+        ? friendIdsOrdered.reduce((s, id) => s + (receipt.totalPerParticipantCents[id] ?? 0), 0)
+        : splitMode === 'custom'
         ? selectedFriends.reduce(
             (sum, f) => sum + Math.round((customAmounts[f.id] ?? 0) * 100),
             0
@@ -169,7 +272,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
     const ownerShareCents = totalCents - friendTotalCents;
     const isOverBudget = ownerShareCents < -1;
-    const ctaDisabled = selected.size === 0 || submitting || isOverBudget || title.trim() === '';
+    const receiptBlocked =
+      splitMode === 'receipt' &&
+      (receiptStage === 'capture' || scanning || items.length === 0 || receipt.unassignedItemIds.length > 0);
+    const ctaDisabled =
+      selected.size === 0 || submitting || isOverBudget || title.trim() === '' || receiptBlocked;
 
     // The footer is rendered by the sheet as a component type, so whenever
     // `renderFooter`'s identity changes the whole footer subtree remounts.
@@ -234,6 +341,82 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       setSplitMode('custom');
     }
 
+    function switchToReceipt() {
+      setSplitMode('receipt');
+      setReceiptStage(items.length > 0 ? 'assign' : 'capture');
+    }
+
+    function addReceiptItem() {
+      setItems((prev) => [
+        ...prev,
+        { id: generateId('ritem'), name: '', priceCents: 0, assignees: [] },
+      ]);
+    }
+
+    // These four are deliberately functional setState updaters keyed by
+    // itemId, NOT closures over the `items` variable in scope — ReceiptItemRow
+    // is memoized with a comparator that ignores callback identity, so a
+    // memoized row may invoke whatever closure it last rendered with. Keying
+    // off `prev` + itemId makes that safe regardless of which render's
+    // closure actually runs.
+    function updateReceiptItemName(itemId: string, name: string) {
+      setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, name } : it)));
+    }
+
+    function updateReceiptItemPriceCents(itemId: string, priceCents: number) {
+      setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, priceCents } : it)));
+    }
+
+    function deleteReceiptItem(itemId: string) {
+      setItems((prev) => prev.filter((it) => it.id !== itemId));
+    }
+
+    function updateReceiptItemAssignees(itemId: string, assignees: string[]) {
+      setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, assignees } : it)));
+    }
+
+    async function runReceiptScan(source: 'camera' | 'library') {
+      setScanning(true);
+      try {
+        const outcome = await scanReceipt(source);
+        if (outcome.status === 'ok') {
+          const seeded: ReceiptItem[] = outcome.receipt.items.map((it) => ({
+            id: generateId('ritem'),
+            name: it.name,
+            priceCents: it.price_cents,
+            quantity: it.quantity,
+            assignees: [],
+          }));
+          setItems(seeded);
+          setTaxCents(outcome.receipt.tax_cents);
+          setTipCents(outcome.receipt.tip_cents);
+          setReceiptStage('assign');
+        } else if (outcome.status === 'failed') {
+          toast.show(
+            outcome.reason === 'parse'
+              ? "Couldn't read that receipt. Enter items manually."
+              : outcome.reason === 'network'
+              ? 'Network error scanning the receipt. Enter items manually.'
+              : "Couldn't process that photo. Enter items manually.",
+            'error'
+          );
+          setReceiptStage('assign');
+        }
+        // cancelled: stay on the capture stage, nothing to do.
+      } finally {
+        setScanning(false);
+      }
+    }
+
+    function handleRetakePhoto() {
+      setItems([]);
+      setTaxCents(0);
+      setTipCents(0);
+      setUseReceiptTotal(false);
+      autoToggledRef.current = false;
+      setReceiptStage('capture');
+    }
+
     function adjustAmount(id: string, delta: number) {
       setCustomAmounts((prev) => {
         const current = prev[id] ?? 0;
@@ -252,11 +435,16 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       const friendIds = selectedFriends.map((f) => f.id);
       const friendNames = selectedFriends.map((f) => f.display_name);
       const desc = title.trim();
-      const shares = splitMode === 'custom' ? { friendShares: customAmounts } : {};
+      const shares =
+        splitMode === 'receipt'
+          ? { friendShares: toFriendShares(receipt, ownerId) }
+          : splitMode === 'custom'
+          ? { friendShares: customAmounts }
+          : {};
       try {
         if (mode === 'edit' && editDecision) {
           const { amount_each } = await updateExpense(editDecision.splitwise_expense_id, {
-            amount: totalAmount,
+            amount: effectiveTotal,
             description: desc,
             currency,
             currentUserId: user_id!,
@@ -293,7 +481,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         }
 
         const { expense_id, amount_each } = await createExpense({
-          amount: totalAmount,
+          amount: effectiveTotal,
           description: desc,
           currency,
           currentUserId: user_id!,
@@ -369,7 +557,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           </View>
         </View>
 
-        {/* Equal / Custom segmented control */}
+        {/* Equal / Custom / Receipt segmented control */}
         {selected.size > 0 && (
           <View style={styles.segmented}>
             <Pressable
@@ -392,6 +580,19 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                 Custom
               </Text>
             </Pressable>
+            {/* Unavailable for combined-transaction splits — a receipt is one physical purchase. */}
+            {!isCombine && (
+              <Pressable
+                style={[styles.segBtn, splitMode === 'receipt' && styles.segBtnActive]}
+                onPress={switchToReceipt}
+                accessibilityRole="button"
+                accessibilityState={{ selected: splitMode === 'receipt' }}
+              >
+                <Text style={[styles.segText, splitMode === 'receipt' && styles.segTextActive]}>
+                  Receipt
+                </Text>
+              </Pressable>
+            )}
           </View>
         )}
 
@@ -439,7 +640,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                 : 'Select friends to split with'}
             </Text>
           </>
-        ) : (
+        ) : splitMode === 'custom' ? (
           <>
             {/* Owner share card */}
             <View style={[styles.ownerCard, isOverBudget && styles.ownerCardError]}>
@@ -458,6 +659,42 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
             <Text style={styles.sectionLabel}>Custom amounts</Text>
           </>
+        ) : (
+          <>
+            {receiptStage === 'capture' ? (
+              <ReceiptCapture
+                scanning={scanning}
+                onTakePhoto={() => runReceiptScan('camera')}
+                onChoosePhoto={() => runReceiptScan('library')}
+                onSkip={() => setReceiptStage('assign')}
+              />
+            ) : (
+              <>
+                <ReceiptSummary
+                  itemsTotalCents={receipt.enteredItemsTotalCents}
+                  taxCents={taxCents}
+                  tipCents={tipCents}
+                  onChangeTaxCents={setTaxCents}
+                  onChangeTipCents={setTipCents}
+                  chargedCents={chargedCents}
+                  useReceiptTotal={useReceiptTotal}
+                  onChangeUseReceiptTotal={setUseReceiptTotal}
+                  onRetakePhoto={handleRetakePhoto}
+                  hasUnassignedItems={receipt.unassignedItemIds.length > 0}
+                />
+                <Pressable
+                  style={({ pressed }) => [styles.addItemBtn, pressed && styles.addItemBtnPressed]}
+                  onPress={addReceiptItem}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add item"
+                >
+                  <Ionicons name="add-circle-outline" size={18} color={Colors.primary} style={{ marginRight: 6 }} />
+                  <Text style={styles.addItemText}>Add item</Text>
+                </Pressable>
+                <Text style={styles.sectionLabel}>Items</Text>
+              </>
+            )}
+          </>
         )}
       </View>
     );
@@ -474,9 +711,38 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             <Text style={styles.emptyText}>No Splitwise friends found.</Text>
           </View>
         ) : null
+      ) : splitMode === 'receipt' ? (
+        scanning ? (
+          <ActivityIndicator color={Colors.primary} style={styles.spinner} />
+        ) : receiptStage === 'assign' ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="receipt-outline" size={32} color={Colors.textTertiary} />
+            <Text style={styles.emptyText}>No items yet. Tap “Add item” to enter one manually.</Text>
+          </View>
+        ) : null
       ) : null;
 
-    const data = splitMode === 'equal' ? filtered : selectedFriends;
+    const data: (SplitwiseFriend | ReceiptItem)[] =
+      splitMode === 'equal' ? filtered : splitMode === 'custom' ? selectedFriends : items;
+
+    // Per-person breakdown strip pinned to the bottom of the list content
+    // (the FlatList's own footer prop — unrelated to, and safe alongside,
+    // the sheet's pinned `footerComponent` CTA).
+    const receiptListFooter =
+      splitMode === 'receipt' && receiptStage === 'assign' ? (
+        <View style={styles.receiptFooterStrip}>
+          {receiptParticipants.map((p) => (
+            <View key={p.id} style={styles.receiptFooterRow}>
+              <Text style={styles.receiptFooterName} numberOfLines={1}>
+                {p.label}
+              </Text>
+              <Text style={styles.receiptFooterAmount}>
+                ${((receipt.totalPerParticipantCents[p.id] ?? 0) / 100).toFixed(2)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null;
 
     return (
       <BottomSheetModal
@@ -492,25 +758,42 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       >
         <BottomSheetFlatList
           data={data}
-          keyExtractor={(f) => f.id}
+          keyExtractor={(x: { id: string }) => x.id}
           style={styles.list}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
-          renderItem={({ item }) =>
-            splitMode === 'equal' ? (
-              <EqualRow friend={item} isSelected={selected.has(item.id)} onToggle={toggle} />
-            ) : (
-              <CustomRow
-                friend={item}
-                amount={customAmounts[item.id] ?? 0}
-                onDecrease={() => adjustAmount(item.id, -STEP)}
-                onIncrease={() => adjustAmount(item.id, STEP)}
-                onCommit={(v) => commitAmount(item.id, v)}
+          ListFooterComponent={receiptListFooter}
+          renderItem={({ item }) => {
+            if (splitMode === 'equal') {
+              const friend = item as SplitwiseFriend;
+              return <EqualRow friend={friend} isSelected={selected.has(friend.id)} onToggle={toggle} />;
+            }
+            if (splitMode === 'custom') {
+              const friend = item as SplitwiseFriend;
+              return (
+                <CustomRow
+                  friend={friend}
+                  amount={customAmounts[friend.id] ?? 0}
+                  onDecrease={() => adjustAmount(friend.id, -STEP)}
+                  onIncrease={() => adjustAmount(friend.id, STEP)}
+                  onCommit={(v) => commitAmount(friend.id, v)}
+                />
+              );
+            }
+            const receiptItem = item as ReceiptItem;
+            return (
+              <ReceiptItemRow
+                item={receiptItem}
+                participants={receiptParticipants}
+                onChangeName={updateReceiptItemName}
+                onChangePriceCents={updateReceiptItemPriceCents}
+                onDelete={deleteReceiptItem}
+                onChangeAssignees={updateReceiptItemAssignees}
               />
-            )
-          }
+            );
+          }}
         />
       </BottomSheetModal>
     );
@@ -847,4 +1130,36 @@ const styles = StyleSheet.create({
   addBtnPressed: { backgroundColor: Colors.primaryDark },
   addBtnText: { color: Colors.textInverse, fontSize: 16, fontWeight: '700' },
   addBtnTextDisabled: { color: Colors.textTertiary },
+
+  addItemBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.primaryMuted,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  addItemBtnPressed: { backgroundColor: Colors.primaryLight },
+  addItemText: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+
+  receiptFooterStrip: {
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  receiptFooterRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  receiptFooterName: { flex: 1, fontSize: 13, color: Colors.textSecondary, marginRight: Spacing.sm },
+  receiptFooterAmount: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    fontVariant: ['tabular-nums'],
+  },
 });

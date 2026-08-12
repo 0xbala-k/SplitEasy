@@ -21,8 +21,25 @@ The mobile app never holds Plaid or Splitwise secrets. All third-party API calls
 | POST | `/plaid/transactions` | Fetch recent transactions for a linked account |
 | POST | `/splitwise/exchange` | Exchange a Splitwise OAuth code for an access token |
 | GET/POST | `/splitwise/api/*` | CORS proxy to the Splitwise API for the web app (user token via `X-Splitwise-Token`) |
+| POST | `/receipt/parse` | Upload a receipt photo (base64), get back merchant/items/subtotal/tax/tip/total parsed by Gemini |
 
 All routes require `Authorization: Bearer <WORKER_API_KEY>`.
+
+### Rate limiting
+
+`WORKER_API_KEY` is bundled into the web app's JS and is therefore extractable by anyone who inspects the PWA — a valid-looking `Authorization` header doesn't by itself prove a legitimate caller. This is a low-severity, pre-existing posture shared by every route, but `/receipt/parse` is the one where an unauthenticated-in-spirit caller gets standalone value (burning Gemini API quota) without needing anything else (the Plaid routes, by contrast, require a real `access_token` to do anything useful).
+
+`/receipt/parse` is rate-limited to **20 requests / 60 seconds per client IP** (keyed off `CF-Connecting-IP`, falling back to `"anon"` when absent, e.g. local dev), via a Cloudflare Workers [`ratelimit` binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) declared in `workers/wrangler.toml`:
+
+```toml
+[[unsafe.bindings]]
+name = "RECEIPT_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }
+```
+
+Exceeding the limit returns `429 { "error": "RATE_LIMITED" }`. No additional Cloudflare dashboard configuration is required — the binding is provisioned automatically on `wrangler deploy`. If a different limit is ever needed, adjust `simple.limit`/`simple.period` in `wrangler.toml`; no code change is required.
 
 ---
 
@@ -36,6 +53,7 @@ All routes require `Authorization: Bearer <WORKER_API_KEY>`.
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`npm install -g wrangler`)
 - A [Plaid](https://dashboard.plaid.com) developer account (sandbox is free)
 - A [Splitwise](https://secure.splitwise.com/oauth_clients) OAuth application
+- A [Gemini API](https://aistudio.google.com/apikey) key (for receipt parsing)
 
 ---
 
@@ -67,6 +85,8 @@ SPLITWISE_CLIENT_SECRET=<your splitwise client secret>
 PLAID_CLIENT_ID=<your plaid client id>
 PLAID_SECRET=<your plaid sandbox secret>
 PLAID_ENV=sandbox
+GEMINI_API_KEY=<your gemini api key>
+GEMINI_MODEL=gemini-2.5-flash    # optional, defaults to gemini-2.5-flash
 ```
 
 Start the Worker locally:
@@ -134,6 +154,8 @@ npx wrangler secret put PLAID_ENV          # production
 npx wrangler secret put WORKER_API_KEY
 npx wrangler secret put SPLITWISE_CLIENT_ID
 npx wrangler secret put SPLITWISE_CLIENT_SECRET
+npx wrangler secret put GEMINI_API_KEY     # required for receipt parsing
+npx wrangler secret put GEMINI_MODEL       # optional, defaults to gemini-2.5-flash
 ```
 
 ### Web app (PWA — primary distribution, via Vercel)
@@ -175,3 +197,20 @@ Users install the PWA from the browser: **Share → Add to Home Screen** on iOS 
 cd mobile
 npx eas build --platform ios --profile production
 ```
+
+---
+
+## Manual QA
+
+Automated tests (Jest for `mobile/`, Vitest for `workers/`) cover logic and component behavior, but a few things — camera/file-picker plumbing, OS permission prompt copy, PWA install behavior — can only be verified by hand on real devices/browsers. Run this checklist before shipping any change that touches receipt capture (`mobile/components/ReceiptCapture.tsx`, `mobile/lib/receiptScan.ts`) or the Worker's `/receipt/parse` route.
+
+Web is the primary distribution platform, so verify it first; native builds are secondary.
+
+- [ ] **PWA on iOS Safari — camera capture.** Install the PWA (Share → Add to Home Screen), open it from the home screen icon (not the browser tab), start a Receipt split, tap "Take photo", confirm the camera opens directly (not a file picker), capture a real receipt, and confirm it scans and populates items.
+- [ ] **PWA on iOS Safari — installed-to-home-screen behavior.** With the PWA installed, confirm the app opens full-screen (no Safari chrome), the receipt flow doesn't get interrupted by any browser UI, and navigating away/back (e.g. backgrounding the app mid-scan) doesn't lose sheet state unexpectedly.
+- [ ] **PWA on desktop Chrome — file picker path.** Open the web app in desktop Chrome (no camera capture attribute support in the same way as mobile), start a Receipt split, tap "Choose photo" (the camera button should be hidden per the `Platform.OS === 'web' && !navigator.mediaDevices` check), pick an image file, and confirm it scans correctly.
+- [ ] **Native iOS dev build — camera permission prompt copy.** On a fresh install (or after resetting camera permissions in Settings), trigger "Take photo" and confirm the iOS permission prompt shows the expected app-provided copy (from `Info.plist`'s `NSCameraUsageDescription`), not a generic/blank message. Confirm both Allow and Deny paths behave sensibly (Deny should not crash the flow — it should fail gracefully into the manual-entry path).
+- [ ] **Native Android.** Repeat the camera and file-picker checks on a physical or emulated Android device: camera permission prompt copy, photo capture, and photo-library selection all produce a scanned/normalized receipt or a graceful failure into manual entry.
+- [ ] **Live Gemini verification against `/receipt/parse`.** Run `wrangler dev` in `workers/` with a real `GEMINI_API_KEY`, `curl` the `/receipt/parse` endpoint with a real base64-encoded receipt photo, and confirm the actual response shape matches what `normalizeReceipt` expects — model behavior can drift from documented examples, and this has not yet been executed against the live API (requires a real `GEMINI_API_KEY`).
+
+For each row above, also spot-check the failure path (deny permission, cancel the picker, or pick a non-receipt image) to confirm the app falls back to "enter items manually" rather than getting stuck.

@@ -15,7 +15,7 @@ jest.mock('expo-constants', () => {
   };
 });
 
-import { getLinkToken, exchangePublicToken, fetchTransactions, exchangeSplitwiseCode, WorkerError } from '@/lib/worker';
+import { getLinkToken, exchangePublicToken, fetchTransactions, exchangeSplitwiseCode, parseReceipt, WorkerError } from '@/lib/worker';
 
 global.fetch = jest.fn();
 const mockFetch = fetch as jest.Mock;
@@ -88,4 +88,41 @@ test('exchangeSplitwiseCode returns auth response', async () => {
 test('throws WorkerError on non-ok response', async () => {
   mockResponse({ error: 'PLAID_ERROR' }, 500);
   await expect(getLinkToken()).rejects.toThrow(WorkerError);
+});
+
+test('parseReceipt posts to /receipt/parse with the auth header set', async () => {
+  mockResponse({
+    merchant: 'Cafe',
+    items: [{ name: 'Latte', quantity: 1, price_cents: 450 }],
+    subtotal_cents: 450,
+    tax_cents: 40,
+    tip_cents: 0,
+    total_cents: 490,
+  });
+  const result = await parseReceipt('base64data', 'image/jpeg');
+  expect(result.merchant).toBe('Cafe');
+  expect(mockFetch).toHaveBeenCalledWith(
+    'https://worker.test/receipt/parse',
+    expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer test-api-key' }),
+      body: JSON.stringify({ image_base64: 'base64data', mime_type: 'image/jpeg' }),
+    })
+  );
+});
+
+test('parseReceipt defaults mime_type to image/jpeg', async () => {
+  mockResponse({ merchant: null, items: [], subtotal_cents: null, tax_cents: 0, tip_cents: 0, total_cents: null });
+  await parseReceipt('base64data');
+  const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+  expect(body.mime_type).toBe('image/jpeg');
+});
+
+test('parseReceipt maps a 502 response to WorkerError RECEIPT_PARSE_FAILED', async () => {
+  mockResponse({ error: 'RECEIPT_PARSE_FAILED' }, 502);
+  await expect(parseReceipt('base64data')).rejects.toThrow(WorkerError);
+  await expect(parseReceipt('base64data')).rejects.toMatchObject({
+    code: 'RECEIPT_PARSE_FAILED',
+    status: 502,
+  });
 });
