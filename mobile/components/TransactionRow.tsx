@@ -62,13 +62,13 @@ export function TransactionRow({
       style={styles.skipUnderlay}
       onPress={underlayAction}
       accessibilityRole="button"
-      // Only vacation mode (onRemove present) gets an explicit label here: it names
-      // an action ("Remove ... from vacation") the inline Skip button doesn't offer.
-      // In the plain-list case the underlay performs the same skip as the inline
-      // button, so it's left unlabelled rather than duplicating "Skip {merchant}" —
-      // VoiceOver/TalkBack fall back to the visible "Skip" text, and it keeps the
-      // underlay from being a second, identically-named match for that label.
-      accessibilityLabel={onRemove ? removeLabel : undefined}
+      accessibilityLabel={onRemove ? removeLabel : skipLabel}
+      // Inert at runtime, invisible to assistive tech — exists only so tests can
+      // target this Pressable specifically. In the default branch it shares its
+      // accessibilityLabel with the inline Skip button (both genuinely mean
+      // "Skip {merchant}"), so a testID is what lets a query pick one over the
+      // other rather than the production markup having to disambiguate itself.
+      testID="swipe-underlay"
     >
       <Ionicons
         name={onRemove ? 'trash-outline' : 'close-circle-outline'}

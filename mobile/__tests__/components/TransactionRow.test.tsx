@@ -66,15 +66,28 @@ test('in select mode, tapping the row toggles selection and hides split/skip act
 
 test('default variant keeps the existing skip label', () => {
   render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} />);
-  expect(screen.getByLabelText('Skip Amazon')).toBeTruthy();
+  // Both the inline Skip button and the swipe underlay carry this label in the
+  // default branch — they genuinely mean the same thing ("Skip Amazon"), so
+  // there are two matches by design. testID disambiguates which is which below.
+  expect(screen.getAllByLabelText('Skip Amazon')).toHaveLength(2);
 });
 
-test('without onRemove, there is no remove affordance and swipe skips', () => {
+test('without onRemove, there is no remove affordance, and both the inline button and the swipe underlay skip', () => {
   const onSkip = jest.fn();
   render(<TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} />);
   expect(screen.queryByLabelText('Remove Amazon from vacation')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Skip Amazon'));
-  expect(onSkip).toHaveBeenCalled();
+
+  const skipControls = screen.getAllByLabelText('Skip Amazon');
+  expect(skipControls).toHaveLength(2);
+  const underlay = screen.getByTestId('swipe-underlay');
+  const inlineSkip = skipControls.find((el) => el !== underlay);
+  expect(inlineSkip).toBeTruthy();
+
+  fireEvent.press(underlay);
+  expect(onSkip).toHaveBeenCalledTimes(1);
+
+  fireEvent.press(inlineSkip!);
+  expect(onSkip).toHaveBeenCalledTimes(2);
 });
 
 test('with onRemove, both skip and split stay available inline', () => {
