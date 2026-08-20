@@ -133,8 +133,10 @@ A pure function in `lib/buckets.ts`. Offline, deterministic, fully testable.
 7. `misc`
 
 `bucket_source` records which rule won: `'vacation'` for rule 1, `'manual'`
-for rules 2–3, `'auto'` for rules 4–7. It drives the chip's lock state and lets
-the Spending tab surface how much of a month is still an unconfirmed guess.
+for rules 2–3, `'auto'` for rules 4–7. It is load-bearing on the revert path:
+undoing a split clears an `'auto'` guess so it re-resolves against current
+merchant memory if committed again, while a `'manual'` choice is the user's and
+survives. The chip's lock state comes from `vacation_id`, not from this field.
 
 Representative detailed-category mappings:
 
