@@ -66,6 +66,25 @@ export const Spacing = {
   xxxl: 32,
 };
 
+// Spending buckets. The three `wants` buckets share the amber family so the
+// group still reads as one wedge when the donut is drilled in, while Travel,
+// Needs, and Misc stay clearly distinct from them and from each other.
+export const BucketColors = {
+  travel: '#0EA5E9',
+  needs: '#2563EB',
+  food: '#F59E0B',
+  shopping: '#FB923C',
+  experiences: '#FCD34D',
+  misc: '#94A3B8',
+};
+
+export const GroupColors = {
+  travel: '#0EA5E9',
+  needs: '#2563EB',
+  wants: '#F59E0B',
+  misc: '#94A3B8',
+};
+
 // Merchant avatar colors — assigned by first char code mod
 const AVATAR_PALETTE = [
   '#2563EB', '#7C3AED', '#DB2777', '#EA580C',
