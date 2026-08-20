@@ -10,23 +10,27 @@ interface Props {
   transaction: Transaction;
   onSkip: () => void;
   onSplit: () => void;
+  // Supplied only in vacation mode. Its presence moves "remove from vacation"
+  // onto the swipe underlay and keeps Skip inline, so a trip expense paid
+  // entirely by the user can still be committed (and counted as Travel)
+  // instead of only being splittable or ejectable.
+  onRemove?: () => void;
   onLongPress?: () => void;
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
-  variant?: 'skip' | 'remove';
 }
 
-export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, selectMode, selected, onToggleSelect, variant = 'skip' }: Props) {
+export function TransactionRow({
+  transaction, onSkip, onSplit, onRemove, onLongPress,
+  selectMode, selected, onToggleSelect,
+}: Props) {
   const amount = `$${transaction.amount.toFixed(2)}`;
   const date = formatDayLabel(transaction.date);
   const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
   const avatarBg = merchantColor(transaction.merchant_name ?? '?');
-  const removeMode = variant === 'remove';
-  const skipIcon = removeMode ? 'trash-outline' : 'close-circle-outline';
-  const skipBtnIcon = removeMode ? 'trash-outline' : 'close-outline';
-  const skipLabel = removeMode ? `Remove ${transaction.merchant_name} from vacation` : `Skip ${transaction.merchant_name}`;
-  const skipUnderlayLabel = removeMode ? 'Remove' : 'Skip';
+  const skipLabel = `Skip ${transaction.merchant_name}`;
+  const removeLabel = `Remove ${transaction.merchant_name} from vacation`;
 
   if (selectMode) {
     return (
@@ -52,24 +56,35 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
     );
   }
 
-  const renderSkipUnderlay = () => (
+  const underlayAction = onRemove ?? onSkip;
+  const renderUnderlay = () => (
     <Pressable
       style={styles.skipUnderlay}
-      onPress={onSkip}
+      onPress={underlayAction}
       accessibilityRole="button"
-      accessibilityLabel={skipLabel}
+      // Only vacation mode (onRemove present) gets an explicit label here: it names
+      // an action ("Remove ... from vacation") the inline Skip button doesn't offer.
+      // In the plain-list case the underlay performs the same skip as the inline
+      // button, so it's left unlabelled rather than duplicating "Skip {merchant}" —
+      // VoiceOver/TalkBack fall back to the visible "Skip" text, and it keeps the
+      // underlay from being a second, identically-named match for that label.
+      accessibilityLabel={onRemove ? removeLabel : undefined}
     >
-      <Ionicons name={skipIcon} size={22} color={Colors.textSecondary} />
-      <Text style={styles.skipUnderlayText}>{skipUnderlayLabel}</Text>
+      <Ionicons
+        name={onRemove ? 'trash-outline' : 'close-circle-outline'}
+        size={22}
+        color={Colors.textSecondary}
+      />
+      <Text style={styles.skipUnderlayText}>{onRemove ? 'Remove' : 'Skip'}</Text>
     </Pressable>
   );
 
   return (
     <ReanimatedSwipeable
-      renderLeftActions={renderSkipUnderlay}
+      renderLeftActions={renderUnderlay}
       onSwipeableOpen={(direction) => {
         // 'left' = the left underlay opened, i.e. the user swiped right
-        if (direction === 'left') onSkip();
+        if (direction === 'left') underlayAction();
       }}
       leftThreshold={72}
       friction={1.5}
@@ -104,7 +119,7 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
             accessibilityRole="button"
             accessibilityLabel={skipLabel}
           >
-            <Ionicons name={skipBtnIcon} size={14} color={Colors.textSecondary} />
+            <Ionicons name="close-outline" size={14} color={Colors.textSecondary} />
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}

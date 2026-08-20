@@ -1,7 +1,12 @@
 // mobile/__tests__/components/TransactionRow.test.tsx
 jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
   const { View } = require('react-native');
-  return ({ children }: { children: React.ReactNode }) => <View>{children}</View>;
+  return ({ children, renderLeftActions }: { children: React.ReactNode; renderLeftActions?: () => React.ReactNode }) => (
+    <View>
+      {renderLeftActions?.()}
+      {children}
+    </View>
+  );
 });
 
 import React from 'react';
@@ -59,15 +64,38 @@ test('in select mode, tapping the row toggles selection and hides split/skip act
   expect(onToggleSelect).toHaveBeenCalled();
 });
 
-test('remove variant labels the action as removing from vacation', () => {
-  const onSkip = jest.fn();
-  render(<TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} variant="remove" />);
-  expect(screen.queryByLabelText('Skip Amazon')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Remove Amazon from vacation'));
-  expect(onSkip).toHaveBeenCalled();
-});
-
 test('default variant keeps the existing skip label', () => {
   render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} />);
   expect(screen.getByLabelText('Skip Amazon')).toBeTruthy();
+});
+
+test('without onRemove, there is no remove affordance and swipe skips', () => {
+  const onSkip = jest.fn();
+  render(<TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} />);
+  expect(screen.queryByLabelText('Remove Amazon from vacation')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Skip Amazon'));
+  expect(onSkip).toHaveBeenCalled();
+});
+
+test('with onRemove, both skip and split stay available inline', () => {
+  const onSkip = jest.fn();
+  const onSplit = jest.fn();
+  render(
+    <TransactionRow transaction={tx} onSkip={onSkip} onSplit={onSplit} onRemove={jest.fn()} />
+  );
+  fireEvent.press(screen.getByLabelText('Skip Amazon'));
+  expect(onSkip).toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Split Amazon'));
+  expect(onSplit).toHaveBeenCalled();
+});
+
+test('with onRemove, the swipe underlay removes rather than skips', () => {
+  const onSkip = jest.fn();
+  const onRemove = jest.fn();
+  render(
+    <TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} onRemove={onRemove} />
+  );
+  fireEvent.press(screen.getByLabelText('Remove Amazon from vacation'));
+  expect(onRemove).toHaveBeenCalled();
+  expect(onSkip).not.toHaveBeenCalled();
 });
