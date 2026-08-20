@@ -482,12 +482,20 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   if (status === 'split' || status === 'skipped') {
     await materializeBuckets([id]);
   } else {
-    // Back to 'new': drop an auto guess so it re-resolves against current
-    // merchant memory if it is committed again. A manual choice is the user's
-    // and survives.
+    // Back to 'new': drop any bucket that wasn't the user's own choice, so
+    // it re-resolves against current merchant memory (or the current
+    // vacation_id) if it is committed again. Only 'manual' survives — an
+    // 'auto' guess should re-resolve, and a 'vacation' bucket must not
+    // outlive the vacation_id that produced it (removeTransactionFromVacation
+    // nulls vacation_id without touching bucket, so a row that keeps a
+    // 'vacation' bucket here would be stranded in Travel forever). Written
+    // as `!= 'manual'` rather than `= 'auto' OR = 'vacation'` so any future
+    // BucketSource still clears by default; NULL <> 'manual' is NULL (not
+    // true) in SQL, so the explicit `bucket_source IS NULL` arm is required
+    // or a row with no source yet would be skipped.
     await d.runAsync(
       `UPDATE transactions SET bucket = NULL, bucket_source = NULL
-       WHERE id = ? AND bucket_source = 'auto'`,
+       WHERE id = ? AND (bucket_source IS NULL OR bucket_source != 'manual')`,
       [id]
     );
   }

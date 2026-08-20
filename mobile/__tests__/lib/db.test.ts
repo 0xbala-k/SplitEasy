@@ -955,13 +955,22 @@ test('updateTransactionStatus materializes a bucket when committing', async () =
   );
 });
 
-test('updateTransactionStatus clears an auto bucket when reverting to new', async () => {
+test('updateTransactionStatus clears a non-manual bucket when reverting to new', async () => {
   await initDb();
   await updateTransactionStatus('tx1', 'new');
+  // The predicate must clear anything that is not 'manual' — including
+  // 'vacation' — not just 'auto', or a transaction removed from a vacation
+  // after being committed would be stranded in Travel forever (bucket stays
+  // 'travel' while status is 'new', violating the "NULL bucket means
+  // uncommitted" invariant). Assert the shared clause directly rather than
+  // pinning to 'auto' only, and guard against a regression that narrows it
+  // back to 'auto' alone.
   expect(mockDb.runAsync).toHaveBeenCalledWith(
-    expect.stringContaining("bucket_source = 'auto'"),
+    expect.stringContaining("bucket_source IS NULL OR bucket_source != 'manual'"),
     ['tx1']
   );
+  const revertCalls = mockDb.runAsync.mock.calls.filter(([sql]: [string]) => sql.includes('bucket = NULL'));
+  expect(revertCalls.some(([sql]: [string]) => sql.includes("= 'auto'"))).toBe(false);
 });
 
 test('setTransactionBucket writes the bucket and teaches the merchant', async () => {

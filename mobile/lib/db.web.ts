@@ -426,9 +426,14 @@ function withResolvedBucket(row: Transaction, memory: Record<string, Bucket>): T
   return { ...row, bucket, bucket_source: source };
 }
 
-// Reverting to 'new' drops an auto guess but keeps a manual choice.
-function withClearedAutoBucket(row: Transaction): Transaction {
-  return row.bucket_source === 'auto' ? { ...row, bucket: null, bucket_source: null } : row;
+// Reverting to 'new' drops any bucket that wasn't the user's own choice.
+// Only 'manual' survives — an 'auto' guess should re-resolve against current
+// merchant memory if committed again, and a 'vacation' bucket must not
+// outlive the vacation_id that produced it: removeTransactionFromVacation
+// nulls vacation_id without touching bucket, so a row that kept a 'vacation'
+// bucket here would be stranded in Travel forever.
+function withClearedNonManualBucket(row: Transaction): Transaction {
+  return row.bucket_source === 'manual' ? row : { ...row, bucket: null, bucket_source: null };
 }
 
 export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
@@ -443,7 +448,7 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
   if (existing) {
     const next = { ...existing, status };
-    store.put(committing ? withResolvedBucket(next, memory) : withClearedAutoBucket(next));
+    store.put(committing ? withResolvedBucket(next, memory) : withClearedNonManualBucket(next));
   }
   await done(tx);
 }
@@ -595,7 +600,7 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
   transactionIds.forEach((id, i) => {
     tx.objectStore(DECISION_STORE).delete(id);
     const existing = rows[i];
-    if (existing) txStore.put(withClearedAutoBucket({ ...existing, status: 'new' }));
+    if (existing) txStore.put(withClearedNonManualBucket({ ...existing, status: 'new' }));
   });
   await done(tx);
 }

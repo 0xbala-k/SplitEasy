@@ -869,4 +869,41 @@ describe('materializing buckets on commit, and manual re-tagging (IndexedDB)', (
     expect(rows.find((r) => r.id === 'r1')!.bucket ?? null).toBeNull();
     expect(rows.find((r) => r.id === 'r2')!.bucket).toBe('shopping');
   });
+
+  test('web: reverting to new drops a vacation bucket too, and does not strand the row in Travel', async () => {
+    const v = await createVacation({ name: 'Trip3', start_date: '2026-11-01', end_date: '2026-11-08' });
+    await upsertTransactions([plaidTx('r3', { merchant_name: 'Best Buy' })]);
+    await assignTransactionsToVacation(v.id, ['r3']);
+    await updateTransactionStatus('r3', 'skipped');
+    const [committed] = await getTransactionsByIds(['r3']);
+    expect(committed.bucket).toBe('travel');
+    expect(committed.bucket_source).toBe('vacation');
+
+    // Revert the split/skip — this is the step that used to leave a stale
+    // 'vacation' bucket in place because the old predicate only cleared
+    // 'auto'.
+    await updateTransactionStatus('r3', 'new');
+    const [reverted] = await getTransactionsByIds(['r3']);
+    expect(reverted.bucket ?? null).toBeNull();
+    expect(reverted.bucket_source ?? null).toBeNull();
+
+    // End-to-end strand check: now remove it from the vacation entirely.
+    // removeTransactionFromVacation only requires status = 'new' and nulls
+    // vacation_id without touching bucket, so if the revert above had left
+    // the 'vacation' bucket in place, resolveBucket's rule 1 (vacation_id)
+    // would no longer fire and rule 2 (an existing bucket) would return the
+    // stale 'travel' as 'manual' forever — permanently stranding the row in
+    // Travel with no way out. Assert that does not happen.
+    await removeTransactionFromVacation('r3');
+    const [removed] = await getTransactionsByIds(['r3']);
+    expect(removed.vacation_id ?? null).toBeNull();
+    expect(removed.bucket ?? null).toBeNull();
+
+    // And it must re-resolve cleanly if committed again, rather than being
+    // stuck on the stale value.
+    await updateTransactionStatus('r3', 'skipped');
+    const [recommitted] = await getTransactionsByIds(['r3']);
+    expect(recommitted.bucket).toBe('shopping'); // Best Buy, via keyword
+    expect(recommitted.bucket_source).toBe('auto');
+  });
 });
