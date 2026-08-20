@@ -36,6 +36,8 @@ import {
   markTransactionsReversed,
   getReviewTransactions,
   clearReview,
+  getMerchantBuckets,
+  setMerchantBucket,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { VacationConflictError } from '@/lib/vacationErrors';
@@ -214,7 +216,7 @@ test('initDb migrates a v1 install by adding both pending and description column
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 5')
+    expect.stringContaining('user_version = 6')
   );
 });
 
@@ -225,7 +227,7 @@ test('initDb migrates an existing v2 install by adding the description column', 
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 5')
+    expect.stringContaining('user_version = 6')
   );
 });
 
@@ -239,7 +241,7 @@ test('initDb migrates an existing v4 install by adding review columns', async ()
     expect.stringContaining('ALTER TABLE transactions ADD COLUMN amount_changed_from')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 5')
+    expect.stringContaining('user_version = 6')
   );
 });
 
@@ -870,4 +872,71 @@ describe('vacation transaction capture & history', () => {
     expect(endActiveIdx).toBeGreaterThanOrEqual(0);
     expect(activateIdx).toBeGreaterThan(endActiveIdx);
   });
+});
+
+test('migration v6 adds bucket columns and the merchant_buckets table', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 5 });
+  await initDb();
+  const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
+  expect(sql).toContain('ADD COLUMN bucket TEXT');
+  expect(sql).toContain('ADD COLUMN bucket_source TEXT');
+  expect(sql).toContain('ADD COLUMN plaid_category TEXT');
+  expect(sql).toContain('CREATE TABLE IF NOT EXISTS merchant_buckets');
+  expect(sql).toContain('PRAGMA user_version = 6');
+});
+
+test('migration v6 columns are added on a fresh install too', async () => {
+  // A version-0 database does not get these columns from the base CREATE
+  // TABLE, so the ALTERs must not be gated behind version >= 1.
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 0 });
+  await initDb();
+  const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
+  expect(sql).toContain('ADD COLUMN bucket TEXT');
+  expect(sql).toContain('ADD COLUMN plaid_category TEXT');
+});
+
+test('initDb runs no migration when already at version 6', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 6 });
+  await initDb();
+  const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
+  expect(sql).not.toContain('ADD COLUMN bucket TEXT');
+  expect(sql).not.toContain('PRAGMA user_version = 6');
+});
+
+test('upsertTransactions stores the detailed Plaid category', async () => {
+  await initDb();
+  await upsertTransactions([{
+    transaction_id: 'ptx9', merchant_name: 'Safeway', name: 'SAFEWAY', amount: 42,
+    iso_currency_code: 'USD', date: '2026-08-10', pending: false,
+    personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+  }]);
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT OR IGNORE'),
+    expect.arrayContaining(['FOOD_AND_DRINK_GROCERIES'])
+  );
+});
+
+test('upsertTransactions stores null when Plaid sends no category', async () => {
+  await initDb();
+  await upsertTransactions([{
+    transaction_id: 'ptx10', merchant_name: 'Mystery', name: 'MYSTERY', amount: 5,
+    iso_currency_code: 'USD', date: '2026-08-10', pending: false,
+  }]);
+  const insert = mockDb.runAsync.mock.calls.find(([s]: [string]) => s.includes('INSERT OR IGNORE'));
+  expect(insert![1]).toContain(null);
+});
+
+test('setMerchantBucket upserts and getMerchantBuckets returns a keyed map', async () => {
+  await initDb();
+  await setMerchantBucket('starbucks', 'needs');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT INTO merchant_buckets'),
+    expect.arrayContaining(['starbucks', 'needs'])
+  );
+
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { merchant_key: 'starbucks', bucket: 'needs' },
+    { merchant_key: 'amazon', bucket: 'shopping' },
+  ]);
+  await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'needs', amazon: 'shopping' });
 });

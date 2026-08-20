@@ -5,6 +5,7 @@ import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
 import { VacationConflictError } from '@/lib/vacationErrors';
+import { Bucket } from '@/lib/buckets';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -111,11 +112,26 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     await d.execAsync(`ALTER TABLE transactions ADD COLUMN review_reason TEXT;`);
     await d.execAsync(`ALTER TABLE transactions ADD COLUMN amount_changed_from REAL;`);
   }
+  if (version < 6) {
+    // Same rationale as vacation_id above: these columns are not in the base
+    // `version < 1` CREATE TABLE, so these ALTERs must run ungated so a fresh
+    // install (version 0) gets them too.
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN bucket TEXT;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN bucket_source TEXT;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN plaid_category TEXT;`);
+    await d.execAsync(`
+      CREATE TABLE IF NOT EXISTS merchant_buckets (
+        merchant_key TEXT PRIMARY KEY,
+        bucket       TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+    `);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 5) {
-    await d.execAsync(`PRAGMA user_version = 5;`);
+  if (version < 6) {
+    await d.execAsync(`PRAGMA user_version = 6;`);
   }
   return d;
 }
@@ -384,19 +400,39 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
     const name = tx.merchant_name ?? tx.name;
     const currency = tx.iso_currency_code ?? 'USD';
     const pending = tx.pending ? 1 : 0;
+    const category = tx.personal_finance_category?.detailed ?? null;
     // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped rows
     await d.runAsync(
-      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id)
-       VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?)`,
-      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId]
+      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id, plaid_category)
+       VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)`,
+      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId, category]
     );
     // UPDATE only if still 'new' (don't overwrite user decisions)
     await d.runAsync(
-      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?
+      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?, plaid_category = ?
        WHERE id = ? AND status = 'new'`,
-      [name, tx.amount, tx.date, pending, tx.transaction_id]
+      [name, tx.amount, tx.date, pending, category, tx.transaction_id]
     );
   }
+}
+
+/** Every learned merchant → bucket override, keyed by normalized merchant name. */
+export async function getMerchantBuckets(): Promise<Record<string, Bucket>> {
+  const rows = await (await dbReady()).getAllAsync<{ merchant_key: string; bucket: Bucket }>(
+    `SELECT merchant_key, bucket FROM merchant_buckets`,
+    []
+  );
+  return Object.fromEntries(rows.map((r) => [r.merchant_key, r.bucket]));
+}
+
+/** Remember that this merchant belongs in this bucket, for future transactions. */
+export async function setMerchantBucket(merchantKey: string, bucket: Bucket): Promise<void> {
+  if (!merchantKey) return;
+  await (await dbReady()).runAsync(
+    `INSERT INTO merchant_buckets (merchant_key, bucket, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(merchant_key) DO UPDATE SET bucket = excluded.bucket, updated_at = excluded.updated_at`,
+    [merchantKey, bucket, new Date().toISOString()]
+  );
 }
 
 export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void> {

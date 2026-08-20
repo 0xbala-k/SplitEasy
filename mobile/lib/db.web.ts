@@ -9,12 +9,14 @@ import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
 import { VacationConflictError } from '@/lib/vacationErrors';
+import { Bucket } from '@/lib/buckets';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';
+const MERCHANT_STORE = 'merchant_buckets';
 
 let _db: IDBDatabase | null = null;
 let _opening: Promise<IDBDatabase> | null = null;
@@ -86,6 +88,11 @@ function openDatabase(): Promise<IDBDatabase> {
       }
       if (!d.objectStoreNames.contains(VACATION_STORE)) {
         d.createObjectStore(VACATION_STORE, { keyPath: 'id' });
+      }
+      if (!d.objectStoreNames.contains(MERCHANT_STORE)) {
+        // Keyed by the normalized merchant name, mirroring the SQLite
+        // merchant_buckets PRIMARY KEY.
+        d.createObjectStore(MERCHANT_STORE, { keyPath: 'merchant_key' });
       }
     };
     // A version bump can't proceed while another tab holds an older-version
@@ -356,6 +363,7 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
   for (const p of txs) {
     const existing = await req(store.get(p.transaction_id) as IDBRequest<Transaction | undefined>);
     const name = p.merchant_name ?? p.name;
+    const category = p.personal_finance_category?.detailed ?? null;
     if (!existing) {
       store.put({
         id: p.transaction_id,
@@ -367,13 +375,38 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
         pending: p.pending,
         created_at: now,
         vacation_id: activeVacationId,
+        plaid_category: category,
       } satisfies Transaction);
     } else if (existing.status === 'new') {
       // Mirror the SQL UPDATE: refresh mutable fields, never touch status of
       // already-split/skipped rows.
-      store.put({ ...existing, merchant_name: name, amount: p.amount, date: p.date, pending: p.pending });
+      store.put({
+        ...existing,
+        merchant_name: name, amount: p.amount, date: p.date, pending: p.pending,
+        plaid_category: category,
+      });
     }
   }
+  await done(tx);
+}
+
+export async function getMerchantBuckets(): Promise<Record<string, Bucket>> {
+  const tx = (await dbReady()).transaction(MERCHANT_STORE, 'readonly');
+  const rows = await req(
+    tx.objectStore(MERCHANT_STORE).getAll() as IDBRequest<{ merchant_key: string; bucket: Bucket }[]>
+  );
+  await done(tx);
+  return Object.fromEntries(rows.map((r) => [r.merchant_key, r.bucket]));
+}
+
+export async function setMerchantBucket(merchantKey: string, bucket: Bucket): Promise<void> {
+  if (!merchantKey) return;
+  const tx = (await dbReady()).transaction(MERCHANT_STORE, 'readwrite');
+  tx.objectStore(MERCHANT_STORE).put({
+    merchant_key: merchantKey,
+    bucket,
+    updated_at: new Date().toISOString(),
+  });
   await done(tx);
 }
 

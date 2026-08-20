@@ -10,6 +10,7 @@ import {
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
   removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
+  getMerchantBuckets, setMerchantBucket,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -716,5 +717,39 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
     await reconcileVacationStatuses();
     expect((await getVacation(a.id))?.status).toBe('ended');
     expect((await getVacation(b.id))?.status).toBe('active');
+  });
+});
+
+describe('stored Plaid category and merchant memory (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: upsertTransactions stores the detailed Plaid category', async () => {
+    await upsertTransactions([plaidTx('w1', {
+      personal_finance_category: { primary: 'ENTERTAINMENT', detailed: 'ENTERTAINMENT_VIDEO_GAMES' },
+    })]);
+    const [tx] = await getTransactionsByIds(['w1']);
+    expect(tx.plaid_category).toBe('ENTERTAINMENT_VIDEO_GAMES');
+  });
+
+  test('web: upsertTransactions stores null when Plaid sends no category', async () => {
+    await upsertTransactions([plaidTx('w2')]);
+    const [tx] = await getTransactionsByIds(['w2']);
+    expect(tx.plaid_category ?? null).toBeNull();
+  });
+
+  test('web: merchant memory round-trips', async () => {
+    await setMerchantBucket('starbucks', 'needs');
+    await setMerchantBucket('amazon', 'shopping');
+    await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'needs', amazon: 'shopping' });
+  });
+
+  test('web: setMerchantBucket overwrites an existing key', async () => {
+    await setMerchantBucket('starbucks', 'needs');
+    await setMerchantBucket('starbucks', 'food');
+    await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'food' });
   });
 });
