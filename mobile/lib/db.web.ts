@@ -8,8 +8,8 @@ import {
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
-import { VacationConflictError } from '@/lib/vacationErrors';
-import { Bucket } from '@/lib/buckets';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
+import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 
 const DB_NAME = 'spliteasy';
 const DB_VERSION = 3;
@@ -421,11 +421,30 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
   await done(tx);
 }
 
+function withResolvedBucket(row: Transaction, memory: Record<string, Bucket>): Transaction {
+  const { bucket, source } = resolveBucket(row, memory);
+  return { ...row, bucket, bucket_source: source };
+}
+
+// Reverting to 'new' drops an auto guess but keeps a manual choice.
+function withClearedAutoBucket(row: Transaction): Transaction {
+  return row.bucket_source === 'auto' ? { ...row, bucket: null, bucket_source: null } : row;
+}
+
 export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
+  const committing = status === 'split' || status === 'skipped';
+  // Read the memory first: getMerchantBuckets opens its own IDB transaction,
+  // and awaiting it inside the readwrite one below would let that transaction
+  // auto-commit out from under us.
+  const memory = committing ? await getMerchantBuckets() : {};
+
   const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
-  if (existing) store.put({ ...existing, status });
+  if (existing) {
+    const next = { ...existing, status };
+    store.put(committing ? withResolvedBucket(next, memory) : withClearedAutoBucket(next));
+  }
   await done(tx);
 }
 
@@ -542,6 +561,10 @@ export async function deleteSplitDecision(transactionId: string): Promise<void> 
 // withTransactionAsync version: any failure aborts the whole group.
 export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<void> {
   if (decisions.length === 0) return;
+  // Read the merchant memory before opening the readwrite transaction below —
+  // getMerchantBuckets opens its own IDB transaction, and awaiting it inside
+  // this one would let this one auto-commit out from under us.
+  const memory = await getMerchantBuckets();
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   // Read every row up front, then issue all writes: a write that fails aborts
@@ -555,7 +578,7 @@ export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<
     // UNIQUE(transaction_id) constraint.
     tx.objectStore(DECISION_STORE).add(d);
     const existing = rows[i];
-    if (existing) txStore.put({ ...existing, status: 'split' });
+    if (existing) txStore.put(withResolvedBucket({ ...existing, status: 'split' }, memory));
   });
   await done(tx);
 }
@@ -572,9 +595,28 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
   transactionIds.forEach((id, i) => {
     tx.objectStore(DECISION_STORE).delete(id);
     const existing = rows[i];
-    if (existing) txStore.put({ ...existing, status: 'new' });
+    if (existing) txStore.put(withClearedAutoBucket({ ...existing, status: 'new' }));
   });
   await done(tx);
+}
+
+/**
+ * Move a transaction to a bucket by hand, and remember the merchant for next
+ * time. Forward-only: transactions already committed under the old bucket are
+ * left alone, so a month the user has already reviewed keeps its numbers.
+ */
+export async function setTransactionBucket(id: string, bucket: Bucket): Promise<void> {
+  const read = (await dbReady()).transaction(TX_STORE, 'readonly');
+  const row = await req(read.objectStore(TX_STORE).get(id) as IDBRequest<Transaction | undefined>);
+  await done(read);
+  if (!row) return;
+  if (row.vacation_id) throw new BucketLockedError();
+
+  const write = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  write.objectStore(TX_STORE).put({ ...row, bucket, bucket_source: 'manual' });
+  await done(write);
+
+  await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
 export async function pruneOldTransactions(): Promise<void> {

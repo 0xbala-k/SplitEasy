@@ -10,11 +10,11 @@ import {
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
   removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
-  getMerchantBuckets, setMerchantBucket,
+  getMerchantBuckets, setMerchantBucket, setTransactionBucket,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
-import { VacationConflictError } from '@/lib/vacationErrors';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 
 // Relative calendar dates have to be built in local time, the same way
 // reconcileVacationStatuses computes "today". Deriving them from
@@ -751,5 +751,122 @@ describe('stored Plaid category and merchant memory (IndexedDB)', () => {
     await setMerchantBucket('starbucks', 'needs');
     await setMerchantBucket('starbucks', 'food');
     await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'food' });
+  });
+});
+
+describe('materializing buckets on commit, and manual re-tagging (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: skipping materializes an auto bucket from the Plaid category', async () => {
+    await upsertTransactions([plaidTx('b1', {
+      merchant_name: 'Safeway',
+      personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+    })]);
+    await updateTransactionStatus('b1', 'skipped');
+    const [tx] = await getTransactionsByIds(['b1']);
+    expect(tx.bucket).toBe('needs');
+    expect(tx.bucket_source).toBe('auto');
+  });
+
+  test('web: an uncommitted transaction has no bucket', async () => {
+    await upsertTransactions([plaidTx('b2', { merchant_name: 'Safeway' })]);
+    const [tx] = await getTransactionsByIds(['b2']);
+    expect(tx.bucket ?? null).toBeNull();
+  });
+
+  test('web: merchant memory beats the Plaid category at commit time', async () => {
+    await setMerchantBucket('safeway', 'shopping');
+    await upsertTransactions([plaidTx('b3', {
+      merchant_name: 'Safeway',
+      personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+    })]);
+    await updateTransactionStatus('b3', 'skipped');
+    const [tx] = await getTransactionsByIds(['b3']);
+    expect(tx.bucket).toBe('shopping');
+  });
+
+  test('web: a pre-commit manual tag survives the commit', async () => {
+    await upsertTransactions([plaidTx('b4', {
+      merchant_name: 'Safeway',
+      personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+    })]);
+    await setTransactionBucket('b4', 'experiences');
+    await updateTransactionStatus('b4', 'split');
+    const [tx] = await getTransactionsByIds(['b4']);
+    expect(tx.bucket).toBe('experiences');
+    expect(tx.bucket_source).toBe('manual');
+  });
+
+  test('web: a vacation transaction commits to travel regardless of category', async () => {
+    const v = await createVacation({ name: 'Trip', start_date: '2026-09-01', end_date: '2026-09-08' });
+    await upsertTransactions([plaidTx('b5', {
+      merchant_name: 'Best Buy',
+      personal_finance_category: { primary: 'GENERAL_MERCHANDISE', detailed: 'GENERAL_MERCHANDISE_ELECTRONICS' },
+    })]);
+    await assignTransactionsToVacation(v.id, ['b5']);
+    await updateTransactionStatus('b5', 'skipped');
+    const [tx] = await getTransactionsByIds(['b5']);
+    expect(tx.bucket).toBe('travel');
+    expect(tx.bucket_source).toBe('vacation');
+  });
+
+  test('web: setTransactionBucket refuses to re-tag a vacation transaction', async () => {
+    const v = await createVacation({ name: 'Trip2', start_date: '2026-10-01', end_date: '2026-10-08' });
+    await upsertTransactions([plaidTx('b6')]);
+    await assignTransactionsToVacation(v.id, ['b6']);
+    await expect(setTransactionBucket('b6', 'food')).rejects.toThrow(BucketLockedError);
+  });
+
+  test('web: setTransactionBucket teaches the merchant memory', async () => {
+    await upsertTransactions([plaidTx('b7', { merchant_name: 'STARBUCKS #4471' })]);
+    await setTransactionBucket('b7', 'needs');
+    await expect(getMerchantBuckets()).resolves.toMatchObject({ starbucks: 'needs' });
+  });
+
+  test('web: re-tagging is forward-only and leaves already-bucketed rows alone', async () => {
+    await upsertTransactions([
+      plaidTx('b8', { merchant_name: 'Chipotle' }),
+      plaidTx('b9', { merchant_name: 'Chipotle' }),
+    ]);
+    await updateTransactionStatus('b8', 'skipped');   // commits as food, via keyword
+    await updateTransactionStatus('b9', 'skipped');
+    await setTransactionBucket('b9', 'needs');        // re-tag one of them
+    const [older] = await getTransactionsByIds(['b8']);
+    expect(older.bucket).toBe('food');                // unchanged
+  });
+
+  test('web: combined splits materialize a bucket for every member', async () => {
+    await upsertTransactions([
+      plaidTx('c1', { merchant_name: 'Chipotle', amount: 20 }),
+      plaidTx('c2', { merchant_name: 'AMC Theatres', amount: 30 }),
+    ]);
+    await persistCombinedSplit([
+      { id: 'd1', transaction_id: 'c1', splitwise_expense_id: 'e1', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-01T00:00:00Z' },
+      { id: 'd2', transaction_id: 'c2', splitwise_expense_id: 'e1', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-01T00:00:00Z' },
+    ]);
+    const rows = await getTransactionsByIds(['c1', 'c2']);
+    expect(rows.find((r) => r.id === 'c1')!.bucket).toBe('food');
+    expect(rows.find((r) => r.id === 'c2')!.bucket).toBe('experiences');
+  });
+
+  test('web: reverting to new drops an auto bucket but keeps a manual one', async () => {
+    await upsertTransactions([
+      plaidTx('r1', { merchant_name: 'Chipotle' }),
+      plaidTx('r2', { merchant_name: 'Chipotle' }),
+    ]);
+    await updateTransactionStatus('r1', 'skipped');
+    await setTransactionBucket('r2', 'shopping');
+    await updateTransactionStatus('r2', 'skipped');
+
+    await updateTransactionStatus('r1', 'new');
+    await updateTransactionStatus('r2', 'new');
+
+    const rows = await getTransactionsByIds(['r1', 'r2']);
+    expect(rows.find((r) => r.id === 'r1')!.bucket ?? null).toBeNull();
+    expect(rows.find((r) => r.id === 'r2')!.bucket).toBe('shopping');
   });
 });

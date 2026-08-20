@@ -38,9 +38,10 @@ import {
   clearReview,
   getMerchantBuckets,
   setMerchantBucket,
+  setTransactionBucket,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
-import { VacationConflictError } from '@/lib/vacationErrors';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 
 const mockDb = {
   execAsync: jest.fn().mockResolvedValue(undefined),
@@ -939,4 +940,46 @@ test('setMerchantBucket upserts and getMerchantBuckets returns a keyed map', asy
     { merchant_key: 'amazon', bucket: 'shopping' },
   ]);
   await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'needs', amazon: 'shopping' });
+});
+
+test('updateTransactionStatus materializes a bucket when committing', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([]); // merchant_buckets
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Safeway', plaid_category: 'FOOD_AND_DRINK_GROCERIES', bucket: null, vacation_id: null },
+  ]);
+  await updateTransactionStatus('tx1', 'skipped');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('SET bucket = ?, bucket_source = ?'),
+    ['needs', 'auto', 'tx1']
+  );
+});
+
+test('updateTransactionStatus clears an auto bucket when reverting to new', async () => {
+  await initDb();
+  await updateTransactionStatus('tx1', 'new');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining("bucket_source = 'auto'"),
+    ['tx1']
+  );
+});
+
+test('setTransactionBucket writes the bucket and teaches the merchant', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({ merchant_name: 'STARBUCKS #4471', vacation_id: null });
+  await setTransactionBucket('tx1', 'needs');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining("bucket_source = 'manual'"),
+    ['needs', 'tx1']
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT INTO merchant_buckets'),
+    expect.arrayContaining(['starbucks', 'needs'])
+  );
+});
+
+test('setTransactionBucket rejects a vacation transaction', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({ merchant_name: 'Cafe', vacation_id: 'v1' });
+  await expect(setTransactionBucket('tx1', 'food')).rejects.toThrow(BucketLockedError);
 });

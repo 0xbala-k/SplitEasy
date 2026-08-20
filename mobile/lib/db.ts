@@ -4,8 +4,8 @@ import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, Histor
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
-import { VacationConflictError } from '@/lib/vacationErrors';
-import { Bucket } from '@/lib/buckets';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
+import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -451,11 +451,67 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
   );
 }
 
-export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
-  await (await dbReady()).runAsync(
-    `UPDATE transactions SET status = ? WHERE id = ?`,
-    [status, id]
+// Resolve and write the bucket for rows being committed. Called from
+// updateTransactionStatus, which every commit path funnels through — including
+// persistCombinedSplit, which calls it per member inside its own transaction.
+async function materializeBuckets(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const d = await dbReady();
+  const memory = await getMerchantBuckets();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await d.getAllAsync<{
+    id: string; merchant_name: string; plaid_category: string | null;
+    bucket: Bucket | null; vacation_id: string | null;
+  }>(
+    `SELECT id, merchant_name, plaid_category, bucket, vacation_id
+     FROM transactions WHERE id IN (${placeholders})`,
+    ids
   );
+  for (const r of rows) {
+    const { bucket, source } = resolveBucket(r, memory);
+    await d.runAsync(
+      `UPDATE transactions SET bucket = ?, bucket_source = ? WHERE id = ?`,
+      [bucket, source, r.id]
+    );
+  }
+}
+
+export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
+  const d = await dbReady();
+  await d.runAsync(`UPDATE transactions SET status = ? WHERE id = ?`, [status, id]);
+  if (status === 'split' || status === 'skipped') {
+    await materializeBuckets([id]);
+  } else {
+    // Back to 'new': drop an auto guess so it re-resolves against current
+    // merchant memory if it is committed again. A manual choice is the user's
+    // and survives.
+    await d.runAsync(
+      `UPDATE transactions SET bucket = NULL, bucket_source = NULL
+       WHERE id = ? AND bucket_source = 'auto'`,
+      [id]
+    );
+  }
+}
+
+/**
+ * Move a transaction to a bucket by hand, and remember the merchant for next
+ * time. Forward-only: transactions already committed under the old bucket are
+ * left alone, so a month the user has already reviewed keeps its numbers.
+ */
+export async function setTransactionBucket(id: string, bucket: Bucket): Promise<void> {
+  const d = await dbReady();
+  const row = await d.getFirstAsync<{ merchant_name: string; vacation_id: string | null }>(
+    `SELECT merchant_name, vacation_id FROM transactions WHERE id = ?`,
+    [id]
+  );
+  if (!row) return;
+  if (row.vacation_id) throw new BucketLockedError();
+
+  await d.runAsync(
+    `UPDATE transactions SET bucket = ?, bucket_source = 'manual' WHERE id = ?`,
+    [bucket, id]
+  );
+  await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
 // Rekey a pending transaction's row to the id Plaid assigns once it posts.
