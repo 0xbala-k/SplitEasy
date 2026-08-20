@@ -10,6 +10,7 @@ import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
+import { SpendRow } from '@/lib/spend';
 
 const DB_NAME = 'spliteasy';
 const DB_VERSION = 3;
@@ -749,6 +750,53 @@ export async function updateVacationDates(
   const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
   if (existing) store.put({ ...existing, start_date: startDate, end_date: endDate });
   await done(tx);
+}
+
+/**
+ * Every committed, bucketed transaction, joined to its split decision and its
+ * vacation. `bucket` truthy is what excludes both uncommitted transactions
+ * and everything that predates the spending tracker — mirrors lib/db.ts's
+ * `bucket IS NOT NULL`.
+ *
+ * The vacation join supplies the dates monthKeyOf needs, so editing a trip's
+ * dates moves its whole spend to the new month without a rewrite.
+ */
+export async function getSpendingRows(): Promise<SpendRow[]> {
+  const d = await dbReady();
+  const tx = d.transaction([TX_STORE, DECISION_STORE, VACATION_STORE], 'readonly');
+  const [txs, decisions, vacations] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+    req(tx.objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>),
+  ]);
+  await done(tx);
+
+  const byTxId = new Map(decisions.map((d2) => [d2.transaction_id, d2]));
+  const byVacationId = new Map(vacations.map((v) => [v.id, v]));
+
+  return txs
+    .filter((t) => (t.status === 'split' || t.status === 'skipped') && t.bucket)
+    .map((t) => {
+      const decision = byTxId.get(t.id);
+      const vacation = t.vacation_id ? byVacationId.get(t.vacation_id) : undefined;
+      return {
+        id: t.id,
+        merchant_name: t.merchant_name,
+        amount: t.amount,
+        currency: t.currency,
+        date: t.date,
+        status: t.status as 'split' | 'skipped',
+        bucket: t.bucket!,
+        bucket_source: t.bucket_source ?? 'auto',
+        splitwise_expense_id: decision?.splitwise_expense_id ?? null,
+        amount_each: decision?.amount_each ?? null,
+        vacation_id: t.vacation_id ?? null,
+        vacation_start_date: vacation?.start_date ?? null,
+        vacation_started_at: vacation?.started_at ?? null,
+        vacation_created_at: vacation?.created_at ?? null,
+      } satisfies SpendRow;
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 }
 
 export async function deleteVacation(id: string): Promise<void> {

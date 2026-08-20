@@ -10,7 +10,7 @@ import {
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
   removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
-  getMerchantBuckets, setMerchantBucket, setTransactionBucket,
+  getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -905,5 +905,43 @@ describe('materializing buckets on commit, and manual re-tagging (IndexedDB)', (
     const [recommitted] = await getTransactionsByIds(['r3']);
     expect(recommitted.bucket).toBe('shopping'); // Best Buy, via keyword
     expect(recommitted.bucket_source).toBe('auto');
+  });
+});
+
+describe('getSpendingRows (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: getSpendingRows returns only committed, bucketed rows', async () => {
+    await upsertTransactions([
+      plaidTx('s1', { merchant_name: 'Chipotle' }),
+      plaidTx('s2', { merchant_name: 'Safeway' }),
+      plaidTx('s3', { merchant_name: 'Uncommitted' }),
+    ]);
+    await updateTransactionStatus('s1', 'skipped');
+    await updateTransactionStatus('s2', 'skipped');
+    const rows = await getSpendingRows();
+    expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2']);
+  });
+
+  test('web: getSpendingRows joins the split decision and the vacation', async () => {
+    const v = await createVacation({ name: 'Trip', start_date: '2026-09-01', end_date: '2026-09-08' });
+    await upsertTransactions([plaidTx('s4', { amount: 50 })]);
+    await assignTransactionsToVacation(v.id, ['s4']);
+    await insertSplitDecision({
+      id: 'd4', transaction_id: 's4', splitwise_expense_id: 'e4',
+      friend_ids: ['f1'], friend_names: ['A'], amount_each: 25,
+      created_at: '2026-08-01T00:00:00Z',
+    });
+    await updateTransactionStatus('s4', 'split');
+
+    const row = (await getSpendingRows()).find((r) => r.id === 's4')!;
+    expect(row.splitwise_expense_id).toBe('e4');
+    expect(row.amount_each).toBe(25);
+    expect(row.vacation_start_date).toBe('2026-09-01');
+    expect(row.bucket).toBe('travel');
   });
 });

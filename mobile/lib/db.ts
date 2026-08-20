@@ -6,6 +6,7 @@ import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
+import { SpendRow } from '@/lib/spend';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -851,6 +852,31 @@ export async function updateVacationDates(
   await d.runAsync(
     `UPDATE vacations SET start_date = ?, end_date = ? WHERE id = ?`,
     [startDate, endDate, id]
+  );
+}
+
+/**
+ * Every committed, bucketed transaction, joined to its split decision and its
+ * vacation. `bucket IS NOT NULL` is what excludes both uncommitted
+ * transactions and everything that predates the spending tracker.
+ *
+ * The vacation join supplies the dates monthKeyOf needs, so editing a trip's
+ * dates moves its whole spend to the new month without a rewrite.
+ */
+export async function getSpendingRows(): Promise<SpendRow[]> {
+  return (await dbReady()).getAllAsync<SpendRow>(
+    `SELECT t.id, t.merchant_name, t.amount, t.currency, t.date, t.status,
+            t.bucket, t.bucket_source, t.vacation_id,
+            s.splitwise_expense_id, s.amount_each,
+            v.start_date  AS vacation_start_date,
+            v.started_at  AS vacation_started_at,
+            v.created_at  AS vacation_created_at
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     LEFT JOIN vacations v       ON v.id = t.vacation_id
+     WHERE t.status IN ('split','skipped') AND t.bucket IS NOT NULL
+     ORDER BY t.date DESC`,
+    []
   );
 }
 
