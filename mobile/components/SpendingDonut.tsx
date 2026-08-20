@@ -74,6 +74,17 @@ export function computeSlices(inputs: SliceInput[]): Slice[] {
   });
 }
 
+/**
+ * A slice with real spending can still round to 0% (e.g. a $0.01 slice in a
+ * $1,000 month). Announcing "0%" there is indistinguishable from the
+ * genuinely-empty state, so floor it to "less than 1%" instead.
+ */
+function spendingShareLabel(fraction: number): string {
+  const rounded = Math.round(fraction * 100);
+  if (fraction > 0 && rounded === 0) return 'less than 1% of spending';
+  return `${rounded}% of spending`;
+}
+
 interface Props {
   slices: SliceInput[];
   centerLabel: string;
@@ -136,7 +147,7 @@ export default function SpendingDonut({
               style={[styles.hit, { backgroundColor: s.color, flex: s.fraction }]}
               onPress={() => onSlicePress?.(s.key)}
               accessibilityRole="button"
-              accessibilityLabel={`${s.label}, ${Math.round(s.fraction * 100)}% of spending`}
+              accessibilityLabel={`${s.label}, ${spendingShareLabel(s.fraction)}`}
             />
           ))
         )}

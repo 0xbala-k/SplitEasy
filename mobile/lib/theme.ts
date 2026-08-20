@@ -1,3 +1,5 @@
+import type { Bucket, BucketGroup } from '@/lib/buckets';
+
 // Design tokens for SplitEasy — sourced from ui-ux-pro-max design system
 export const Colors = {
   primary: '#2563EB',
@@ -69,7 +71,7 @@ export const Spacing = {
 // Spending buckets. The three `wants` buckets share the amber family so the
 // group still reads as one wedge when the donut is drilled in, while Travel,
 // Needs, and Misc stay clearly distinct from them and from each other.
-export const BucketColors = {
+export const BucketColors: Record<Bucket, string> = {
   travel: '#0EA5E9',
   needs: '#2563EB',
   food: '#F59E0B',
@@ -78,7 +80,7 @@ export const BucketColors = {
   misc: '#94A3B8',
 };
 
-export const GroupColors = {
+export const GroupColors: Record<BucketGroup, string> = {
   travel: '#0EA5E9',
   needs: '#2563EB',
   wants: '#F59E0B',

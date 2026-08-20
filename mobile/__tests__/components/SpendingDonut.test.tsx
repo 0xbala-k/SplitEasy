@@ -61,4 +61,16 @@ describe('SpendingDonut', () => {
     render(<SpendingDonut slices={[]} centerLabel="$0.00" centerCaption="August 2026" />);
     expect(screen.getByLabelText('No spending this month')).toBeTruthy();
   });
+
+  it('floors a slice that rounds to 0% instead of announcing 0%', () => {
+    // 1 cent out of $100 rounds to 0%, but it is real spending, not the
+    // empty state — a screen reader must not conflate the two.
+    const tiny = [
+      { key: 'misc', label: 'Misc', cents: 1, color: '#94A3B8' },
+      { key: 'needs', label: 'Needs', cents: 9999, color: '#2563EB' },
+    ];
+    render(<SpendingDonut slices={tiny} centerLabel="$100.00" centerCaption="August 2026" />);
+    expect(screen.getByLabelText('Misc, less than 1% of spending')).toBeTruthy();
+    expect(screen.queryByLabelText('Misc, 0% of spending')).toBeNull();
+  });
 });
