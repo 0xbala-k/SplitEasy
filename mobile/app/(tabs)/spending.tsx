@@ -163,27 +163,8 @@ export default function SpendingScreen() {
                     accessibilityLabel={`${BUCKET_LABEL[b]}, ${formatCents(month.byBucket[b], month.currency)}`}
                   >
                     <View style={[styles.dot, { backgroundColor: BucketColors[b] }]} />
-                    {/*
-                      The Pressable's own accessibilityLabel above already says
-                      "Food, $40.00" in full, so these two Texts are purely
-                      visual — hiding them from the accessibility tree stops a
-                      screen reader (or an RNTL query) from hitting the same
-                      "$40.00" twice, once here and once as the donut's total.
-                    */}
-                    <Text
-                      style={styles.bucketName}
-                      numberOfLines={1}
-                      importantForAccessibility="no-hide-descendants"
-                      accessibilityElementsHidden
-                    >
-                      {BUCKET_LABEL[b]}
-                    </Text>
-                    <Text
-                      style={styles.bucketAmount}
-                      numberOfLines={1}
-                      importantForAccessibility="no-hide-descendants"
-                      accessibilityElementsHidden
-                    >
+                    <Text style={styles.bucketName} numberOfLines={1}>{BUCKET_LABEL[b]}</Text>
+                    <Text style={styles.bucketAmount} numberOfLines={1}>
                       {formatCents(month.byBucket[b], month.currency)}
                     </Text>
                     <Ionicons
@@ -206,23 +187,8 @@ export default function SpendingScreen() {
                   accessibilityLabel={`${GROUP_LABEL[g]}, ${formatCents(month.byGroup[g], month.currency)}`}
                 >
                   <View style={[styles.dot, { backgroundColor: GroupColors[g] }]} />
-                  {/* See the comment on the drilled-in row above: hidden from
-                      the a11y tree because the Pressable's own label already
-                      carries this text in full. */}
-                  <Text
-                    style={styles.bucketName}
-                    numberOfLines={1}
-                    importantForAccessibility="no-hide-descendants"
-                    accessibilityElementsHidden
-                  >
-                    {GROUP_LABEL[g]}
-                  </Text>
-                  <Text
-                    style={styles.bucketAmount}
-                    numberOfLines={1}
-                    importantForAccessibility="no-hide-descendants"
-                    accessibilityElementsHidden
-                  >
+                  <Text style={styles.bucketName} numberOfLines={1}>{GROUP_LABEL[g]}</Text>
+                  <Text style={styles.bucketAmount} numberOfLines={1}>
                     {formatCents(month.byGroup[g], month.currency)}
                   </Text>
                   {GROUP_BUCKETS[g].length > 1 && (

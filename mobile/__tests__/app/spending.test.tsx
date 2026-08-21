@@ -86,7 +86,13 @@ test('footnotes a second currency instead of adding it in', async () => {
     row({ id: 'b', amount: 40, currency: 'EUR', date: '2026-08-03' }),
   ]);
   render(<SpendingScreen />);
-  await waitFor(() => expect(screen.getByText('$100.00')).toBeTruthy());
+  await waitFor(() => expect(screen.queryAllByText('$100.00').length).toBeGreaterThan(0));
+  // Both rows here land in `wants` (the default bucket), so the donut's total
+  // and the "Wants" row happen to show the identical figure — two separate
+  // "$100.00" Texts on screen. The donut total renders first in the tree, so
+  // [0] is the total this assertion actually means to check; a second,
+  // coincidental "$100.00" on the Wants row doesn't make the total wrong.
+  expect(screen.getAllByText('$100.00')[0]).toBeTruthy();
   expect(screen.getByText(/EUR/)).toBeTruthy();
 });
 
