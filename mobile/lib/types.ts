@@ -101,6 +101,10 @@ export interface HistoryItem {
   status: TransactionStatus;
   split?: { friend_names: string[]; amount_each: number };
   combined?: { expense_id: string; transaction_ids: string[]; count: number };
+  // Spending bucket, for the tag on the row. A combined row carries its first
+  // member's bucket; re-tagging the row moves every member.
+  bucket?: Bucket | null;
+  vacation_id?: string | null;
 }
 
 // A row in the "Needs review" queue: a transaction whose pending→posted

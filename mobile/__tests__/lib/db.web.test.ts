@@ -945,3 +945,32 @@ describe('getSpendingRows (IndexedDB)', () => {
     expect(row.bucket).toBe('travel');
   });
 });
+
+describe('history rows carry their bucket (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: history rows carry their bucket', async () => {
+    await upsertTransactions([plaidTx('h1', { merchant_name: 'Chipotle' })]);
+    await updateTransactionStatus('h1', 'skipped');
+    const item = (await getHistoryTransactions()).find((i) => i.id === 'h1')!;
+    expect(item.bucket).toBe('food');
+  });
+
+  test('web: a combined history row carries the first member bucket and its member ids', async () => {
+    await upsertTransactions([
+      plaidTx('h2', { merchant_name: 'Chipotle', amount: 20, date: '2026-08-02' }),
+      plaidTx('h3', { merchant_name: 'AMC Theatres', amount: 30, date: '2026-08-02' }),
+    ]);
+    await persistCombinedSplit([
+      { id: 'dh2', transaction_id: 'h2', splitwise_expense_id: 'eh', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-02T00:00:00Z' },
+      { id: 'dh3', transaction_id: 'h3', splitwise_expense_id: 'eh', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-02T00:00:00Z' },
+    ]);
+    const item = (await getHistoryTransactions()).find((i) => i.combined?.expense_id === 'eh')!;
+    expect(item.combined!.transaction_ids.sort()).toEqual(['h2', 'h3']);
+    expect(item.bucket).toBeTruthy();
+  });
+});

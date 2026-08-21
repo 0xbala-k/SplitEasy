@@ -151,6 +151,8 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
           date: t.date,
           status: 'split',
           split: { friend_names: d.friend_names ?? [], amount_each: d.amount_each ?? 0 },
+          bucket: t.bucket ?? null,
+          vacation_id: t.vacation_id ?? null,
           _txIds: [t.id],
         };
         groups.set(key, item);
@@ -167,6 +169,8 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
         ...(t.status === 'split' && d?.friend_names
           ? { split: { friend_names: d.friend_names, amount_each: d.amount_each ?? 0 } }
           : {}),
+        bucket: t.bucket ?? null,
+        vacation_id: t.vacation_id ?? null,
       });
     }
   }

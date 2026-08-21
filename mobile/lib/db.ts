@@ -186,6 +186,8 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
             friend_names: r.friend_names ? JSON.parse(r.friend_names) : [],
             amount_each: r.amount_each ?? 0,
           },
+          bucket: r.bucket ?? null,
+          vacation_id: r.vacation_id ?? null,
           _txIds: [r.id],
         };
         groups.set(key, item);
@@ -202,6 +204,8 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
         ...(r.status === 'split' && r.friend_names
           ? { split: { friend_names: JSON.parse(r.friend_names), amount_each: r.amount_each ?? 0 } }
           : {}),
+        bucket: r.bucket ?? null,
+        vacation_id: r.vacation_id ?? null,
       });
     }
   }
