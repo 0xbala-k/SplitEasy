@@ -5,6 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Transaction } from '@/lib/types';
 import { formatDayLabel } from '@/lib/date';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
+import { Bucket } from '@/lib/buckets';
+import { BucketChip } from '@/components/BucketChip';
 
 interface Props {
   transaction: Transaction;
@@ -19,11 +21,17 @@ interface Props {
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
+  // The bucket to display. On the Transactions tab this is a live guess and
+  // nothing has been written yet; the write happens on skip or split.
+  bucket?: Bucket;
+  bucketLocked?: boolean;
+  onBucketPress?: () => void;
 }
 
 export function TransactionRow({
   transaction, onSkip, onSplit, onRemove, onLongPress,
   selectMode, selected, onToggleSelect,
+  bucket, bucketLocked, onBucketPress,
 }: Props) {
   const amount = `$${transaction.amount.toFixed(2)}`;
   const date = formatDayLabel(transaction.date);
@@ -104,6 +112,9 @@ export function TransactionRow({
               <View style={styles.pendingBadge}>
                 <Text style={styles.pendingText}>Pending</Text>
               </View>
+            )}
+            {bucket && (
+              <BucketChip bucket={bucket} locked={bucketLocked} onPress={onBucketPress} />
             )}
           </View>
         </View>

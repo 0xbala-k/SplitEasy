@@ -13,8 +13,11 @@ import {
   markTransactionsReversed,
   getReviewTransactions,
   clearReview,
+  getMerchantBuckets,
+  setTransactionBucket,
 } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
+import { Bucket } from '@/lib/buckets';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { useVacationStore } from '@/stores/vacationStore';
 
@@ -22,6 +25,7 @@ interface TransactionState {
   transactions: Transaction[];
   isLoading: boolean;
   review: ReviewItem[];
+  merchantBuckets: Record<string, Bucket>;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   skip: (id: string) => Promise<void>;
@@ -31,17 +35,22 @@ interface TransactionState {
   deleteCombinedSplit: (transactionIds: string[], splitwiseExpenseId: string) => Promise<void>;
   loadReview: () => Promise<void>;
   resolveReview: (transactionIds: string[]) => Promise<void>;
+  setBucket: (ids: string[], bucket: Bucket) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
   transactions: [],
   isLoading: false,
   review: [],
+  merchantBuckets: {},
 
   load: async () => {
     set({ isLoading: true });
-    const rows = await getNewTransactions();
-    set({ transactions: rows, isLoading: false });
+    const [rows, merchantBuckets] = await Promise.all([
+      getNewTransactions(),
+      getMerchantBuckets(),
+    ]);
+    set({ transactions: rows, merchantBuckets, isLoading: false });
   },
 
   refresh: async () => {
@@ -139,5 +148,12 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   resolveReview: async (transactionIds) => {
     await clearReview(transactionIds);
     await get().loadReview();
+  },
+
+  // Takes a list because a combined split is one row over several
+  // transactions, and re-tagging it moves every member.
+  setBucket: async (ids, bucket) => {
+    for (const id of ids) await setTransactionBucket(id, bucket);
+    await get().load();
   },
 }));

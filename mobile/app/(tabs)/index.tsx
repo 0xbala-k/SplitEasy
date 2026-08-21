@@ -17,6 +17,9 @@ import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds } 
 import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
+import { resolveBucket } from '@/lib/buckets';
+import { BucketPickerSheet } from '@/components/BucketPickerSheet';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
 
 // Clears the absolute-positioned selectBar so it doesn't cover the last row.
 const SELECT_BAR_CLEARANCE = 88;
@@ -43,7 +46,7 @@ export default function NewTransactionsScreen() {
   const topInset = useSafeAreaInsets().top;
   const {
     transactions, isLoading, review, load, refresh, skip, loadReview, resolveReview,
-    deleteSplit, deleteCombinedSplit,
+    deleteSplit, deleteCombinedSplit, merchantBuckets, setBucket,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -85,6 +88,17 @@ export default function NewTransactionsScreen() {
     setSelected(tx);
     setPickerToken((t) => t + 1);
     setPendingPresent(true);
+  }
+
+  const bucketEditor = useBucketEditor(setBucket);
+
+  function openBucketSheet(tx: Transaction) {
+    bucketEditor.open({
+      ids: [tx.id],
+      merchantName: tx.merchant_name,
+      bucket: resolveBucket(tx, merchantBuckets).bucket,
+      locked: !!tx.vacation_id,
+    });
   }
 
   function enterSelect(tx: Transaction) {
@@ -265,6 +279,9 @@ export default function NewTransactionsScreen() {
               selectMode={selectMode}
               selected={selectedIds.has(item.id)}
               onToggleSelect={() => toggleSelect(item.id)}
+              bucket={resolveBucket(item, merchantBuckets).bucket}
+              bucketLocked={!!item.vacation_id}
+              onBucketPress={() => openBucketSheet(item)}
             />
           )}
         />
@@ -279,6 +296,7 @@ export default function NewTransactionsScreen() {
         openToken={pickerToken}
         onSuccess={handleSplitSuccess}
       />
+      <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
       {selectMode && (
         <View style={styles.selectBar}>
           <Pressable

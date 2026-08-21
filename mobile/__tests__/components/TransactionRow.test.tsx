@@ -112,3 +112,35 @@ test('with onRemove, the swipe underlay removes rather than skips', () => {
   expect(onRemove).toHaveBeenCalled();
   expect(onSkip).not.toHaveBeenCalled();
 });
+
+test('renders a bucket chip when given a bucket', () => {
+  render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} bucket="food" />);
+  expect(screen.getByText('Food')).toBeTruthy();
+});
+
+test('renders no chip when no bucket is given', () => {
+  render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} />);
+  expect(screen.queryByText('Food')).toBeNull();
+});
+
+test('tapping the chip fires onBucketPress', () => {
+  const onBucketPress = jest.fn();
+  render(
+    <TransactionRow
+      transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()}
+      bucket="needs" onBucketPress={onBucketPress}
+    />
+  );
+  fireEvent.press(screen.getByLabelText('Category: Needs. Tap to change.'));
+  expect(onBucketPress).toHaveBeenCalled();
+});
+
+test('a locked chip announces the vacation', () => {
+  render(
+    <TransactionRow
+      transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()}
+      bucket="travel" bucketLocked onBucketPress={jest.fn()}
+    />
+  );
+  expect(screen.getByLabelText('Category: Travel, set by a vacation.')).toBeTruthy();
+});
