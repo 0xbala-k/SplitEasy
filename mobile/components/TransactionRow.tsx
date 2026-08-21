@@ -5,28 +5,40 @@ import { Ionicons } from '@expo/vector-icons';
 import { Transaction } from '@/lib/types';
 import { formatDayLabel } from '@/lib/date';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
+import { Bucket } from '@/lib/buckets';
+import { BucketChip } from '@/components/BucketChip';
 
 interface Props {
   transaction: Transaction;
   onSkip: () => void;
   onSplit: () => void;
+  // Supplied only in vacation mode. Its presence moves "remove from vacation"
+  // onto the swipe underlay and keeps Skip inline, so a trip expense paid
+  // entirely by the user can still be committed (and counted as Travel)
+  // instead of only being splittable or ejectable.
+  onRemove?: () => void;
   onLongPress?: () => void;
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
-  variant?: 'skip' | 'remove';
+  // The bucket to display. On the Transactions tab this is a live guess and
+  // nothing has been written yet; the write happens on skip or split.
+  bucket?: Bucket;
+  bucketLocked?: boolean;
+  onBucketPress?: () => void;
 }
 
-export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, selectMode, selected, onToggleSelect, variant = 'skip' }: Props) {
+export function TransactionRow({
+  transaction, onSkip, onSplit, onRemove, onLongPress,
+  selectMode, selected, onToggleSelect,
+  bucket, bucketLocked, onBucketPress,
+}: Props) {
   const amount = `$${transaction.amount.toFixed(2)}`;
   const date = formatDayLabel(transaction.date);
   const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
   const avatarBg = merchantColor(transaction.merchant_name ?? '?');
-  const removeMode = variant === 'remove';
-  const skipIcon = removeMode ? 'trash-outline' : 'close-circle-outline';
-  const skipBtnIcon = removeMode ? 'trash-outline' : 'close-outline';
-  const skipLabel = removeMode ? `Remove ${transaction.merchant_name} from vacation` : `Skip ${transaction.merchant_name}`;
-  const skipUnderlayLabel = removeMode ? 'Remove' : 'Skip';
+  const skipLabel = `Skip ${transaction.merchant_name}`;
+  const removeLabel = `Remove ${transaction.merchant_name} from vacation`;
 
   if (selectMode) {
     return (
@@ -52,24 +64,35 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
     );
   }
 
-  const renderSkipUnderlay = () => (
+  const underlayAction = onRemove ?? onSkip;
+  const renderUnderlay = () => (
     <Pressable
       style={styles.skipUnderlay}
-      onPress={onSkip}
+      onPress={underlayAction}
       accessibilityRole="button"
-      accessibilityLabel={skipLabel}
+      accessibilityLabel={onRemove ? removeLabel : skipLabel}
+      // Inert at runtime, invisible to assistive tech — exists only so tests can
+      // target this Pressable specifically. In the default branch it shares its
+      // accessibilityLabel with the inline Skip button (both genuinely mean
+      // "Skip {merchant}"), so a testID is what lets a query pick one over the
+      // other rather than the production markup having to disambiguate itself.
+      testID="swipe-underlay"
     >
-      <Ionicons name={skipIcon} size={22} color={Colors.textSecondary} />
-      <Text style={styles.skipUnderlayText}>{skipUnderlayLabel}</Text>
+      <Ionicons
+        name={onRemove ? 'trash-outline' : 'close-circle-outline'}
+        size={22}
+        color={Colors.textSecondary}
+      />
+      <Text style={styles.skipUnderlayText}>{onRemove ? 'Remove' : 'Skip'}</Text>
     </Pressable>
   );
 
   return (
     <ReanimatedSwipeable
-      renderLeftActions={renderSkipUnderlay}
+      renderLeftActions={renderUnderlay}
       onSwipeableOpen={(direction) => {
         // 'left' = the left underlay opened, i.e. the user swiped right
-        if (direction === 'left') onSkip();
+        if (direction === 'left') underlayAction();
       }}
       leftThreshold={72}
       friction={1.5}
@@ -90,6 +113,9 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
                 <Text style={styles.pendingText}>Pending</Text>
               </View>
             )}
+            {bucket && (
+              <BucketChip bucket={bucket} locked={bucketLocked} onPress={onBucketPress} />
+            )}
           </View>
         </View>
 
@@ -104,7 +130,7 @@ export function TransactionRow({ transaction, onSkip, onSplit, onLongPress, sele
             accessibilityRole="button"
             accessibilityLabel={skipLabel}
           >
-            <Ionicons name={skipBtnIcon} size={14} color={Colors.textSecondary} />
+            <Ionicons name="close-outline" size={14} color={Colors.textSecondary} />
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.btn, styles.splitBtn, pressed && styles.splitBtnPressed]}

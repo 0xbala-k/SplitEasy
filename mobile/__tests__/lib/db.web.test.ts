@@ -10,10 +10,11 @@ import {
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
   removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
+  getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
-import { VacationConflictError } from '@/lib/vacationErrors';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 
 // Relative calendar dates have to be built in local time, the same way
 // reconcileVacationStatuses computes "today". Deriving them from
@@ -716,5 +717,273 @@ describe('vacation transaction capture & history (IndexedDB)', () => {
     await reconcileVacationStatuses();
     expect((await getVacation(a.id))?.status).toBe('ended');
     expect((await getVacation(b.id))?.status).toBe('active');
+  });
+});
+
+describe('stored Plaid category and merchant memory (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: upsertTransactions stores the detailed Plaid category', async () => {
+    await upsertTransactions([plaidTx('w1', {
+      personal_finance_category: { primary: 'ENTERTAINMENT', detailed: 'ENTERTAINMENT_VIDEO_GAMES' },
+    })]);
+    const [tx] = await getTransactionsByIds(['w1']);
+    expect(tx.plaid_category).toBe('ENTERTAINMENT_VIDEO_GAMES');
+  });
+
+  test('web: upsertTransactions stores null when Plaid sends no category', async () => {
+    await upsertTransactions([plaidTx('w2')]);
+    const [tx] = await getTransactionsByIds(['w2']);
+    expect(tx.plaid_category ?? null).toBeNull();
+  });
+
+  test('web: merchant memory round-trips', async () => {
+    await setMerchantBucket('starbucks', 'needs');
+    await setMerchantBucket('amazon', 'shopping');
+    await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'needs', amazon: 'shopping' });
+  });
+
+  test('web: setMerchantBucket overwrites an existing key', async () => {
+    await setMerchantBucket('starbucks', 'needs');
+    await setMerchantBucket('starbucks', 'food');
+    await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'food' });
+  });
+});
+
+describe('materializing buckets on commit, and manual re-tagging (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: skipping materializes an auto bucket from the Plaid category', async () => {
+    await upsertTransactions([plaidTx('b1', {
+      merchant_name: 'Safeway',
+      personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+    })]);
+    await updateTransactionStatus('b1', 'skipped');
+    const [tx] = await getTransactionsByIds(['b1']);
+    expect(tx.bucket).toBe('needs');
+    expect(tx.bucket_source).toBe('auto');
+  });
+
+  test('web: an uncommitted transaction has no bucket', async () => {
+    await upsertTransactions([plaidTx('b2', { merchant_name: 'Safeway' })]);
+    const [tx] = await getTransactionsByIds(['b2']);
+    expect(tx.bucket ?? null).toBeNull();
+  });
+
+  test('web: merchant memory beats the Plaid category at commit time', async () => {
+    await setMerchantBucket('safeway', 'shopping');
+    await upsertTransactions([plaidTx('b3', {
+      merchant_name: 'Safeway',
+      personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+    })]);
+    await updateTransactionStatus('b3', 'skipped');
+    const [tx] = await getTransactionsByIds(['b3']);
+    expect(tx.bucket).toBe('shopping');
+  });
+
+  test('web: a pre-commit manual tag survives the commit', async () => {
+    await upsertTransactions([plaidTx('b4', {
+      merchant_name: 'Safeway',
+      personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+    })]);
+    await setTransactionBucket('b4', 'experiences');
+    await updateTransactionStatus('b4', 'split');
+    const [tx] = await getTransactionsByIds(['b4']);
+    expect(tx.bucket).toBe('experiences');
+    expect(tx.bucket_source).toBe('manual');
+  });
+
+  test('web: a vacation transaction commits to travel regardless of category', async () => {
+    const v = await createVacation({ name: 'Trip', start_date: '2026-09-01', end_date: '2026-09-08' });
+    await upsertTransactions([plaidTx('b5', {
+      merchant_name: 'Best Buy',
+      personal_finance_category: { primary: 'GENERAL_MERCHANDISE', detailed: 'GENERAL_MERCHANDISE_ELECTRONICS' },
+    })]);
+    await assignTransactionsToVacation(v.id, ['b5']);
+    await updateTransactionStatus('b5', 'skipped');
+    const [tx] = await getTransactionsByIds(['b5']);
+    expect(tx.bucket).toBe('travel');
+    expect(tx.bucket_source).toBe('vacation');
+  });
+
+  test('web: setTransactionBucket refuses to re-tag a vacation transaction', async () => {
+    const v = await createVacation({ name: 'Trip2', start_date: '2026-10-01', end_date: '2026-10-08' });
+    await upsertTransactions([plaidTx('b6')]);
+    await assignTransactionsToVacation(v.id, ['b6']);
+    await expect(setTransactionBucket('b6', 'food')).rejects.toThrow(BucketLockedError);
+  });
+
+  test('web: setTransactionBucket teaches the merchant memory', async () => {
+    await upsertTransactions([plaidTx('b7', { merchant_name: 'STARBUCKS #4471' })]);
+    await setTransactionBucket('b7', 'needs');
+    await expect(getMerchantBuckets()).resolves.toMatchObject({ starbucks: 'needs' });
+  });
+
+  test('web: re-tagging is forward-only and leaves already-bucketed rows alone', async () => {
+    await upsertTransactions([
+      plaidTx('b8', { merchant_name: 'Chipotle' }),
+      plaidTx('b9', { merchant_name: 'Chipotle' }),
+    ]);
+    await updateTransactionStatus('b8', 'skipped');   // commits as food, via keyword
+    await updateTransactionStatus('b9', 'skipped');
+    await setTransactionBucket('b9', 'needs');        // re-tag one of them
+    const [older] = await getTransactionsByIds(['b8']);
+    expect(older.bucket).toBe('food');                // unchanged
+  });
+
+  test('web: re-committing an already-bucketed row does not promote its source to manual', async () => {
+    await upsertTransactions([plaidTx('rc1', { merchant_name: 'Chipotle' })]);
+    await updateTransactionStatus('rc1', 'skipped');   // commits as 'food' / 'auto', via keyword
+    let [tx] = await getTransactionsByIds(['rc1']);
+    expect(tx.bucket_source).toBe('auto');
+
+    // Re-commit the same row (simulating History's split-after-skip flow).
+    await updateTransactionStatus('rc1', 'split');
+    [tx] = await getTransactionsByIds(['rc1']);
+    expect(tx.bucket).toBe('food');
+    expect(tx.bucket_source).toBe('auto');   // still auto, not silently promoted
+  });
+
+  test('web: combined splits materialize a bucket for every member', async () => {
+    await upsertTransactions([
+      plaidTx('c1', { merchant_name: 'Chipotle', amount: 20 }),
+      plaidTx('c2', { merchant_name: 'AMC Theatres', amount: 30 }),
+    ]);
+    await persistCombinedSplit([
+      { id: 'd1', transaction_id: 'c1', splitwise_expense_id: 'e1', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-01T00:00:00Z' },
+      { id: 'd2', transaction_id: 'c2', splitwise_expense_id: 'e1', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-01T00:00:00Z' },
+    ]);
+    const rows = await getTransactionsByIds(['c1', 'c2']);
+    expect(rows.find((r) => r.id === 'c1')!.bucket).toBe('food');
+    expect(rows.find((r) => r.id === 'c2')!.bucket).toBe('experiences');
+  });
+
+  test('web: reverting to new drops an auto bucket but keeps a manual one', async () => {
+    await upsertTransactions([
+      plaidTx('r1', { merchant_name: 'Chipotle' }),
+      plaidTx('r2', { merchant_name: 'Chipotle' }),
+    ]);
+    await updateTransactionStatus('r1', 'skipped');
+    await setTransactionBucket('r2', 'shopping');
+    await updateTransactionStatus('r2', 'skipped');
+
+    await updateTransactionStatus('r1', 'new');
+    await updateTransactionStatus('r2', 'new');
+
+    const rows = await getTransactionsByIds(['r1', 'r2']);
+    expect(rows.find((r) => r.id === 'r1')!.bucket ?? null).toBeNull();
+    expect(rows.find((r) => r.id === 'r2')!.bucket).toBe('shopping');
+  });
+
+  test('web: reverting to new drops a vacation bucket too, and does not strand the row in Travel', async () => {
+    const v = await createVacation({ name: 'Trip3', start_date: '2026-11-01', end_date: '2026-11-08' });
+    await upsertTransactions([plaidTx('r3', { merchant_name: 'Best Buy' })]);
+    await assignTransactionsToVacation(v.id, ['r3']);
+    await updateTransactionStatus('r3', 'skipped');
+    const [committed] = await getTransactionsByIds(['r3']);
+    expect(committed.bucket).toBe('travel');
+    expect(committed.bucket_source).toBe('vacation');
+
+    // Revert the split/skip — this is the step that used to leave a stale
+    // 'vacation' bucket in place because the old predicate only cleared
+    // 'auto'.
+    await updateTransactionStatus('r3', 'new');
+    const [reverted] = await getTransactionsByIds(['r3']);
+    expect(reverted.bucket ?? null).toBeNull();
+    expect(reverted.bucket_source ?? null).toBeNull();
+
+    // End-to-end strand check: now remove it from the vacation entirely.
+    // removeTransactionFromVacation only requires status = 'new' and nulls
+    // vacation_id without touching bucket, so if the revert above had left
+    // the 'vacation' bucket in place, resolveBucket's rule 1 (vacation_id)
+    // would no longer fire and rule 2 (an existing bucket) would return the
+    // stale 'travel' as 'manual' forever — permanently stranding the row in
+    // Travel with no way out. Assert that does not happen.
+    await removeTransactionFromVacation('r3');
+    const [removed] = await getTransactionsByIds(['r3']);
+    expect(removed.vacation_id ?? null).toBeNull();
+    expect(removed.bucket ?? null).toBeNull();
+
+    // And it must re-resolve cleanly if committed again, rather than being
+    // stuck on the stale value.
+    await updateTransactionStatus('r3', 'skipped');
+    const [recommitted] = await getTransactionsByIds(['r3']);
+    expect(recommitted.bucket).toBe('shopping'); // Best Buy, via keyword
+    expect(recommitted.bucket_source).toBe('auto');
+  });
+});
+
+describe('getSpendingRows (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: getSpendingRows returns only committed, bucketed rows', async () => {
+    await upsertTransactions([
+      plaidTx('s1', { merchant_name: 'Chipotle' }),
+      plaidTx('s2', { merchant_name: 'Safeway' }),
+      plaidTx('s3', { merchant_name: 'Uncommitted' }),
+    ]);
+    await updateTransactionStatus('s1', 'skipped');
+    await updateTransactionStatus('s2', 'skipped');
+    const rows = await getSpendingRows();
+    expect(rows.map((r) => r.id).sort()).toEqual(['s1', 's2']);
+  });
+
+  test('web: getSpendingRows joins the split decision and the vacation', async () => {
+    const v = await createVacation({ name: 'Trip', start_date: '2026-09-01', end_date: '2026-09-08' });
+    await upsertTransactions([plaidTx('s4', { amount: 50 })]);
+    await assignTransactionsToVacation(v.id, ['s4']);
+    await insertSplitDecision({
+      id: 'd4', transaction_id: 's4', splitwise_expense_id: 'e4',
+      friend_ids: ['f1'], friend_names: ['A'], amount_each: 25,
+      created_at: '2026-08-01T00:00:00Z',
+    });
+    await updateTransactionStatus('s4', 'split');
+
+    const row = (await getSpendingRows()).find((r) => r.id === 's4')!;
+    expect(row.splitwise_expense_id).toBe('e4');
+    expect(row.amount_each).toBe(25);
+    expect(row.vacation_start_date).toBe('2026-09-01');
+    expect(row.bucket).toBe('travel');
+  });
+});
+
+describe('history rows carry their bucket (IndexedDB)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  test('web: history rows carry their bucket', async () => {
+    await upsertTransactions([plaidTx('h1', { merchant_name: 'Chipotle' })]);
+    await updateTransactionStatus('h1', 'skipped');
+    const item = (await getHistoryTransactions()).find((i) => i.id === 'h1')!;
+    expect(item.bucket).toBe('food');
+  });
+
+  test('web: a combined history row carries the first member bucket and its member ids', async () => {
+    await upsertTransactions([
+      plaidTx('h2', { merchant_name: 'Chipotle', amount: 20, date: '2026-08-02' }),
+      plaidTx('h3', { merchant_name: 'AMC Theatres', amount: 30, date: '2026-08-02' }),
+    ]);
+    await persistCombinedSplit([
+      { id: 'dh2', transaction_id: 'h2', splitwise_expense_id: 'eh', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-02T00:00:00Z' },
+      { id: 'dh3', transaction_id: 'h3', splitwise_expense_id: 'eh', friend_ids: ['f1'], friend_names: ['A'], amount_each: 25, created_at: '2026-08-02T00:00:00Z' },
+    ]);
+    const item = (await getHistoryTransactions()).find((i) => i.combined?.expense_id === 'eh')!;
+    expect(item.combined!.transaction_ids.sort()).toEqual(['h2', 'h3']);
+    expect(item.bucket).toBeTruthy();
   });
 });

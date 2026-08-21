@@ -34,6 +34,8 @@ const mockRekeyTransaction = db.rekeyTransaction as jest.Mock;
 const mockMarkReversed = db.markTransactionsReversed as jest.Mock;
 const mockGetReview = db.getReviewTransactions as jest.Mock;
 const mockClearReview = db.clearReview as jest.Mock;
+const mockGetMerchantBuckets = db.getMerchantBuckets as jest.Mock;
+const mockSetTransactionBucket = db.setTransactionBucket as jest.Mock;
 const mockFetchTxs = worker.fetchTransactions as jest.Mock;
 const mockSecureGet = SecureStore.getItemAsync as jest.Mock;
 const mockSetNeedsReauth = jest.fn();
@@ -74,6 +76,8 @@ beforeEach(() => {
   mockMarkReversed.mockResolvedValue([]);
   mockGetReview.mockResolvedValue([]);
   mockClearReview.mockResolvedValue(undefined);
+  mockGetMerchantBuckets.mockResolvedValue({});
+  mockSetTransactionBucket.mockResolvedValue(undefined);
   mockGetTokensAndCursors.mockResolvedValue([{ id: 'acct_1', access_token: 'access-token', cursor: 'cur-0' }]);
   mockSaveCursor.mockResolvedValue(undefined);
   mockDeleteExpense.mockResolvedValue(undefined);
@@ -338,4 +342,30 @@ test('resolveReview clears the review flag then reloads the queue', async () => 
   expect(mockClearReview).toHaveBeenCalledWith(['tx1', 'tx2']);
   expect(mockGetReview).toHaveBeenCalled();
   expect(useTransactionStore.getState().review).toEqual([]);
+});
+
+test('load also fetches the merchant memory', async () => {
+  mockGetNew.mockResolvedValue([]);
+  mockGetMerchantBuckets.mockResolvedValue({ starbucks: 'needs' });
+  await useTransactionStore.getState().load();
+  expect(useTransactionStore.getState().merchantBuckets).toEqual({ starbucks: 'needs' });
+});
+
+test('setBucket writes every id and reloads', async () => {
+  mockGetNew.mockResolvedValue([]);
+  mockGetMerchantBuckets.mockResolvedValue({});
+  await useTransactionStore.getState().setBucket(['a', 'b'], 'shopping');
+  expect(mockSetTransactionBucket).toHaveBeenCalledWith('a', 'shopping');
+  expect(mockSetTransactionBucket).toHaveBeenCalledWith('b', 'shopping');
+  expect(mockGetNew).toHaveBeenCalled();
+});
+
+test('setBucket reloads even when a later id throws', async () => {
+  mockGetNew.mockResolvedValue([]);
+  mockGetMerchantBuckets.mockResolvedValue({});
+  mockSetTransactionBucket
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('locked'));
+  await expect(useTransactionStore.getState().setBucket(['a', 'b'], 'shopping')).rejects.toThrow();
+  expect(mockGetNew).toHaveBeenCalled();
 });

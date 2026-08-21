@@ -1,5 +1,7 @@
 // mobile/lib/types.ts
 
+import type { Bucket, BucketSource } from '@/lib/buckets';
+
 export type TransactionStatus = 'new' | 'split' | 'skipped';
 
 export type ReviewReason = 'amount_changed' | 'reversed';
@@ -21,6 +23,12 @@ export interface Transaction {
   vacation_id?: string | null; // set while assigned to a vacation
   review_reason?: ReviewReason | null; // set when a pending→posted transition needs user attention
   amount_changed_from?: number | null; // previous amount, for "was $X → now $Y"; set alongside review_reason='amount_changed'
+  // Spending tracker. `bucket` is NULL until the transaction is committed by a
+  // skip or a split — that is what keeps uncommitted transactions, and every
+  // transaction that predates this feature, out of the tracker.
+  bucket?: Bucket | null;
+  bucket_source?: BucketSource | null;
+  plaid_category?: string | null;   // personal_finance_category.detailed
 }
 
 export interface SplitDecision {
@@ -58,6 +66,13 @@ export interface PlaidTransaction {
   // (now-removed) pending id here. Used to rekey the local row instead of
   // treating the posted transaction as brand new.
   pending_transaction_id?: string | null;
+  // Plaid's own categorization, forwarded untouched by the Worker. Seeds the
+  // spending bucket; absent on some institutions' feeds.
+  personal_finance_category?: {
+    primary: string;
+    detailed: string;
+    confidence_level?: string;
+  } | null;
 }
 
 export interface PlaidTransactionsResponse {
@@ -86,6 +101,10 @@ export interface HistoryItem {
   status: TransactionStatus;
   split?: { friend_names: string[]; amount_each: number };
   combined?: { expense_id: string; transaction_ids: string[]; count: number };
+  // Spending bucket, for the tag on the row. A combined row carries its first
+  // member's bucket; re-tagging the row moves every member.
+  bucket?: Bucket | null;
+  vacation_id?: string | null;
 }
 
 // A row in the "Needs review" queue: a transaction whose pending→posted

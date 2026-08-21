@@ -8,13 +8,16 @@ import {
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
-import { VacationConflictError } from '@/lib/vacationErrors';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
+import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
+import { SpendRow } from '@/lib/spend';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';
+const MERCHANT_STORE = 'merchant_buckets';
 
 let _db: IDBDatabase | null = null;
 let _opening: Promise<IDBDatabase> | null = null;
@@ -87,6 +90,11 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!d.objectStoreNames.contains(VACATION_STORE)) {
         d.createObjectStore(VACATION_STORE, { keyPath: 'id' });
       }
+      if (!d.objectStoreNames.contains(MERCHANT_STORE)) {
+        // Keyed by the normalized merchant name, mirroring the SQLite
+        // merchant_buckets PRIMARY KEY.
+        d.createObjectStore(MERCHANT_STORE, { keyPath: 'merchant_key' });
+      }
     };
     // A version bump can't proceed while another tab holds an older-version
     // connection open; without these handlers the promise never settles and
@@ -143,6 +151,8 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
           date: t.date,
           status: 'split',
           split: { friend_names: d.friend_names ?? [], amount_each: d.amount_each ?? 0 },
+          bucket: t.bucket ?? null,
+          vacation_id: t.vacation_id ?? null,
           _txIds: [t.id],
         };
         groups.set(key, item);
@@ -159,6 +169,8 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
         ...(t.status === 'split' && d?.friend_names
           ? { split: { friend_names: d.friend_names, amount_each: d.amount_each ?? 0 } }
           : {}),
+        bucket: t.bucket ?? null,
+        vacation_id: t.vacation_id ?? null,
       });
     }
   }
@@ -356,6 +368,7 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
   for (const p of txs) {
     const existing = await req(store.get(p.transaction_id) as IDBRequest<Transaction | undefined>);
     const name = p.merchant_name ?? p.name;
+    const category = p.personal_finance_category?.detailed ?? null;
     if (!existing) {
       store.put({
         id: p.transaction_id,
@@ -367,13 +380,38 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
         pending: p.pending,
         created_at: now,
         vacation_id: activeVacationId,
+        plaid_category: category,
       } satisfies Transaction);
     } else if (existing.status === 'new') {
       // Mirror the SQL UPDATE: refresh mutable fields, never touch status of
       // already-split/skipped rows.
-      store.put({ ...existing, merchant_name: name, amount: p.amount, date: p.date, pending: p.pending });
+      store.put({
+        ...existing,
+        merchant_name: name, amount: p.amount, date: p.date, pending: p.pending,
+        plaid_category: category,
+      });
     }
   }
+  await done(tx);
+}
+
+export async function getMerchantBuckets(): Promise<Record<string, Bucket>> {
+  const tx = (await dbReady()).transaction(MERCHANT_STORE, 'readonly');
+  const rows = await req(
+    tx.objectStore(MERCHANT_STORE).getAll() as IDBRequest<{ merchant_key: string; bucket: Bucket }[]>
+  );
+  await done(tx);
+  return Object.fromEntries(rows.map((r) => [r.merchant_key, r.bucket]));
+}
+
+export async function setMerchantBucket(merchantKey: string, bucket: Bucket): Promise<void> {
+  if (!merchantKey) return;
+  const tx = (await dbReady()).transaction(MERCHANT_STORE, 'readwrite');
+  tx.objectStore(MERCHANT_STORE).put({
+    merchant_key: merchantKey,
+    bucket,
+    updated_at: new Date().toISOString(),
+  });
   await done(tx);
 }
 
@@ -388,11 +426,40 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
   await done(tx);
 }
 
+function withResolvedBucket(row: Transaction, memory: Record<string, Bucket>): Transaction {
+  const { bucket, source } = resolveBucket(row, memory);
+  // See lib/db.ts's materializeBuckets for the full rationale: resolveBucket's
+  // rule 2 always reports 'manual' for an existing bucket, so re-committing an
+  // already-bucketed row without this guard would silently promote a stale
+  // 'auto' guess into a protected 'manual' choice.
+  const nextSource = row.bucket === bucket && row.bucket_source ? row.bucket_source : source;
+  return { ...row, bucket, bucket_source: nextSource };
+}
+
+// Reverting to 'new' drops any bucket that wasn't the user's own choice.
+// Only 'manual' survives — an 'auto' guess should re-resolve against current
+// merchant memory if committed again, and a 'vacation' bucket must not
+// outlive the vacation_id that produced it: removeTransactionFromVacation
+// nulls vacation_id without touching bucket, so a row that kept a 'vacation'
+// bucket here would be stranded in Travel forever.
+function withClearedNonManualBucket(row: Transaction): Transaction {
+  return row.bucket_source === 'manual' ? row : { ...row, bucket: null, bucket_source: null };
+}
+
 export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
+  const committing = status === 'split' || status === 'skipped';
+  // Read the memory first: getMerchantBuckets opens its own IDB transaction,
+  // and awaiting it inside the readwrite one below would let that transaction
+  // auto-commit out from under us.
+  const memory = committing ? await getMerchantBuckets() : {};
+
   const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
-  if (existing) store.put({ ...existing, status });
+  if (existing) {
+    const next = { ...existing, status };
+    store.put(committing ? withResolvedBucket(next, memory) : withClearedNonManualBucket(next));
+  }
   await done(tx);
 }
 
@@ -509,6 +576,10 @@ export async function deleteSplitDecision(transactionId: string): Promise<void> 
 // withTransactionAsync version: any failure aborts the whole group.
 export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<void> {
   if (decisions.length === 0) return;
+  // Read the merchant memory before opening the readwrite transaction below —
+  // getMerchantBuckets opens its own IDB transaction, and awaiting it inside
+  // this one would let this one auto-commit out from under us.
+  const memory = await getMerchantBuckets();
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const txStore = tx.objectStore(TX_STORE);
   // Read every row up front, then issue all writes: a write that fails aborts
@@ -522,7 +593,7 @@ export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<
     // UNIQUE(transaction_id) constraint.
     tx.objectStore(DECISION_STORE).add(d);
     const existing = rows[i];
-    if (existing) txStore.put({ ...existing, status: 'split' });
+    if (existing) txStore.put(withResolvedBucket({ ...existing, status: 'split' }, memory));
   });
   await done(tx);
 }
@@ -539,9 +610,28 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
   transactionIds.forEach((id, i) => {
     tx.objectStore(DECISION_STORE).delete(id);
     const existing = rows[i];
-    if (existing) txStore.put({ ...existing, status: 'new' });
+    if (existing) txStore.put(withClearedNonManualBucket({ ...existing, status: 'new' }));
   });
   await done(tx);
+}
+
+/**
+ * Move a transaction to a bucket by hand, and remember the merchant for next
+ * time. Forward-only: transactions already committed under the old bucket are
+ * left alone, so a month the user has already reviewed keeps its numbers.
+ */
+export async function setTransactionBucket(id: string, bucket: Bucket): Promise<void> {
+  const read = (await dbReady()).transaction(TX_STORE, 'readonly');
+  const row = await req(read.objectStore(TX_STORE).get(id) as IDBRequest<Transaction | undefined>);
+  await done(read);
+  if (!row) return;
+  if (row.vacation_id) throw new BucketLockedError();
+
+  const write = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  write.objectStore(TX_STORE).put({ ...row, bucket, bucket_source: 'manual' });
+  await done(write);
+
+  await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
 export async function pruneOldTransactions(): Promise<void> {
@@ -669,6 +759,53 @@ export async function updateVacationDates(
   const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
   if (existing) store.put({ ...existing, start_date: startDate, end_date: endDate });
   await done(tx);
+}
+
+/**
+ * Every committed, bucketed transaction, joined to its split decision and its
+ * vacation. `bucket` truthy is what excludes both uncommitted transactions
+ * and everything that predates the spending tracker — mirrors lib/db.ts's
+ * `bucket IS NOT NULL`.
+ *
+ * The vacation join supplies the dates monthKeyOf needs, so editing a trip's
+ * dates moves its whole spend to the new month without a rewrite.
+ */
+export async function getSpendingRows(): Promise<SpendRow[]> {
+  const d = await dbReady();
+  const tx = d.transaction([TX_STORE, DECISION_STORE, VACATION_STORE], 'readonly');
+  const [txs, decisions, vacations] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+    req(tx.objectStore(VACATION_STORE).getAll() as IDBRequest<Vacation[]>),
+  ]);
+  await done(tx);
+
+  const byTxId = new Map(decisions.map((d2) => [d2.transaction_id, d2]));
+  const byVacationId = new Map(vacations.map((v) => [v.id, v]));
+
+  return txs
+    .filter((t) => (t.status === 'split' || t.status === 'skipped') && t.bucket)
+    .map((t) => {
+      const decision = byTxId.get(t.id);
+      const vacation = t.vacation_id ? byVacationId.get(t.vacation_id) : undefined;
+      return {
+        id: t.id,
+        merchant_name: t.merchant_name,
+        amount: t.amount,
+        currency: t.currency,
+        date: t.date,
+        status: t.status as 'split' | 'skipped',
+        bucket: t.bucket!,
+        bucket_source: t.bucket_source ?? 'auto',
+        splitwise_expense_id: decision?.splitwise_expense_id ?? null,
+        amount_each: decision?.amount_each ?? null,
+        vacation_id: t.vacation_id ?? null,
+        vacation_start_date: vacation?.start_date ?? null,
+        vacation_started_at: vacation?.started_at ?? null,
+        vacation_created_at: vacation?.created_at ?? null,
+      } satisfies SpendRow;
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 }
 
 export async function deleteVacation(id: string): Promise<void> {

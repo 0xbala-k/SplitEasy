@@ -6,7 +6,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
-import { getVacationPendingTransactions, getVacationHistory, removeTransactionFromVacation } from '@/lib/db';
+import {
+  getVacationPendingTransactions, getVacationHistory, removeTransactionFromVacation,
+  updateTransactionStatus,
+} from '@/lib/db';
 import { VacationConflictError } from '@/lib/vacationErrors';
 import { useVacationStore } from '@/stores/vacationStore';
 import { TransactionRow } from '@/components/TransactionRow';
@@ -118,6 +121,17 @@ export default function VacationDetailScreen() {
       refresh();
     } catch {
       toast.show('Could not remove transaction. Please try again.', 'error');
+    }
+  }
+
+  async function handleSkip(txId: string) {
+    try {
+      // status only — vacation_id survives, so this stays trip spend and
+      // materializes into the Travel bucket at its full amount.
+      await updateTransactionStatus(txId, 'skipped');
+      refresh();
+    } catch {
+      toast.show('Could not skip transaction. Please try again.', 'error');
     }
   }
 
@@ -298,8 +312,8 @@ export default function VacationDetailScreen() {
         renderItem={({ item }) => (
           <TransactionRow
             transaction={item}
-            variant="remove"
-            onSkip={() => handleRemove(item.id)}
+            onSkip={() => handleSkip(item.id)}
+            onRemove={() => handleRemove(item.id)}
             onSplit={() => openCombine([item])}
             onLongPress={() => { setSelectMode(true); setSelectedIds(new Set([item.id])); }}
             selectMode={selectMode}

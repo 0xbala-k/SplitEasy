@@ -5,12 +5,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
-import { getHistoryTransactions, getSplitDecision, getTransactionsByIds } from '@/lib/db';
+import { getHistoryTransactions, getSplitDecision, getTransactionsByIds, removeTransactionFromVacation } from '@/lib/db';
 import { HistoryItem, SplitDecision, Transaction } from '@/lib/types';
 import { formatDayLabel } from '@/lib/date';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { HistoryActionSheet } from '@/components/HistoryActionSheet';
+import { BucketChip } from '@/components/BucketChip';
+import { BucketPickerSheet } from '@/components/BucketPickerSheet';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
@@ -44,11 +47,32 @@ export default function HistoryScreen() {
   const actionRef = useRef<BottomSheetModal>(null);
   const deleteSplit = useTransactionStore((s) => s.deleteSplit);
   const deleteCombinedSplit = useTransactionStore((s) => s.deleteCombinedSplit);
+  const setBucket = useTransactionStore((s) => s.setBucket);
   const toast = useToast();
 
   const refreshHistory = useCallback(() => {
     getHistoryTransactions().then(setRows).catch(console.error);
   }, []);
+
+  // History keeps its own list state (unlike Transactions/Spending, which
+  // read straight from a store), so the editor needs to be told how to
+  // refresh it after a write.
+  const bucketEditor = useBucketEditor(setBucket, refreshHistory);
+
+  // A combined row is one Splitwise expense over several transactions, so
+  // re-tagging it has to move every member.
+  function openBucketSheet(item: HistoryItem) {
+    if (!item.bucket) return;
+    bucketEditor.open({
+      ids: item.combined?.transaction_ids ?? [item.id],
+      merchantName: item.merchant_name,
+      bucket: item.bucket,
+      locked: !!item.vacation_id,
+      onRemoveFromVacation: item.vacation_id
+        ? () => removeTransactionFromVacation(item.id)   // combined + vacation-locked shouldn't co-occur; single id is correct here
+        : undefined,
+    });
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -177,7 +201,9 @@ export default function HistoryScreen() {
           data={rows}
           keyExtractor={(r) => r.id}
           contentContainerStyle={styles.list}
-          renderItem={({ item }) => <HistoryRow item={item} onPress={() => handleRowPress(item)} />}
+          renderItem={({ item }) => (
+            <HistoryRow item={item} onPress={() => handleRowPress(item)} onBucketPress={() => openBucketSheet(item)} />
+          )}
         />
       )}
 
@@ -196,6 +222,7 @@ export default function HistoryScreen() {
         onEdit={handleEdit}
         onDelete={handleDelete}
       />
+      <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
     </View>
   );
 }
@@ -214,7 +241,13 @@ function EmptyState() {
   );
 }
 
-function HistoryRow({ item, onPress }: { item: HistoryItem; onPress: () => void }) {
+function HistoryRow({
+  item, onPress, onBucketPress,
+}: {
+  item: HistoryItem;
+  onPress: () => void;
+  onBucketPress: () => void;
+}) {
   const date = formatDayLabel(item.date);
   const isSplit = item.status === 'split' && item.split;
   const initial = (item.merchant_name ?? '?')[0].toUpperCase();
@@ -236,10 +269,19 @@ function HistoryRow({ item, onPress }: { item: HistoryItem; onPress: () => void 
       </View>
       <View style={styles.info}>
         <Text style={styles.merchant} numberOfLines={1}>{item.merchant_name}</Text>
-        <Text style={styles.date}>
-          {date}
-          {item.combined ? ` · ${item.combined.count} transactions` : ''}
-        </Text>
+        <View style={styles.metaRow}>
+          <Text style={styles.date} numberOfLines={1}>
+            {date}
+            {item.combined ? ` · ${item.combined.count} transactions` : ''}
+          </Text>
+          {item.bucket && (
+            <BucketChip
+              bucket={item.bucket}
+              locked={!!item.vacation_id}
+              onPress={onBucketPress}
+            />
+          )}
+        </View>
         {isSplit ? (
           <View style={styles.splitBadge}>
             <Ionicons name="people-outline" size={11} color={Colors.success} style={{ marginRight: 3 }} />
@@ -337,10 +379,20 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     marginBottom: 2,
   },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  // flexShrink + minWidth: 0 lets the date truncate instead of pushing the
+  // (flexShrink: 0) bucket chip off the row on web, where a flex item's
+  // default min-width is its content size, not 0.
   date: {
     fontSize: 12,
     color: Colors.textTertiary,
-    marginBottom: 6,
+    flexShrink: 1,
+    minWidth: 0,
   },
   splitBadge: {
     flexDirection: 'row',
