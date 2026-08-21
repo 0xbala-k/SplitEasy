@@ -153,8 +153,14 @@ function zeroGroups(): Record<BucketGroup, number> {
  * — and lists the others separately.
  */
 export function aggregateMonth(rows: SpendRow[], monthKey: string): MonthSpend {
+  // Shares are computed over every row, THEN filtered to the month. A
+  // combined split's members can land in different months (two transactions
+  // from the same expense on either side of a month boundary); computing
+  // shares after the filter would isolate each member into its own
+  // single-member group and credit it the expense's full amount_each instead
+  // of its pro-rated slice — double-counting the user's spend across months.
+  const shares = myShareCentsByTransaction(rows);
   const inMonth = rows.filter((r) => monthKeyOf(r) === monthKey);
-  const shares = myShareCentsByTransaction(inMonth);
 
   const byCurrency = new Map<string, number>();
   for (const r of inMonth) {

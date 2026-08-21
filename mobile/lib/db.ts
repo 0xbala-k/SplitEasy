@@ -5,7 +5,7 @@ import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
-import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
+import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
 
 let _db: SQLite.SQLiteDatabase | null = null;
@@ -466,17 +466,25 @@ async function materializeBuckets(ids: string[]): Promise<void> {
   const placeholders = ids.map(() => '?').join(',');
   const rows = await d.getAllAsync<{
     id: string; merchant_name: string; plaid_category: string | null;
-    bucket: Bucket | null; vacation_id: string | null;
+    bucket: Bucket | null; bucket_source: BucketSource | null; vacation_id: string | null;
   }>(
-    `SELECT id, merchant_name, plaid_category, bucket, vacation_id
+    `SELECT id, merchant_name, plaid_category, bucket, bucket_source, vacation_id
      FROM transactions WHERE id IN (${placeholders})`,
     ids
   );
   for (const r of rows) {
     const { bucket, source } = resolveBucket(r, memory);
+    // resolveBucket's rule 2 always reports 'manual' for a row that already
+    // carries a bucket, since it can't distinguish an earlier auto-guess from
+    // a real user choice. When the bucket itself hasn't changed, keep the
+    // existing source instead of silently promoting 'auto' to 'manual' —
+    // otherwise re-committing an already-bucketed row (e.g. splitting a
+    // transaction that was already skipped) would make the revert-to-'new'
+    // path treat a stale guess as a deliberate choice and stop clearing it.
+    const nextSource = r.bucket === bucket && r.bucket_source ? r.bucket_source : source;
     await d.runAsync(
       `UPDATE transactions SET bucket = ?, bucket_source = ? WHERE id = ?`,
-      [bucket, source, r.id]
+      [bucket, nextSource, r.id]
     );
   }
 }

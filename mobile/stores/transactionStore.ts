@@ -153,7 +153,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   // Takes a list because a combined split is one row over several
   // transactions, and re-tagging it moves every member.
   setBucket: async (ids, bucket) => {
-    for (const id of ids) await setTransactionBucket(id, bucket);
-    await get().load();
+    try {
+      for (const id of ids) await setTransactionBucket(id, bucket);
+    } finally {
+      // Reload regardless of success or a mid-loop failure, so a partial
+      // write (some ids succeeded before one threw) is reflected in the UI
+      // instead of silently showing stale data for a row that's now
+      // actually mixed.
+      await get().load();
+    }
   },
 }));

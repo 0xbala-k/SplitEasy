@@ -359,3 +359,13 @@ test('setBucket writes every id and reloads', async () => {
   expect(mockSetTransactionBucket).toHaveBeenCalledWith('b', 'shopping');
   expect(mockGetNew).toHaveBeenCalled();
 });
+
+test('setBucket reloads even when a later id throws', async () => {
+  mockGetNew.mockResolvedValue([]);
+  mockGetMerchantBuckets.mockResolvedValue({});
+  mockSetTransactionBucket
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('locked'));
+  await expect(useTransactionStore.getState().setBucket(['a', 'b'], 'shopping')).rejects.toThrow();
+  expect(mockGetNew).toHaveBeenCalled();
+});

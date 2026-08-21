@@ -4,6 +4,7 @@ import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSpendStore } from '@/stores/spendStore';
+import { removeTransactionFromVacation } from '@/lib/db';
 import { aggregateMonth, formatCents, formatMonthKey, SpendRowWithShare } from '@/lib/spend';
 import {
   Bucket, BucketGroup, BUCKET_LABEL, GROUP_BUCKETS, GROUP_LABEL,
@@ -61,9 +62,8 @@ export default function SpendingScreen() {
   const centerCaption = drill ? GROUP_LABEL[drill] : 'Total spent';
 
   function onSlicePress(key: string) {
-    // Only a group with more than one bucket is worth drilling into.
     const group = key as BucketGroup;
-    if (!drill && GROUP_BUCKETS[group]?.length > 1) setDrill(group);
+    if (!drill) setDrill(group);
   }
 
   function openEditor(r: SpendRowWithShare) {
@@ -72,6 +72,9 @@ export default function SpendingScreen() {
       merchantName: r.merchant_name,
       bucket: r.bucket,
       locked: !!r.vacation_id,
+      onRemoveFromVacation: r.vacation_id
+        ? () => removeTransactionFromVacation(r.id).then(() => load())
+        : undefined,
     });
   }
 
@@ -191,9 +194,7 @@ export default function SpendingScreen() {
                   <Text style={styles.bucketAmount} numberOfLines={1}>
                     {formatCents(month.byGroup[g], month.currency)}
                   </Text>
-                  {GROUP_BUCKETS[g].length > 1 && (
-                    <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                  )}
+                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
                 </Pressable>
               ))}
         </View>

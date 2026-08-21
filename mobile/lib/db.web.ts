@@ -428,7 +428,12 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
 
 function withResolvedBucket(row: Transaction, memory: Record<string, Bucket>): Transaction {
   const { bucket, source } = resolveBucket(row, memory);
-  return { ...row, bucket, bucket_source: source };
+  // See lib/db.ts's materializeBuckets for the full rationale: resolveBucket's
+  // rule 2 always reports 'manual' for an existing bucket, so re-committing an
+  // already-bucketed row without this guard would silently promote a stale
+  // 'auto' guess into a protected 'manual' choice.
+  const nextSource = row.bucket === bucket && row.bucket_source ? row.bucket_source : source;
+  return { ...row, bucket, bucket_source: nextSource };
 }
 
 // Reverting to 'new' drops any bucket that wasn't the user's own choice.

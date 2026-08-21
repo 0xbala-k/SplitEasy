@@ -15,10 +15,11 @@ import { Bucket } from '@/lib/buckets';
 // A minimal host, since the hook owns a ref and an effect and has to run
 // inside a real component tree with the toast context above it.
 function Host({
-  write, onDone,
+  write, onDone, onRemoveFromVacation,
 }: {
   write: (ids: string[], bucket: Bucket) => Promise<void>;
   onDone?: () => void;
+  onRemoveFromVacation?: () => Promise<void>;
 }) {
   const { open, sheetProps } = useBucketEditor(write, onDone);
   return (
@@ -27,18 +28,33 @@ function Host({
         accessibilityLabel="open"
         onPress={() => open({ ids: ['a', 'b'], merchantName: 'Chipotle', bucket: 'food', locked: false })}
       />
+      <Pressable
+        accessibilityLabel="open-locked"
+        onPress={() => open({
+          ids: ['c'], merchantName: 'Delta', bucket: 'travel', locked: true, onRemoveFromVacation,
+        })}
+      />
       <Pressable accessibilityLabel="choose" onPress={() => sheetProps.onSelect('shopping')} />
+      <Pressable
+        accessibilityLabel="remove"
+        onPress={() => sheetProps.onRemoveFromVacation?.()}
+      />
       <Text testID="bucket">{String(sheetProps.bucket)}</Text>
       <Text testID="merchant">{sheetProps.merchantName}</Text>
       <Text testID="locked">{String(sheetProps.locked)}</Text>
+      <Text testID="hasRemove">{String(typeof sheetProps.onRemoveFromVacation === 'function')}</Text>
     </View>
   );
 }
 
-function renderHost(write: (ids: string[], b: Bucket) => Promise<void>, onDone?: () => void) {
+function renderHost(
+  write: (ids: string[], b: Bucket) => Promise<void>,
+  onDone?: () => void,
+  onRemoveFromVacation?: () => Promise<void>
+) {
   return render(
     <ToastProvider>
-      <Host write={write} onDone={onDone} />
+      <Host write={write} onDone={onDone} onRemoveFromVacation={onRemoveFromVacation} />
     </ToastProvider>
   );
 }
@@ -96,4 +112,37 @@ test('any other failure surfaces a generic message', async () => {
   fireEvent.press(screen.getByLabelText('open'));
   fireEvent.press(screen.getByLabelText('choose'));
   await waitFor(() => expect(screen.getByText(/Could not change the category/i)).toBeTruthy());
+});
+
+test('a target without onRemoveFromVacation exposes no removal handler', async () => {
+  renderHost(jest.fn().mockResolvedValue(undefined));
+  fireEvent.press(screen.getByLabelText('open'));
+  await waitFor(() => expect(screen.getByTestId('hasRemove').props.children).toBe('false'));
+});
+
+test('a locked target with onRemoveFromVacation exposes a removal handler', async () => {
+  renderHost(jest.fn().mockResolvedValue(undefined), undefined, jest.fn().mockResolvedValue(undefined));
+  fireEvent.press(screen.getByLabelText('open-locked'));
+  await waitFor(() => expect(screen.getByTestId('hasRemove').props.children).toBe('true'));
+});
+
+test('removing calls the target callback, dismisses, calls onDone, and shows a success toast', async () => {
+  const onDone = jest.fn();
+  const remove = jest.fn().mockResolvedValue(undefined);
+  renderHost(jest.fn().mockResolvedValue(undefined), onDone, remove);
+  fireEvent.press(screen.getByLabelText('open-locked'));
+  fireEvent.press(screen.getByLabelText('remove'));
+  await waitFor(() => expect(remove).toHaveBeenCalled());
+  await waitFor(() => expect(onDone).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByText(/Removed from vacation/i)).toBeTruthy());
+});
+
+test('a rejected removal shows the generic error toast and does not call onDone', async () => {
+  const onDone = jest.fn();
+  const remove = jest.fn().mockRejectedValue(new Error('boom'));
+  renderHost(jest.fn().mockResolvedValue(undefined), onDone, remove);
+  fireEvent.press(screen.getByLabelText('open-locked'));
+  fireEvent.press(screen.getByLabelText('remove'));
+  await waitFor(() => expect(screen.getByText(/Could not remove from vacation/i)).toBeTruthy());
+  expect(onDone).not.toHaveBeenCalled();
 });

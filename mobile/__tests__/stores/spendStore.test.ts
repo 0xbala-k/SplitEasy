@@ -87,6 +87,17 @@ test('setBucket writes every id through and reloads', async () => {
   expect(getSpendingRows).toHaveBeenCalledTimes(2);
 });
 
+test('setBucket reloads even when a later id throws', async () => {
+  (getSpendingRows as jest.Mock).mockResolvedValue([row({ id: 'a', date: '2026-08-02' })]);
+  await useSpendStore.getState().load();
+  (setTransactionBucket as jest.Mock)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('locked'));
+  (getSpendingRows as jest.Mock).mockClear();
+  await expect(useSpendStore.getState().setBucket(['a', 'b'], 'shopping')).rejects.toThrow();
+  expect(getSpendingRows).toHaveBeenCalled();
+});
+
 test('setDrill toggles the drill level', () => {
   useSpendStore.getState().setDrill('wants');
   expect(useSpendStore.getState().drill).toBe('wants');

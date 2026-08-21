@@ -186,6 +186,19 @@ describe('aggregateMonth', () => {
     ];
     expect(aggregateMonth(tied, '2026-08').currency).toBe('EUR');
   });
+
+  it('pro-rates a combined split whose members span a month boundary, without double-counting either month', () => {
+    const rows: SpendRow[] = [
+      row({ id: 'a', amount: 20, status: 'split', splitwise_expense_id: 'e1', amount_each: 10, date: '2026-01-31' }),
+      row({ id: 'b', amount: 10, status: 'split', splitwise_expense_id: 'e1', amount_each: 10, date: '2026-02-01' }),
+    ];
+    const jan = aggregateMonth(rows, '2026-01');
+    const feb = aggregateMonth(rows, '2026-02');
+    // Members' shares sum to amount_each: a gets 2/3 (667), b gets 1/3 (333).
+    expect(jan.totalCents).toBe(667);
+    expect(feb.totalCents).toBe(333);
+    expect(jan.totalCents + feb.totalCents).toBe(1000);
+  });
 });
 
 describe('availableMonths', () => {

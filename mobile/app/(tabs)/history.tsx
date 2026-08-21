@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
-import { getHistoryTransactions, getSplitDecision, getTransactionsByIds } from '@/lib/db';
+import { getHistoryTransactions, getSplitDecision, getTransactionsByIds, removeTransactionFromVacation } from '@/lib/db';
 import { HistoryItem, SplitDecision, Transaction } from '@/lib/types';
 import { formatDayLabel } from '@/lib/date';
 import { useTransactionStore } from '@/stores/transactionStore';
@@ -68,6 +68,9 @@ export default function HistoryScreen() {
       merchantName: item.merchant_name,
       bucket: item.bucket,
       locked: !!item.vacation_id,
+      onRemoveFromVacation: item.vacation_id
+        ? () => removeTransactionFromVacation(item.id)   // combined + vacation-locked shouldn't co-occur; single id is correct here
+        : undefined,
     });
   }
 

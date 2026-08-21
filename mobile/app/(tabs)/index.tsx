@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
@@ -13,7 +13,7 @@ import { OfflineBanner } from '@/components/OfflineBanner';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { showDialog } from '@/lib/dialog';
-import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds } from '@/lib/db';
+import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
@@ -70,6 +70,12 @@ export default function NewTransactionsScreen() {
     return unsub;
   }, []);
 
+  // Reload local state (not a Plaid refresh) on every focus, so a re-tag made
+  // elsewhere (e.g. teaching a merchant a new bucket from Spending) is
+  // reflected in this screen's bucket guesses. refresh() stays mount-only
+  // above — running it on every tab switch would hit the network needlessly.
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
   // Present from an effect, after the sheet has rendered with the chosen
   // transaction — same reason as the history screen. FriendPickerSheet renders
   // null while it has no transaction, so on the first tap sheetRef.current is
@@ -98,6 +104,9 @@ export default function NewTransactionsScreen() {
       merchantName: tx.merchant_name,
       bucket: resolveBucket(tx, merchantBuckets).bucket,
       locked: !!tx.vacation_id,
+      onRemoveFromVacation: tx.vacation_id
+        ? () => removeTransactionFromVacation(tx.id).then(() => load())
+        : undefined,
     });
   }
 

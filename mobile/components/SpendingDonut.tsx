@@ -137,7 +137,7 @@ export default function SpendingDonut({
         PWA — a row of plain Pressables behaves identically on both, and gives
         screen readers a real, labelled control per slice.
       */}
-      <View style={styles.hitRow} accessibilityRole="tablist">
+      <View style={styles.hitRow}>
         {computed.length === 0 ? (
           <View accessible accessibilityLabel="No spending this month" />
         ) : (

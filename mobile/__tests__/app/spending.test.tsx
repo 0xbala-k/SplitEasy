@@ -69,6 +69,19 @@ test('drilling into Wants shows its three buckets', async () => {
   expect(screen.getByLabelText('Back to all categories')).toBeTruthy();
 });
 
+test('drilling into Misc shows its own transaction, even though it is a single-bucket group', async () => {
+  (getSpendingRows as jest.Mock).mockResolvedValue([
+    row({ id: 'a', amount: 5, bucket: 'misc', date: '2026-08-03', merchant_name: 'Mystery Fee' }),
+  ]);
+  render(<SpendingScreen />);
+  await waitFor(() => expect(screen.getByLabelText('Misc, $5.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Misc, $5.00'));
+  await waitFor(() => expect(screen.getByLabelText('Back to all categories')).toBeTruthy());
+  // Expand the (only) row to confirm the transaction itself is reachable.
+  fireEvent.press(screen.getByLabelText('Misc, $5.00'));
+  await waitFor(() => expect(screen.getByText('Mystery Fee')).toBeTruthy());
+});
+
 test('stepping back a month changes the label', async () => {
   (getSpendingRows as jest.Mock).mockResolvedValue([
     row({ id: 'a', amount: 10, date: '2026-07-03' }),

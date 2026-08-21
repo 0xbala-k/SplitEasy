@@ -973,6 +973,19 @@ test('updateTransactionStatus clears a non-manual bucket when reverting to new',
   expect(revertCalls.some(([sql]: [string]) => sql.includes("= 'auto'"))).toBe(false);
 });
 
+test('updateTransactionStatus preserves an auto bucket_source when re-committing an already-bucketed row', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([]); // merchant_buckets
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Safeway', plaid_category: 'FOOD_AND_DRINK_GROCERIES', bucket: 'needs', bucket_source: 'auto', vacation_id: null },
+  ]);
+  await updateTransactionStatus('tx1', 'split');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('SET bucket = ?, bucket_source = ?'),
+    ['needs', 'auto', 'tx1']
+  );
+});
+
 test('setTransactionBucket writes the bucket and teaches the merchant', async () => {
   await initDb();
   mockDb.getFirstAsync.mockResolvedValueOnce({ merchant_name: 'STARBUCKS #4471', vacation_id: null });

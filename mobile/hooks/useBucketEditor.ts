@@ -11,6 +11,10 @@ export interface BucketEditorTarget {
   merchantName: string;
   bucket: Bucket;
   locked: boolean;
+  // Present only when `locked` is true: removes this transaction from its
+  // vacation so its bucket can be edited normally. Each screen supplies its
+  // own removal call, since only it knows which transaction id is locked.
+  onRemoveFromVacation?: () => Promise<void>;
 }
 
 /**
@@ -61,6 +65,18 @@ export function useBucketEditor(
     [target, write, onDone, toast]
   );
 
+  const onRemoveFromVacation = useCallback(async () => {
+    if (!target?.onRemoveFromVacation) return;
+    try {
+      await target.onRemoveFromVacation();
+      sheetRef.current?.dismiss();
+      await onDone?.();
+      toast.show('Removed from vacation', 'success');
+    } catch {
+      toast.show('Could not remove from vacation. Please try again.', 'error');
+    }
+  }, [target, onDone, toast]);
+
   // Memoized so a screen that passes sheetProps straight into a memoized
   // sheet component doesn't force a re-render on every unrelated render of
   // the host — only when the target or the write/onDone/toast identity
@@ -71,8 +87,9 @@ export function useBucketEditor(
       merchantName: target?.merchantName ?? '',
       locked: target?.locked ?? false,
       onSelect,
+      onRemoveFromVacation: target?.onRemoveFromVacation ? onRemoveFromVacation : undefined,
     }),
-    [target, onSelect]
+    [target, onSelect, onRemoveFromVacation]
   );
 
   return { open, sheetRef, sheetProps };

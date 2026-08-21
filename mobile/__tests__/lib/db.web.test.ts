@@ -839,6 +839,19 @@ describe('materializing buckets on commit, and manual re-tagging (IndexedDB)', (
     expect(older.bucket).toBe('food');                // unchanged
   });
 
+  test('web: re-committing an already-bucketed row does not promote its source to manual', async () => {
+    await upsertTransactions([plaidTx('rc1', { merchant_name: 'Chipotle' })]);
+    await updateTransactionStatus('rc1', 'skipped');   // commits as 'food' / 'auto', via keyword
+    let [tx] = await getTransactionsByIds(['rc1']);
+    expect(tx.bucket_source).toBe('auto');
+
+    // Re-commit the same row (simulating History's split-after-skip flow).
+    await updateTransactionStatus('rc1', 'split');
+    [tx] = await getTransactionsByIds(['rc1']);
+    expect(tx.bucket).toBe('food');
+    expect(tx.bucket_source).toBe('auto');   // still auto, not silently promoted
+  });
+
   test('web: combined splits materialize a bucket for every member', async () => {
     await upsertTransactions([
       plaidTx('c1', { merchant_name: 'Chipotle', amount: 20 }),
