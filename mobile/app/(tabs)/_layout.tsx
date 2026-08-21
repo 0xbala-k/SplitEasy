@@ -69,6 +69,15 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="spending"
+        options={{
+          title: 'Spending',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="pie-chart-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',

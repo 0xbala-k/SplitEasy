@@ -1,6 +1,6 @@
 import {
   myShareCentsByTransaction, monthKeyOf, availableMonths, aggregateMonth, formatMonthKey,
-  SpendRow,
+  formatCents, SpendRow,
 } from '@/lib/spend';
 
 function row(over: Partial<SpendRow> = {}): SpendRow {
@@ -207,5 +207,16 @@ describe('availableMonths', () => {
 describe('formatMonthKey', () => {
   it('renders a human month label', () => {
     expect(formatMonthKey('2026-08')).toBe('August 2026');
+  });
+});
+
+describe('formatCents', () => {
+  it('renders USD with a dollar sign and two decimals', () => {
+    expect(formatCents(124055, 'USD')).toBe('$1,240.55');
+    expect(formatCents(0, 'USD')).toBe('$0.00');
+  });
+
+  it('renders other currencies with their own symbol', () => {
+    expect(formatCents(34000, 'EUR')).toContain('340.00');
   });
 });

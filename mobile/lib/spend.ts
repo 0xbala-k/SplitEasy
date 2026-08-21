@@ -126,6 +126,16 @@ export function formatMonthKey(key: string): string {
   return formatMonthLabel({ year, month: month - 1 });
 }
 
+/** Cents → a localized money string, e.g. 124055 USD → "$1,240.55". */
+export function formatCents(cents: number, currency: string): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents / 100);
+}
+
 function zeroBuckets(): Record<Bucket, number> {
   return Object.fromEntries(BUCKETS.map((b) => [b, 0])) as Record<Bucket, number>;
 }
