@@ -36,9 +36,12 @@ import {
   markTransactionsReversed,
   getReviewTransactions,
   clearReview,
+  getMerchantBuckets,
+  setMerchantBucket,
+  setTransactionBucket,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision } from '@/lib/types';
-import { VacationConflictError } from '@/lib/vacationErrors';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 
 const mockDb = {
   execAsync: jest.fn().mockResolvedValue(undefined),
@@ -214,7 +217,7 @@ test('initDb migrates a v1 install by adding both pending and description column
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 5')
+    expect.stringContaining('user_version = 6')
   );
 });
 
@@ -225,7 +228,7 @@ test('initDb migrates an existing v2 install by adding the description column', 
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 5')
+    expect.stringContaining('user_version = 6')
   );
 });
 
@@ -239,7 +242,7 @@ test('initDb migrates an existing v4 install by adding review columns', async ()
     expect.stringContaining('ALTER TABLE transactions ADD COLUMN amount_changed_from')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 5')
+    expect.stringContaining('user_version = 6')
   );
 });
 
@@ -870,4 +873,135 @@ describe('vacation transaction capture & history', () => {
     expect(endActiveIdx).toBeGreaterThanOrEqual(0);
     expect(activateIdx).toBeGreaterThan(endActiveIdx);
   });
+});
+
+test('migration v6 adds bucket columns and the merchant_buckets table', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 5 });
+  await initDb();
+  const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
+  expect(sql).toContain('ADD COLUMN bucket TEXT');
+  expect(sql).toContain('ADD COLUMN bucket_source TEXT');
+  expect(sql).toContain('ADD COLUMN plaid_category TEXT');
+  expect(sql).toContain('CREATE TABLE IF NOT EXISTS merchant_buckets');
+  expect(sql).toContain('PRAGMA user_version = 6');
+});
+
+test('migration v6 columns are added on a fresh install too', async () => {
+  // A version-0 database does not get these columns from the base CREATE
+  // TABLE, so the ALTERs must not be gated behind version >= 1.
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 0 });
+  await initDb();
+  const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
+  expect(sql).toContain('ADD COLUMN bucket TEXT');
+  expect(sql).toContain('ADD COLUMN plaid_category TEXT');
+});
+
+test('initDb runs no migration when already at version 6', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 6 });
+  await initDb();
+  const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
+  expect(sql).not.toContain('ADD COLUMN bucket TEXT');
+  expect(sql).not.toContain('PRAGMA user_version = 6');
+});
+
+test('upsertTransactions stores the detailed Plaid category', async () => {
+  await initDb();
+  await upsertTransactions([{
+    transaction_id: 'ptx9', merchant_name: 'Safeway', name: 'SAFEWAY', amount: 42,
+    iso_currency_code: 'USD', date: '2026-08-10', pending: false,
+    personal_finance_category: { primary: 'FOOD_AND_DRINK', detailed: 'FOOD_AND_DRINK_GROCERIES' },
+  }]);
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT OR IGNORE'),
+    expect.arrayContaining(['FOOD_AND_DRINK_GROCERIES'])
+  );
+});
+
+test('upsertTransactions stores null when Plaid sends no category', async () => {
+  await initDb();
+  await upsertTransactions([{
+    transaction_id: 'ptx10', merchant_name: 'Mystery', name: 'MYSTERY', amount: 5,
+    iso_currency_code: 'USD', date: '2026-08-10', pending: false,
+  }]);
+  const insert = mockDb.runAsync.mock.calls.find(([s]: [string]) => s.includes('INSERT OR IGNORE'));
+  expect(insert![1]).toContain(null);
+});
+
+test('setMerchantBucket upserts and getMerchantBuckets returns a keyed map', async () => {
+  await initDb();
+  await setMerchantBucket('starbucks', 'needs');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT INTO merchant_buckets'),
+    expect.arrayContaining(['starbucks', 'needs'])
+  );
+
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { merchant_key: 'starbucks', bucket: 'needs' },
+    { merchant_key: 'amazon', bucket: 'shopping' },
+  ]);
+  await expect(getMerchantBuckets()).resolves.toEqual({ starbucks: 'needs', amazon: 'shopping' });
+});
+
+test('updateTransactionStatus materializes a bucket when committing', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([]); // merchant_buckets
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Safeway', plaid_category: 'FOOD_AND_DRINK_GROCERIES', bucket: null, vacation_id: null },
+  ]);
+  await updateTransactionStatus('tx1', 'skipped');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('SET bucket = ?, bucket_source = ?'),
+    ['needs', 'auto', 'tx1']
+  );
+});
+
+test('updateTransactionStatus clears a non-manual bucket when reverting to new', async () => {
+  await initDb();
+  await updateTransactionStatus('tx1', 'new');
+  // The predicate must clear anything that is not 'manual' — including
+  // 'vacation' — not just 'auto', or a transaction removed from a vacation
+  // after being committed would be stranded in Travel forever (bucket stays
+  // 'travel' while status is 'new', violating the "NULL bucket means
+  // uncommitted" invariant). Assert the shared clause directly rather than
+  // pinning to 'auto' only, and guard against a regression that narrows it
+  // back to 'auto' alone.
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining("bucket_source IS NULL OR bucket_source != 'manual'"),
+    ['tx1']
+  );
+  const revertCalls = mockDb.runAsync.mock.calls.filter(([sql]: [string]) => sql.includes('bucket = NULL'));
+  expect(revertCalls.some(([sql]: [string]) => sql.includes("= 'auto'"))).toBe(false);
+});
+
+test('updateTransactionStatus preserves an auto bucket_source when re-committing an already-bucketed row', async () => {
+  await initDb();
+  mockDb.getAllAsync.mockResolvedValueOnce([]); // merchant_buckets
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Safeway', plaid_category: 'FOOD_AND_DRINK_GROCERIES', bucket: 'needs', bucket_source: 'auto', vacation_id: null },
+  ]);
+  await updateTransactionStatus('tx1', 'split');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('SET bucket = ?, bucket_source = ?'),
+    ['needs', 'auto', 'tx1']
+  );
+});
+
+test('setTransactionBucket writes the bucket and teaches the merchant', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({ merchant_name: 'STARBUCKS #4471', vacation_id: null });
+  await setTransactionBucket('tx1', 'needs');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining("bucket_source = 'manual'"),
+    ['needs', 'tx1']
+  );
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('INSERT INTO merchant_buckets'),
+    expect.arrayContaining(['starbucks', 'needs'])
+  );
+});
+
+test('setTransactionBucket rejects a vacation transaction', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({ merchant_name: 'Cafe', vacation_id: 'v1' });
+  await expect(setTransactionBucket('tx1', 'food')).rejects.toThrow(BucketLockedError);
 });

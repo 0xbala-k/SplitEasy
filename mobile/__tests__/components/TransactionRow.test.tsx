@@ -1,7 +1,12 @@
 // mobile/__tests__/components/TransactionRow.test.tsx
 jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
   const { View } = require('react-native');
-  return ({ children }: { children: React.ReactNode }) => <View>{children}</View>;
+  return ({ children, renderLeftActions }: { children: React.ReactNode; renderLeftActions?: () => React.ReactNode }) => (
+    <View>
+      {renderLeftActions?.()}
+      {children}
+    </View>
+  );
 });
 
 import React from 'react';
@@ -59,15 +64,83 @@ test('in select mode, tapping the row toggles selection and hides split/skip act
   expect(onToggleSelect).toHaveBeenCalled();
 });
 
-test('remove variant labels the action as removing from vacation', () => {
-  const onSkip = jest.fn();
-  render(<TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} variant="remove" />);
-  expect(screen.queryByLabelText('Skip Amazon')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Remove Amazon from vacation'));
-  expect(onSkip).toHaveBeenCalled();
-});
-
 test('default variant keeps the existing skip label', () => {
   render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} />);
-  expect(screen.getByLabelText('Skip Amazon')).toBeTruthy();
+  // Both the inline Skip button and the swipe underlay carry this label in the
+  // default branch — they genuinely mean the same thing ("Skip Amazon"), so
+  // there are two matches by design. testID disambiguates which is which below.
+  expect(screen.getAllByLabelText('Skip Amazon')).toHaveLength(2);
+});
+
+test('without onRemove, there is no remove affordance, and both the inline button and the swipe underlay skip', () => {
+  const onSkip = jest.fn();
+  render(<TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} />);
+  expect(screen.queryByLabelText('Remove Amazon from vacation')).toBeNull();
+
+  const skipControls = screen.getAllByLabelText('Skip Amazon');
+  expect(skipControls).toHaveLength(2);
+  const underlay = screen.getByTestId('swipe-underlay');
+  const inlineSkip = skipControls.find((el) => el !== underlay);
+  expect(inlineSkip).toBeTruthy();
+
+  fireEvent.press(underlay);
+  expect(onSkip).toHaveBeenCalledTimes(1);
+
+  fireEvent.press(inlineSkip!);
+  expect(onSkip).toHaveBeenCalledTimes(2);
+});
+
+test('with onRemove, both skip and split stay available inline', () => {
+  const onSkip = jest.fn();
+  const onSplit = jest.fn();
+  render(
+    <TransactionRow transaction={tx} onSkip={onSkip} onSplit={onSplit} onRemove={jest.fn()} />
+  );
+  fireEvent.press(screen.getByLabelText('Skip Amazon'));
+  expect(onSkip).toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Split Amazon'));
+  expect(onSplit).toHaveBeenCalled();
+});
+
+test('with onRemove, the swipe underlay removes rather than skips', () => {
+  const onSkip = jest.fn();
+  const onRemove = jest.fn();
+  render(
+    <TransactionRow transaction={tx} onSkip={onSkip} onSplit={jest.fn()} onRemove={onRemove} />
+  );
+  fireEvent.press(screen.getByLabelText('Remove Amazon from vacation'));
+  expect(onRemove).toHaveBeenCalled();
+  expect(onSkip).not.toHaveBeenCalled();
+});
+
+test('renders a bucket chip when given a bucket', () => {
+  render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} bucket="food" />);
+  expect(screen.getByText('Food')).toBeTruthy();
+});
+
+test('renders no chip when no bucket is given', () => {
+  render(<TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} />);
+  expect(screen.queryByText('Food')).toBeNull();
+});
+
+test('tapping the chip fires onBucketPress', () => {
+  const onBucketPress = jest.fn();
+  render(
+    <TransactionRow
+      transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()}
+      bucket="needs" onBucketPress={onBucketPress}
+    />
+  );
+  fireEvent.press(screen.getByLabelText('Category: Needs. Tap to change.'));
+  expect(onBucketPress).toHaveBeenCalled();
+});
+
+test('a locked chip announces the vacation', () => {
+  render(
+    <TransactionRow
+      transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()}
+      bucket="travel" bucketLocked onBucketPress={jest.fn()}
+    />
+  );
+  expect(screen.getByLabelText('Category: Travel, set by a vacation.')).toBeTruthy();
 });

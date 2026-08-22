@@ -4,7 +4,9 @@ import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, Histor
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
-import { VacationConflictError } from '@/lib/vacationErrors';
+import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
+import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
+import { SpendRow } from '@/lib/spend';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -111,11 +113,26 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     await d.execAsync(`ALTER TABLE transactions ADD COLUMN review_reason TEXT;`);
     await d.execAsync(`ALTER TABLE transactions ADD COLUMN amount_changed_from REAL;`);
   }
+  if (version < 6) {
+    // Same rationale as vacation_id above: these columns are not in the base
+    // `version < 1` CREATE TABLE, so these ALTERs must run ungated so a fresh
+    // install (version 0) gets them too.
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN bucket TEXT;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN bucket_source TEXT;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN plaid_category TEXT;`);
+    await d.execAsync(`
+      CREATE TABLE IF NOT EXISTS merchant_buckets (
+        merchant_key TEXT PRIMARY KEY,
+        bucket       TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+    `);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 5) {
-    await d.execAsync(`PRAGMA user_version = 5;`);
+  if (version < 6) {
+    await d.execAsync(`PRAGMA user_version = 6;`);
   }
   return d;
 }
@@ -169,6 +186,8 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
             friend_names: r.friend_names ? JSON.parse(r.friend_names) : [],
             amount_each: r.amount_each ?? 0,
           },
+          bucket: r.bucket ?? null,
+          vacation_id: r.vacation_id ?? null,
           _txIds: [r.id],
         };
         groups.set(key, item);
@@ -185,6 +204,8 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
         ...(r.status === 'split' && r.friend_names
           ? { split: { friend_names: JSON.parse(r.friend_names), amount_each: r.amount_each ?? 0 } }
           : {}),
+        bucket: r.bucket ?? null,
+        vacation_id: r.vacation_id ?? null,
       });
     }
   }
@@ -384,19 +405,39 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
     const name = tx.merchant_name ?? tx.name;
     const currency = tx.iso_currency_code ?? 'USD';
     const pending = tx.pending ? 1 : 0;
+    const category = tx.personal_finance_category?.detailed ?? null;
     // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped rows
     await d.runAsync(
-      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id)
-       VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?)`,
-      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId]
+      `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id, plaid_category)
+       VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)`,
+      [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId, category]
     );
     // UPDATE only if still 'new' (don't overwrite user decisions)
     await d.runAsync(
-      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?
+      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?, plaid_category = ?
        WHERE id = ? AND status = 'new'`,
-      [name, tx.amount, tx.date, pending, tx.transaction_id]
+      [name, tx.amount, tx.date, pending, category, tx.transaction_id]
     );
   }
+}
+
+/** Every learned merchant → bucket override, keyed by normalized merchant name. */
+export async function getMerchantBuckets(): Promise<Record<string, Bucket>> {
+  const rows = await (await dbReady()).getAllAsync<{ merchant_key: string; bucket: Bucket }>(
+    `SELECT merchant_key, bucket FROM merchant_buckets`,
+    []
+  );
+  return Object.fromEntries(rows.map((r) => [r.merchant_key, r.bucket]));
+}
+
+/** Remember that this merchant belongs in this bucket, for future transactions. */
+export async function setMerchantBucket(merchantKey: string, bucket: Bucket): Promise<void> {
+  if (!merchantKey) return;
+  await (await dbReady()).runAsync(
+    `INSERT INTO merchant_buckets (merchant_key, bucket, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(merchant_key) DO UPDATE SET bucket = excluded.bucket, updated_at = excluded.updated_at`,
+    [merchantKey, bucket, new Date().toISOString()]
+  );
 }
 
 export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void> {
@@ -415,11 +456,83 @@ export async function deleteTransactionsByPlaidIds(ids: string[]): Promise<void>
   );
 }
 
-export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
-  await (await dbReady()).runAsync(
-    `UPDATE transactions SET status = ? WHERE id = ?`,
-    [status, id]
+// Resolve and write the bucket for rows being committed. Called from
+// updateTransactionStatus, which every commit path funnels through — including
+// persistCombinedSplit, which calls it per member inside its own transaction.
+async function materializeBuckets(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const d = await dbReady();
+  const memory = await getMerchantBuckets();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await d.getAllAsync<{
+    id: string; merchant_name: string; plaid_category: string | null;
+    bucket: Bucket | null; bucket_source: BucketSource | null; vacation_id: string | null;
+  }>(
+    `SELECT id, merchant_name, plaid_category, bucket, bucket_source, vacation_id
+     FROM transactions WHERE id IN (${placeholders})`,
+    ids
   );
+  for (const r of rows) {
+    const { bucket, source } = resolveBucket(r, memory);
+    // resolveBucket's rule 2 always reports 'manual' for a row that already
+    // carries a bucket, since it can't distinguish an earlier auto-guess from
+    // a real user choice. When the bucket itself hasn't changed, keep the
+    // existing source instead of silently promoting 'auto' to 'manual' —
+    // otherwise re-committing an already-bucketed row (e.g. splitting a
+    // transaction that was already skipped) would make the revert-to-'new'
+    // path treat a stale guess as a deliberate choice and stop clearing it.
+    const nextSource = r.bucket === bucket && r.bucket_source ? r.bucket_source : source;
+    await d.runAsync(
+      `UPDATE transactions SET bucket = ?, bucket_source = ? WHERE id = ?`,
+      [bucket, nextSource, r.id]
+    );
+  }
+}
+
+export async function updateTransactionStatus(id: string, status: TransactionStatus): Promise<void> {
+  const d = await dbReady();
+  await d.runAsync(`UPDATE transactions SET status = ? WHERE id = ?`, [status, id]);
+  if (status === 'split' || status === 'skipped') {
+    await materializeBuckets([id]);
+  } else {
+    // Back to 'new': drop any bucket that wasn't the user's own choice, so
+    // it re-resolves against current merchant memory (or the current
+    // vacation_id) if it is committed again. Only 'manual' survives — an
+    // 'auto' guess should re-resolve, and a 'vacation' bucket must not
+    // outlive the vacation_id that produced it (removeTransactionFromVacation
+    // nulls vacation_id without touching bucket, so a row that keeps a
+    // 'vacation' bucket here would be stranded in Travel forever). Written
+    // as `!= 'manual'` rather than `= 'auto' OR = 'vacation'` so any future
+    // BucketSource still clears by default; NULL <> 'manual' is NULL (not
+    // true) in SQL, so the explicit `bucket_source IS NULL` arm is required
+    // or a row with no source yet would be skipped.
+    await d.runAsync(
+      `UPDATE transactions SET bucket = NULL, bucket_source = NULL
+       WHERE id = ? AND (bucket_source IS NULL OR bucket_source != 'manual')`,
+      [id]
+    );
+  }
+}
+
+/**
+ * Move a transaction to a bucket by hand, and remember the merchant for next
+ * time. Forward-only: transactions already committed under the old bucket are
+ * left alone, so a month the user has already reviewed keeps its numbers.
+ */
+export async function setTransactionBucket(id: string, bucket: Bucket): Promise<void> {
+  const d = await dbReady();
+  const row = await d.getFirstAsync<{ merchant_name: string; vacation_id: string | null }>(
+    `SELECT merchant_name, vacation_id FROM transactions WHERE id = ?`,
+    [id]
+  );
+  if (!row) return;
+  if (row.vacation_id) throw new BucketLockedError();
+
+  await d.runAsync(
+    `UPDATE transactions SET bucket = ?, bucket_source = 'manual' WHERE id = ?`,
+    [bucket, id]
+  );
+  await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
 // Rekey a pending transaction's row to the id Plaid assigns once it posts.
@@ -751,6 +864,31 @@ export async function updateVacationDates(
   await d.runAsync(
     `UPDATE vacations SET start_date = ?, end_date = ? WHERE id = ?`,
     [startDate, endDate, id]
+  );
+}
+
+/**
+ * Every committed, bucketed transaction, joined to its split decision and its
+ * vacation. `bucket IS NOT NULL` is what excludes both uncommitted
+ * transactions and everything that predates the spending tracker.
+ *
+ * The vacation join supplies the dates monthKeyOf needs, so editing a trip's
+ * dates moves its whole spend to the new month without a rewrite.
+ */
+export async function getSpendingRows(): Promise<SpendRow[]> {
+  return (await dbReady()).getAllAsync<SpendRow>(
+    `SELECT t.id, t.merchant_name, t.amount, t.currency, t.date, t.status,
+            t.bucket, t.bucket_source, t.vacation_id,
+            s.splitwise_expense_id, s.amount_each,
+            v.start_date  AS vacation_start_date,
+            v.started_at  AS vacation_started_at,
+            v.created_at  AS vacation_created_at
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     LEFT JOIN vacations v       ON v.id = t.vacation_id
+     WHERE t.status IN ('split','skipped') AND t.bucket IS NOT NULL
+     ORDER BY t.date DESC`,
+    []
   );
 }
 

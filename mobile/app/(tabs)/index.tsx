@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StatusBar, StyleSheet, Text, View } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
@@ -13,10 +13,13 @@ import { OfflineBanner } from '@/components/OfflineBanner';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { showDialog } from '@/lib/dialog';
-import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds } from '@/lib/db';
+import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
+import { resolveBucket } from '@/lib/buckets';
+import { BucketPickerSheet } from '@/components/BucketPickerSheet';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
 
 // Clears the absolute-positioned selectBar so it doesn't cover the last row.
 const SELECT_BAR_CLEARANCE = 88;
@@ -43,7 +46,7 @@ export default function NewTransactionsScreen() {
   const topInset = useSafeAreaInsets().top;
   const {
     transactions, isLoading, review, load, refresh, skip, loadReview, resolveReview,
-    deleteSplit, deleteCombinedSplit,
+    deleteSplit, deleteCombinedSplit, merchantBuckets, setBucket,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -67,6 +70,12 @@ export default function NewTransactionsScreen() {
     return unsub;
   }, []);
 
+  // Reload local state (not a Plaid refresh) on every focus, so a re-tag made
+  // elsewhere (e.g. teaching a merchant a new bucket from Spending) is
+  // reflected in this screen's bucket guesses. refresh() stays mount-only
+  // above — running it on every tab switch would hit the network needlessly.
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
   // Present from an effect, after the sheet has rendered with the chosen
   // transaction — same reason as the history screen. FriendPickerSheet renders
   // null while it has no transaction, so on the first tap sheetRef.current is
@@ -85,6 +94,20 @@ export default function NewTransactionsScreen() {
     setSelected(tx);
     setPickerToken((t) => t + 1);
     setPendingPresent(true);
+  }
+
+  const bucketEditor = useBucketEditor(setBucket);
+
+  function openBucketSheet(tx: Transaction) {
+    bucketEditor.open({
+      ids: [tx.id],
+      merchantName: tx.merchant_name,
+      bucket: resolveBucket(tx, merchantBuckets).bucket,
+      locked: !!tx.vacation_id,
+      onRemoveFromVacation: tx.vacation_id
+        ? () => removeTransactionFromVacation(tx.id).then(() => load())
+        : undefined,
+    });
   }
 
   function enterSelect(tx: Transaction) {
@@ -265,6 +288,9 @@ export default function NewTransactionsScreen() {
               selectMode={selectMode}
               selected={selectedIds.has(item.id)}
               onToggleSelect={() => toggleSelect(item.id)}
+              bucket={resolveBucket(item, merchantBuckets).bucket}
+              bucketLocked={!!item.vacation_id}
+              onBucketPress={() => openBucketSheet(item)}
             />
           )}
         />
@@ -279,6 +305,7 @@ export default function NewTransactionsScreen() {
         openToken={pickerToken}
         onSuccess={handleSplitSuccess}
       />
+      <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
       {selectMode && (
         <View style={styles.selectBar}>
           <Pressable

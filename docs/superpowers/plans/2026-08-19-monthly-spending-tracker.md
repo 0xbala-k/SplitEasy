@@ -40,10 +40,12 @@ These apply to **every** task. Re-read them before starting any task.
 | `mobile/components/SpendingDonut.tsx` | SVG donut with drill-down. Presentational only. |
 | `mobile/components/BucketChip.tsx` | The tappable tag. Presentational only. |
 | `mobile/components/BucketPickerSheet.tsx` | Bucket selection bottom sheet. |
+| `mobile/hooks/useBucketEditor.ts` | Bucket-editing plumbing shared by the three consuming screens. |
 | `mobile/__tests__/lib/buckets.test.ts` | |
 | `mobile/__tests__/lib/spend.test.ts` | |
 | `mobile/__tests__/components/BucketChip.test.tsx` | |
 | `mobile/__tests__/components/BucketPickerSheet.test.tsx` | |
+| `mobile/__tests__/hooks/useBucketEditor.test.tsx` | |
 | `mobile/__tests__/components/SpendingDonut.test.tsx` | |
 | `mobile/__tests__/stores/spendStore.test.ts` | |
 
@@ -73,7 +75,7 @@ These apply to **every** task. Re-read them before starting any task.
 2. spend.ts (pure)    ──┼──> 3. migration + memory ──> 4. materialization ──> 6. query + store ──┐
                         │                                                                        ├──> 9. Spending tab
 5. vacation skip (independent) ─────────────────────────────────────────────> 7. donut ──────────┘
-                                                                              8. chip + sheet ──> 10. chip wiring
+                                                        8. chip + sheet + useBucketEditor ──> 9, 10, 11
 ```
 
 ---
@@ -1960,7 +1962,7 @@ interface SpendState {
   selectMonth: (monthKey: string) => void;
   stepMonth: (delta: number) => void;
   setDrill: (group: BucketGroup | null) => void;
-  setBucket: (transactionId: string, bucket: Bucket) => Promise<void>;
+  setBucket: (ids: string[], bucket: Bucket) => Promise<void>;
   current: () => MonthSpend;
 }
 ```
@@ -2085,11 +2087,12 @@ test('current aggregates the selected month', async () => {
   expect(m.byGroup.wants).toBe(4000);
 });
 
-test('setBucket writes through and reloads', async () => {
+test('setBucket writes every id through and reloads', async () => {
   (getSpendingRows as jest.Mock).mockResolvedValue([row({ id: 'a', date: '2026-08-02' })]);
   await useSpendStore.getState().load();
-  await useSpendStore.getState().setBucket('a', 'shopping');
+  await useSpendStore.getState().setBucket(['a', 'b'], 'shopping');
   expect(setTransactionBucket).toHaveBeenCalledWith('a', 'shopping');
+  expect(setTransactionBucket).toHaveBeenCalledWith('b', 'shopping');
   expect(getSpendingRows).toHaveBeenCalledTimes(2);
 });
 
@@ -2209,7 +2212,7 @@ interface SpendState {
   selectMonth: (monthKey: string) => void;
   stepMonth: (delta: number) => void;
   setDrill: (group: BucketGroup | null) => void;
-  setBucket: (transactionId: string, bucket: Bucket) => Promise<void>;
+  setBucket: (ids: string[], bucket: Bucket) => Promise<void>;
   current: () => MonthSpend;
 }
 
@@ -2247,8 +2250,10 @@ export const useSpendStore = create<SpendState>((set, get) => ({
 
   setDrill: (group) => set({ drill: group }),
 
-  setBucket: async (transactionId, bucket) => {
-    await setTransactionBucket(transactionId, bucket);
+  // Takes a list because a combined split is one row over several
+  // transactions, and re-tagging it moves every member.
+  setBucket: async (ids, bucket) => {
+    for (const id of ids) await setTransactionBucket(id, bucket);
     await get().load();
   },
 
@@ -2610,12 +2615,15 @@ EOF
 
 ---
 
-### Task 8: The bucket chip and its picker sheet
+### Task 8: The bucket chip, its picker sheet, and the editor hook
 
 **Files:**
 - Create: `mobile/components/BucketChip.tsx`
 - Create: `mobile/components/BucketPickerSheet.tsx`
-- Test: `mobile/__tests__/components/BucketChip.test.tsx`, `mobile/__tests__/components/BucketPickerSheet.test.tsx`
+- Create: `mobile/hooks/useBucketEditor.ts`
+- Test: `mobile/__tests__/components/BucketChip.test.tsx`, `mobile/__tests__/components/BucketPickerSheet.test.tsx`, `mobile/__tests__/hooks/useBucketEditor.test.tsx`
+
+**Why the hook exists:** three screens (Spending, Transactions, History) each need the same bucket-editing plumbing — a sheet ref, a deferred `present()`, the selected target, and a write wrapped in error handling. Writing that three times is duplication a reviewer will rightly flag, so it is defined once here and each screen consumes it in a few lines. `mobile/hooks/` is a new directory; `@/*` maps to the project root in `tsconfig.json`, so `@/hooks/useBucketEditor` resolves.
 
 **Interfaces:**
 - Consumes: `Bucket`, `BUCKETS`, `BUCKET_LABEL` from Task 1; `BucketColors` from Task 7.
@@ -2636,6 +2644,26 @@ interface BucketPickerSheetProps {
 }
 // BucketPickerSheet is forwardRef<BottomSheetModal, Props>, matching
 // HistoryActionSheet, and is presented by the parent via ref.
+
+interface BucketEditorTarget {
+  ids: string[];          // one id, or every member of a combined split
+  merchantName: string;
+  bucket: Bucket;
+  locked: boolean;
+}
+function useBucketEditor(
+  write: (ids: string[], bucket: Bucket) => Promise<void>,
+  onDone?: () => void | Promise<void>,
+): {
+  open: (target: BucketEditorTarget) => void;
+  sheetRef: React.RefObject<BottomSheetModal>;
+  sheetProps: {
+    bucket: Bucket | null;
+    merchantName: string;
+    locked: boolean;
+    onSelect: (bucket: Bucket) => Promise<void>;
+  };
+};
 ```
 
 **Pattern to follow:** `mobile/components/HistoryActionSheet.tsx` — `forwardRef<BottomSheetModal, Props>`, returns `null` when it has nothing to show, `snapPoints` with `enableDynamicSizing={false}`, `handleIndicatorStyle`/`backgroundStyle` from theme. This sheet is a plain list with no CTA, so `BottomSheetView` is fine; if a CTA is ever added it must move to `footerComponent`.
@@ -2736,9 +2764,114 @@ test('a locked sheet offers to remove the transaction from the vacation', () => 
 });
 ```
 
+
+Create `mobile/__tests__/hooks/useBucketEditor.test.tsx`:
+
+```tsx
+jest.mock('@gorhom/bottom-sheet', () => ({
+  BottomSheetModal: require('react').forwardRef(
+    ({ children }: { children: React.ReactNode }, _r: unknown) => children ?? null
+  ),
+}));
+
+import React from 'react';
+import { Pressable, Text, View } from 'react-native';
+import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { ToastProvider } from '@/components/ToastProvider';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
+import { BucketLockedError } from '@/lib/vacationErrors';
+import { Bucket } from '@/lib/buckets';
+
+// A minimal host, since the hook owns a ref and an effect and has to run
+// inside a real component tree with the toast context above it.
+function Host({
+  write, onDone,
+}: {
+  write: (ids: string[], bucket: Bucket) => Promise<void>;
+  onDone?: () => void;
+}) {
+  const { open, sheetProps } = useBucketEditor(write, onDone);
+  return (
+    <View>
+      <Pressable
+        accessibilityLabel="open"
+        onPress={() => open({ ids: ['a', 'b'], merchantName: 'Chipotle', bucket: 'food', locked: false })}
+      />
+      <Pressable accessibilityLabel="choose" onPress={() => sheetProps.onSelect('shopping')} />
+      <Text testID="bucket">{String(sheetProps.bucket)}</Text>
+      <Text testID="merchant">{sheetProps.merchantName}</Text>
+      <Text testID="locked">{String(sheetProps.locked)}</Text>
+    </View>
+  );
+}
+
+function renderHost(write: (ids: string[], b: Bucket) => Promise<void>, onDone?: () => void) {
+  return render(
+    <ToastProvider>
+      <Host write={write} onDone={onDone} />
+    </ToastProvider>
+  );
+}
+
+test('starts with no target', () => {
+  renderHost(jest.fn().mockResolvedValue(undefined));
+  expect(screen.getByTestId('bucket').props.children).toBe('null');
+  expect(screen.getByTestId('merchant').props.children).toBe('');
+});
+
+test('open populates the sheet props from the target', async () => {
+  renderHost(jest.fn().mockResolvedValue(undefined));
+  fireEvent.press(screen.getByLabelText('open'));
+  await waitFor(() => expect(screen.getByTestId('bucket').props.children).toBe('food'));
+  expect(screen.getByTestId('merchant').props.children).toBe('Chipotle');
+  expect(screen.getByTestId('locked').props.children).toBe('false');
+});
+
+test('selecting writes every id in the target', async () => {
+  const write = jest.fn().mockResolvedValue(undefined);
+  renderHost(write);
+  fireEvent.press(screen.getByLabelText('open'));
+  fireEvent.press(screen.getByLabelText('choose'));
+  await waitFor(() => expect(write).toHaveBeenCalledWith(['a', 'b'], 'shopping'));
+});
+
+test('selecting without a target does nothing', async () => {
+  const write = jest.fn().mockResolvedValue(undefined);
+  renderHost(write);
+  fireEvent.press(screen.getByLabelText('choose'));
+  await waitFor(() => expect(write).not.toHaveBeenCalled());
+});
+
+test('onDone runs after a successful write', async () => {
+  const onDone = jest.fn();
+  renderHost(jest.fn().mockResolvedValue(undefined), onDone);
+  fireEvent.press(screen.getByLabelText('open'));
+  fireEvent.press(screen.getByLabelText('choose'));
+  await waitFor(() => expect(onDone).toHaveBeenCalled());
+});
+
+test('a locked write surfaces the lock message and does not call onDone', async () => {
+  const onDone = jest.fn();
+  const write = jest.fn().mockRejectedValue(new BucketLockedError());
+  renderHost(write, onDone);
+  fireEvent.press(screen.getByLabelText('open'));
+  fireEvent.press(screen.getByLabelText('choose'));
+  await waitFor(() => expect(screen.getByText(/part of a vacation/i)).toBeTruthy());
+  expect(onDone).not.toHaveBeenCalled();
+});
+
+test('any other failure surfaces a generic message', async () => {
+  const write = jest.fn().mockRejectedValue(new Error('boom'));
+  renderHost(write);
+  fireEvent.press(screen.getByLabelText('open'));
+  fireEvent.press(screen.getByLabelText('choose'));
+  await waitFor(() => expect(screen.getByText(/Could not change the category/i)).toBeTruthy());
+});
+```
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npm test -- BucketChip.test.tsx BucketPickerSheet.test.tsx`
+Run: `npm test -- BucketChip.test.tsx BucketPickerSheet.test.tsx useBucketEditor.test.tsx`
 Expected: FAIL — modules not found.
 
 - [ ] **Step 3: Write `BucketChip`**
@@ -2909,28 +3042,114 @@ const styles = StyleSheet.create({
 });
 ```
 
-- [ ] **Step 5: Run the tests**
 
-Run: `npm test -- BucketChip.test.tsx BucketPickerSheet.test.tsx`
+- [ ] **Step 5: Write the editor hook**
+
+Create `mobile/hooks/useBucketEditor.ts`:
+
+```tsx
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { BottomSheetModal } from '@gorhom/bottom-sheet';
+import { Bucket, BUCKET_LABEL } from '@/lib/buckets';
+import { BucketLockedError } from '@/lib/vacationErrors';
+import { useToast } from '@/components/ToastProvider';
+
+export interface BucketEditorTarget {
+  // A combined split is one row over several transactions, so re-tagging it
+  // has to move every member — hence a list rather than a single id.
+  ids: string[];
+  merchantName: string;
+  bucket: Bucket;
+  locked: boolean;
+}
+
+/**
+ * The bucket-editing plumbing shared by the Spending, Transactions, and
+ * History screens: which transaction is being edited, presenting the sheet
+ * once it has rendered, and the write with its error handling.
+ *
+ * `write` is the screen's own store action, so each screen keeps control of
+ * what a write means and what gets reloaded afterwards.
+ */
+export function useBucketEditor(
+  write: (ids: string[], bucket: Bucket) => Promise<void>,
+  onDone?: () => void | Promise<void>
+) {
+  const sheetRef = useRef<BottomSheetModal>(null);
+  const [target, setTarget] = useState<BucketEditorTarget | null>(null);
+  const [pendingPresent, setPendingPresent] = useState(false);
+  const toast = useToast();
+
+  // Present from an effect, after the sheet has rendered with the chosen
+  // target. BucketPickerSheet returns null while it has no bucket, so on the
+  // first tap sheetRef.current is still null and a synchronous present()
+  // silently does nothing — the same reason the friend picker defers.
+  useEffect(() => {
+    if (!pendingPresent) return;
+    sheetRef.current?.present();
+    setPendingPresent(false);
+  }, [pendingPresent]);
+
+  const open = useCallback((next: BucketEditorTarget) => {
+    setTarget(next);
+    setPendingPresent(true);
+  }, []);
+
+  const onSelect = useCallback(
+    async (bucket: Bucket) => {
+      if (!target) return;
+      try {
+        await write(target.ids, bucket);
+        sheetRef.current?.dismiss();
+        await onDone?.();
+        toast.show(`Moved to ${BUCKET_LABEL[bucket]}`, 'success');
+      } catch (err) {
+        if (err instanceof BucketLockedError) toast.show(err.message, 'error');
+        else toast.show('Could not change the category. Please try again.', 'error');
+      }
+    },
+    [target, write, onDone, toast]
+  );
+
+  return {
+    open,
+    sheetRef,
+    sheetProps: {
+      bucket: target?.bucket ?? null,
+      merchantName: target?.merchantName ?? '',
+      locked: target?.locked ?? false,
+      onSelect,
+    },
+  };
+}
+```
+
+- [ ] **Step 6: Run the tests**
+
+Run: `npm test -- BucketChip.test.tsx BucketPickerSheet.test.tsx useBucketEditor.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 6: Run the full suite and typecheck**
+- [ ] **Step 7: Run the full suite and typecheck**
 
 Run: `npm test && npx tsc --noEmit`
 Expected: PASS, no type errors.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add mobile/components/BucketChip.tsx mobile/components/BucketPickerSheet.tsx \
+        mobile/hooks/useBucketEditor.ts \
         mobile/__tests__/components/BucketChip.test.tsx \
-        mobile/__tests__/components/BucketPickerSheet.test.tsx
+        mobile/__tests__/components/BucketPickerSheet.test.tsx \
+        mobile/__tests__/hooks/useBucketEditor.test.tsx
 git commit -m "$(cat <<'EOF'
-feat(mobile): add the bucket chip and picker sheet
+feat(mobile): add the bucket chip, picker sheet, and editor hook
 
 One tappable tag, reused on transaction tiles, history rows, and the
 spending list. A vacation-bound chip renders locked and its sheet
-explains the trip rather than offering categories.
+explains the trip rather than offering categories. useBucketEditor owns
+the sheet plumbing once, so the three consuming screens do not each
+carry their own copy.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -3097,12 +3316,11 @@ export function formatCents(cents: number, currency: string): string {
 Create `mobile/app/(tabs)/spending.tsx`:
 
 ```tsx
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { useSpendStore } from '@/stores/spendStore';
 import { aggregateMonth, formatCents, formatMonthKey, SpendRowWithShare } from '@/lib/spend';
 import {
@@ -3111,15 +3329,13 @@ import {
 import SpendingDonut, { SliceInput } from '@/components/SpendingDonut';
 import { BucketChip } from '@/components/BucketChip';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
-import { useToast } from '@/components/ToastProvider';
-import { BucketLockedError } from '@/lib/vacationErrors';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
 import { BucketColors, Colors, GroupColors, Radius, Shadow, Spacing } from '@/lib/theme';
 
 const GROUPS: BucketGroup[] = ['travel', 'needs', 'wants', 'misc'];
 
 export default function SpendingScreen() {
   const topInset = useSafeAreaInsets().top;
-  const toast = useToast();
   const { months, monthKey, drill, load, stepMonth, setDrill, setBucket } = useSpendStore();
   // Select the raw rows and aggregate in a memo. Selecting `s.current()`
   // directly would build a new object on every store read, and zustand's
@@ -3128,24 +3344,12 @@ export default function SpendingScreen() {
   const month = useMemo(() => aggregateMonth(rows, monthKey), [rows, monthKey]);
 
   const [expanded, setExpanded] = useState<Bucket | null>(null);
-  const [editing, setEditing] = useState<SpendRowWithShare | null>(null);
-  const [pendingPresent, setPendingPresent] = useState(false);
-  const sheetRef = useRef<BottomSheetModal>(null);
+  // setBucket already reloads the store, so the hook needs no onDone here.
+  const editor = useBucketEditor(setBucket);
 
   // Recompute whenever the tab regains focus, so a split or skip made on
   // another tab is reflected without a manual refresh.
   useFocusEffect(useCallback(() => { load(); }, [load]));
-
-  // Present from an effect, after the sheet has rendered with the chosen row:
-  // the sheet returns null while it has nothing to show, so on the first tap
-  // sheetRef.current is still null and a synchronous present() does nothing.
-  // Same reason as the Transactions and History screens. This is a plain
-  // useEffect, not useFocusEffect — the tap happens while already focused.
-  useEffect(() => {
-    if (!pendingPresent) return;
-    sheetRef.current?.present();
-    setPendingPresent(false);
-  }, [pendingPresent]);
 
   const atOldest = months.indexOf(monthKey) === months.length - 1;
   const atNewest = months.indexOf(monthKey) <= 0;
@@ -3169,20 +3373,12 @@ export default function SpendingScreen() {
   }
 
   function openEditor(r: SpendRowWithShare) {
-    setEditing(r);
-    setPendingPresent(true);
-  }
-
-  async function applyBucket(bucket: Bucket) {
-    if (!editing) return;
-    try {
-      await setBucket(editing.id, bucket);
-      sheetRef.current?.dismiss();
-      toast.show(`Moved to ${BUCKET_LABEL[bucket]}`, 'success');
-    } catch (err) {
-      if (err instanceof BucketLockedError) toast.show(err.message, 'error');
-      else toast.show('Could not change the category. Please try again.', 'error');
-    }
+    editor.open({
+      ids: [r.id],
+      merchantName: r.merchant_name,
+      bucket: r.bucket,
+      locked: !!r.vacation_id,
+    });
   }
 
   const listBuckets: Bucket[] = drill ? GROUP_BUCKETS[drill] : [];
@@ -3309,13 +3505,7 @@ export default function SpendingScreen() {
         </View>
       </ScrollView>
 
-      <BucketPickerSheet
-        ref={sheetRef}
-        bucket={editing?.bucket ?? null}
-        merchantName={editing?.merchant_name ?? ''}
-        locked={!!editing?.vacation_id}
-        onSelect={applyBucket}
-      />
+      <BucketPickerSheet ref={editor.sheetRef} {...editor.sheetProps} />
     </View>
   );
 }
@@ -3593,9 +3783,9 @@ Add to the store body:
 In `mobile/app/(tabs)/index.tsx`, add the imports:
 
 ```tsx
-import { resolveBucket, Bucket, BUCKET_LABEL } from '@/lib/buckets';
+import { resolveBucket } from '@/lib/buckets';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
-import { BucketLockedError } from '@/lib/vacationErrors';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
 ```
 
 Pull the new store members into the existing destructure:
@@ -3607,37 +3797,18 @@ Pull the new store members into the existing destructure:
   } = useTransactionStore();
 ```
 
-Add the sheet state alongside the existing sheet plumbing:
+Add the editor. `setBucket` already reloads the store, so no `onDone` is needed:
 
 ```tsx
-  const [bucketTx, setBucketTx] = useState<Transaction | null>(null);
-  const [pendingBucketPresent, setPendingBucketPresent] = useState(false);
-  const bucketSheetRef = useRef<BottomSheetModal>(null);
-
-  // Same deferred-present reason as the friend picker above: the sheet renders
-  // null until it has a transaction, so a synchronous present() on the first
-  // tap finds a null ref.
-  useEffect(() => {
-    if (!pendingBucketPresent) return;
-    bucketSheetRef.current?.present();
-    setPendingBucketPresent(false);
-  }, [pendingBucketPresent]);
+  const bucketEditor = useBucketEditor(setBucket);
 
   function openBucketSheet(tx: Transaction) {
-    setBucketTx(tx);
-    setPendingBucketPresent(true);
-  }
-
-  async function applyBucket(bucket: Bucket) {
-    if (!bucketTx) return;
-    try {
-      await setBucket([bucketTx.id], bucket);
-      bucketSheetRef.current?.dismiss();
-      toast.show(`Moved to ${BUCKET_LABEL[bucket]}`, 'success');
-    } catch (err) {
-      if (err instanceof BucketLockedError) toast.show(err.message, 'error');
-      else toast.show('Could not change the category. Please try again.', 'error');
-    }
+    bucketEditor.open({
+      ids: [tx.id],
+      merchantName: tx.merchant_name,
+      bucket: resolveBucket(tx, merchantBuckets).bucket,
+      locked: !!tx.vacation_id,
+    });
   }
 ```
 
@@ -3652,13 +3823,7 @@ In the `renderItem` for the transaction list, add the three props:
 Render the sheet next to the existing `FriendPickerSheet`:
 
 ```tsx
-      <BucketPickerSheet
-        ref={bucketSheetRef}
-        bucket={bucketTx ? resolveBucket(bucketTx, merchantBuckets).bucket : null}
-        merchantName={bucketTx?.merchant_name ?? ''}
-        locked={!!bucketTx?.vacation_id}
-        onSelect={applyBucket}
-      />
+      <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
 ```
 
 - [ ] **Step 6: Run the full suite and typecheck**
@@ -3761,26 +3926,40 @@ Do the same in `db.web.ts`'s equivalent grouping code.
 
 - [ ] **Step 5: Wire the History screen**
 
-In `mobile/app/(tabs)/history.tsx`, mirror Task 10's sheet plumbing — the same
-`bucketTx` state, deferred `present()` effect, and `applyBucket` handler — with
-two differences:
+In `mobile/app/(tabs)/history.tsx`, add the imports:
 
 ```tsx
-  // A combined row is several transactions; re-tag all of them.
-  const memberIds = (item: HistoryItem) => item.combined?.transaction_ids ?? [item.id];
+import { BucketChip } from '@/components/BucketChip';
+import { BucketPickerSheet } from '@/components/BucketPickerSheet';
+import { useBucketEditor } from '@/hooks/useBucketEditor';
+import { useTransactionStore } from '@/stores/transactionStore';
+```
 
-  async function applyBucket(bucket: Bucket) {
-    if (!bucketItem) return;
-    try {
-      await setBucket(memberIds(bucketItem), bucket);
-      bucketSheetRef.current?.dismiss();
-      await load();   // whatever this screen's existing reload is called
-      toast.show(`Moved to ${BUCKET_LABEL[bucket]}`, 'success');
-    } catch (err) {
-      if (err instanceof BucketLockedError) toast.show(err.message, 'error');
-      else toast.show('Could not change the category. Please try again.', 'error');
-    }
+Add the editor. Unlike the other two screens, History keeps its own list state,
+so it passes an `onDone` that reloads whatever this screen already calls to
+refresh its rows — find that function and use it verbatim:
+
+```tsx
+  const setBucket = useTransactionStore((s) => s.setBucket);
+  const bucketEditor = useBucketEditor(setBucket, loadHistory);
+
+  // A combined row is one Splitwise expense over several transactions, so
+  // re-tagging it has to move every member.
+  function openBucketSheet(item: HistoryItem) {
+    if (!item.bucket) return;
+    bucketEditor.open({
+      ids: item.combined?.transaction_ids ?? [item.id],
+      merchantName: item.merchant_name,
+      bucket: item.bucket,
+      locked: !!item.vacation_id,
+    });
   }
+```
+
+Render the sheet once, alongside the screen's existing `HistoryActionSheet`:
+
+```tsx
+      <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
 ```
 
 Render a `BucketChip` on each history row, following whatever layout that row
@@ -3795,6 +3974,9 @@ already uses for its metadata line, with `flexShrink: 0` preserved:
     />
   )}
 ```
+
+`HistoryItem` has no `merchant_name` fallback problem here — `groupHistoryRows`
+already resolves the display title into that field.
 
 - [ ] **Step 6: Run the full suite and typecheck**
 
@@ -3850,6 +4032,7 @@ EOF
 | Re-tag forward only | 4 |
 | Edit from the tile before committing | 10 |
 | Move a transaction after it is bucketed | 9, 11 |
+| One shared bucket-editing control, not three copies | 8 |
 | Real-time pie, per month, drill-down | 6, 7, 9 |
 | Skip inside a vacation | 5 |
 | Web/PWA parity | 3, 4, 6, 11 |
