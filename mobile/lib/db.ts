@@ -1,6 +1,6 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
-import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult } from '@/lib/types';
+import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
@@ -128,11 +128,33 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
       );
     `);
   }
+  if (version < 7) {
+    // Same rationale as vacation_id above: these columns are not in the base
+    // `version < 1` CREATE TABLE, so these ALTERs must run ungated so a fresh
+    // install (version 0) gets them too.
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN source TEXT;`);
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN payer_name TEXT;`);
+    await d.execAsync(`
+      CREATE TABLE IF NOT EXISTS splitwise_inbox (
+        expense_id   TEXT PRIMARY KEY,
+        description  TEXT NOT NULL,
+        cost         REAL NOT NULL,
+        currency     TEXT NOT NULL,
+        date         TEXT NOT NULL,
+        payer_name   TEXT NOT NULL,
+        my_share     REAL NOT NULL,
+        participants TEXT NOT NULL,
+        group_id     TEXT,
+        state        TEXT NOT NULL,
+        fetched_at   TEXT NOT NULL
+      );
+    `);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 6) {
-    await d.execAsync(`PRAGMA user_version = 6;`);
+  if (version < 7) {
+    await d.execAsync(`PRAGMA user_version = 7;`);
   }
   return d;
 }
@@ -899,5 +921,176 @@ export async function deleteVacation(id: string): Promise<void> {
       [id]
     );
     await (await dbReady()).runAsync(`DELETE FROM vacations WHERE id = ?`, [id]);
+  });
+}
+
+/** The synthetic transactions id for an imported Splitwise expense. */
+export function importedTransactionId(expenseId: string): string {
+  return `sw:${expenseId}`;
+}
+
+type InboxRow = Omit<SplitwiseInboxItem, 'participants'> & { participants: string };
+
+function mapInboxRow(r: InboxRow): SplitwiseInboxItem {
+  return { ...r, participants: JSON.parse(r.participants) };
+}
+
+export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {
+  const rows = await (await dbReady()).getAllAsync<InboxRow>(
+    `SELECT * FROM splitwise_inbox WHERE state = 'pending' ORDER BY date DESC`,
+    []
+  );
+  return rows.map(mapInboxRow);
+}
+
+/**
+ * Record (or refresh) an offered expense.
+ *
+ * `state` is deliberately absent from the DO UPDATE SET list: a dismissed
+ * expense that the payer later edits comes back through the poll, and
+ * resurrecting it as pending would re-offer something the user already said
+ * no to.
+ */
+export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
+  await (await dbReady()).runAsync(
+    `INSERT INTO splitwise_inbox
+       (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(expense_id) DO UPDATE SET
+       description = excluded.description,
+       cost = excluded.cost,
+       currency = excluded.currency,
+       date = excluded.date,
+       payer_name = excluded.payer_name,
+       my_share = excluded.my_share,
+       participants = excluded.participants,
+       group_id = excluded.group_id,
+       fetched_at = excluded.fetched_at`,
+    [
+      item.expense_id, item.description, item.cost, item.currency, item.date,
+      item.payer_name, item.my_share, JSON.stringify(item.participants),
+      item.group_id, item.state, item.fetched_at,
+    ]
+  );
+}
+
+export async function dismissInboxItem(expenseId: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE splitwise_inbox SET state = 'dismissed' WHERE expense_id = ?`,
+    [expenseId]
+  );
+}
+
+export async function getLocalExpenseState(
+  expenseId: string
+): Promise<{ imported: boolean; dismissed: boolean }> {
+  const d = await dbReady();
+  const tx = await d.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM transactions WHERE id = ?`,
+    [importedTransactionId(expenseId)]
+  );
+  const inbox = await d.getFirstAsync<{ state: string }>(
+    `SELECT state FROM splitwise_inbox WHERE expense_id = ?`,
+    [expenseId]
+  );
+  return { imported: (tx?.n ?? 0) > 0, dismissed: inbox?.state === 'dismissed' };
+}
+
+/**
+ * Materialize an approved expense as a transaction plus its split decision.
+ *
+ * `amount` is the WHOLE expense cost and `amount_each` is the user's own owed
+ * share — the same contract Plaid-sourced splits use, which is what lets
+ * spend.ts count the user's share without knowing this row is special.
+ *
+ * Bucket is written directly rather than via updateTransactionStatus(), whose
+ * materializeBuckets() would re-resolve and overwrite the user's explicit pick.
+ */
+export async function acceptSplitwiseExpense(
+  item: SplitwiseInboxItem,
+  bucket: Bucket,
+  vacationId: string | null
+): Promise<void> {
+  const d = await dbReady();
+  const id = importedTransactionId(item.expense_id);
+  const now = new Date().toISOString();
+  // A vacation's spend is Travel by definition, and the bucket chip renders
+  // locked for it — so the caller's pick is ignored when a vacation applies.
+  const finalBucket: Bucket = vacationId ? 'travel' : bucket;
+  const finalSource: BucketSource = vacationId ? 'vacation' : 'manual';
+
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(
+      `INSERT OR REPLACE INTO transactions
+         (id, merchant_name, amount, currency, date, status, pending, created_at,
+          vacation_id, bucket, bucket_source, plaid_category, source, payer_name)
+       VALUES (?, ?, ?, ?, ?, 'split', 0, ?, ?, ?, ?, NULL, ?, ?)`,
+      [id, item.description, item.cost, item.currency, item.date, now,
+       vacationId, finalBucket, finalSource, 'splitwise', item.payer_name]
+    );
+    await d.runAsync(
+      `INSERT OR REPLACE INTO split_decisions
+         (id, transaction_id, splitwise_expense_id, friend_ids, friend_names, amount_each, created_at, description)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [generateId('sd'), id, item.expense_id,
+       JSON.stringify(item.participants.map((p) => p.id)),
+       JSON.stringify(item.participants.map((p) => p.name)),
+       item.my_share, now]
+    );
+    await d.runAsync(`DELETE FROM splitwise_inbox WHERE expense_id = ?`, [item.expense_id]);
+  });
+}
+
+/**
+ * Apply an upstream edit to an already-imported expense.
+ *
+ * Only the payer's facts are rewritten. bucket, bucket_source, and vacation_id
+ * are the user's and are left strictly alone.
+ */
+export async function updateImportedExpense(item: SplitwiseInboxItem): Promise<void> {
+  const d = await dbReady();
+  const id = importedTransactionId(item.expense_id);
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(
+      `UPDATE transactions
+         SET merchant_name = ?, amount = ?, currency = ?, date = ?, payer_name = ?
+       WHERE id = ?`,
+      [item.description, item.cost, item.currency, item.date, item.payer_name, id]
+    );
+    await d.runAsync(
+      `UPDATE split_decisions
+         SET amount_each = ?, friend_ids = ?, friend_names = ?
+       WHERE transaction_id = ?`,
+      [item.my_share,
+       JSON.stringify(item.participants.map((p) => p.id)),
+       JSON.stringify(item.participants.map((p) => p.name)),
+       id]
+    );
+  });
+}
+
+/**
+ * Drop an imported expense locally. NEVER calls Splitwise — the expense
+ * belongs to whoever paid for it.
+ *
+ * `tombstone` distinguishes the user removing a row by hand (leave a
+ * 'dismissed' marker so the next poll doesn't re-offer it) from the expense
+ * having been deleted upstream (no marker needed; it can never come back).
+ */
+export async function deleteImportedExpense(expenseId: string, tombstone: boolean): Promise<void> {
+  const d = await dbReady();
+  const id = importedTransactionId(expenseId);
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM split_decisions WHERE transaction_id = ?`, [id]);
+    await d.runAsync(`DELETE FROM transactions WHERE id = ?`, [id]);
+    await d.runAsync(`DELETE FROM splitwise_inbox WHERE expense_id = ?`, [expenseId]);
+    if (tombstone) {
+      await d.runAsync(
+        `INSERT INTO splitwise_inbox
+           (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at)
+         VALUES (?, '', 0, '', '', '', 0, '[]', NULL, 'dismissed', ?)`,
+        [expenseId, new Date().toISOString()]
+      );
+    }
   });
 }
