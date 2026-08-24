@@ -160,6 +160,8 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
           split: { friend_names: d.friend_names ?? [], amount_each: d.amount_each ?? 0 },
           bucket: t.bucket ?? null,
           vacation_id: t.vacation_id ?? null,
+          source: t.source ?? 'plaid',
+          payer_name: t.payer_name ?? null,
           _txIds: [t.id],
         };
         groups.set(key, item);
@@ -178,6 +180,8 @@ function groupHistoryRows(rows: Transaction[], decisions: SplitDecision[]): Hist
           : {}),
         bucket: t.bucket ?? null,
         vacation_id: t.vacation_id ?? null,
+        source: t.source ?? 'plaid',
+        payer_name: t.payer_name ?? null,
       });
     }
   }

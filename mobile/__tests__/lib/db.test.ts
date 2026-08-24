@@ -379,6 +379,30 @@ test('getHistoryTransactions keeps skipped rows individual', async () => {
   expect(items[0].split).toBeUndefined();
 });
 
+it('history carries source and payer_name through', async () => {
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'sw:555', merchant_name: 'Dinner', amount: 60, currency: 'USD', date: '2026-08-20',
+      status: 'split', pending: 0, created_at: '2026-08-24T00:00:00.000Z',
+      source: 'splitwise', payer_name: 'Alice Ng', bucket: 'food', vacation_id: null,
+      splitwise_expense_id: '555', description: null, friend_names: '["Alice Ng"]', amount_each: 30 },
+  ]);
+  const [row] = await getHistoryTransactions();
+  expect(row.source).toBe('splitwise');
+  expect(row.payer_name).toBe('Alice Ng');
+});
+
+it('a Plaid row reports source plaid even when the column is null', async () => {
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Cafe', amount: 20, currency: 'USD', date: '2026-08-20',
+      status: 'skipped', pending: 0, created_at: '2026-08-24T00:00:00.000Z',
+      source: null, payer_name: null, bucket: 'food', vacation_id: null,
+      splitwise_expense_id: null, description: null, friend_names: null, amount_each: null },
+  ]);
+  const [row] = await getHistoryTransactions();
+  expect(row.source).toBe('plaid');
+  expect(row.payer_name).toBeNull();
+});
+
 test('persistCombinedSplit writes every row and status inside one transaction', async () => {
   await initDb();
   const decisions: SplitDecision[] = [

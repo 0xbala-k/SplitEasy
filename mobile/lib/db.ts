@@ -210,6 +210,8 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
           },
           bucket: r.bucket ?? null,
           vacation_id: r.vacation_id ?? null,
+          source: r.source ?? 'plaid',
+          payer_name: r.payer_name ?? null,
           _txIds: [r.id],
         };
         groups.set(key, item);
@@ -228,6 +230,8 @@ function groupHistoryRows(rows: HistoryRow[]): HistoryItem[] {
           : {}),
         bucket: r.bucket ?? null,
         vacation_id: r.vacation_id ?? null,
+        source: r.source ?? 'plaid',
+        payer_name: r.payer_name ?? null,
       });
     }
   }

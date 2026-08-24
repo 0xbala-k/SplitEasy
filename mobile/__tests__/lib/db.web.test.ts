@@ -144,6 +144,16 @@ describe('db.web (IndexedDB)', () => {
     expect(row.pending).toBe(false);
   });
 
+  it('web history reports source plaid for rows written before the inbox shipped', async () => {
+    await upsertTransactions([{
+      transaction_id: 'tx1', merchant_name: 'Cafe', name: 'Cafe', amount: 20,
+      iso_currency_code: 'USD', date: '2026-08-20', pending: false,
+    }]);
+    await updateTransactionStatus('tx1', 'skipped');
+    const [row] = await getHistoryTransactions();
+    expect(row.source).toBe('plaid');
+  });
+
   it('joins split decisions into history rows', async () => {
     await upsertTransactions([plaidTx('t1'), plaidTx('t2')]);
     await updateTransactionStatus('t1', 'split');
@@ -1034,6 +1044,13 @@ describe('splitwise inbox (web)', () => {
     expect(row.amount).toBe(60);
     expect(row.split?.amount_each).toBe(30);
     expect(await getSplitwiseInbox()).toEqual([]);
+  });
+
+  it('accept surfaces the expense source and payer on the history row', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    const [row] = await getHistoryTransactions();
+    expect(row.source).toBe('splitwise');
+    expect(row.payer_name).toBe('Alice Ng');
   });
 
   it('accept into a vacation locks the bucket to travel', async () => {
