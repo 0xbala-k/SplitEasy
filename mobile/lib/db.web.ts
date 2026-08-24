@@ -4,20 +4,22 @@
 // cross-origin isolation, which breaks Plaid Link popups (see design spec).
 import {
   Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult,
+  SplitwiseInboxItem,
 } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
-import { Bucket, resolveBucket, normalizeMerchant } from '@/lib/buckets';
+import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';
 const MERCHANT_STORE = 'merchant_buckets';
+const INBOX_STORE = 'splitwise_inbox';
 
 let _db: IDBDatabase | null = null;
 let _opening: Promise<IDBDatabase> | null = null;
@@ -94,6 +96,11 @@ function openDatabase(): Promise<IDBDatabase> {
         // Keyed by the normalized merchant name, mirroring the SQLite
         // merchant_buckets PRIMARY KEY.
         d.createObjectStore(MERCHANT_STORE, { keyPath: 'merchant_key' });
+      }
+      if (!d.objectStoreNames.contains(INBOX_STORE)) {
+        // Keyed by the Splitwise expense id, mirroring the SQLite
+        // splitwise_inbox PRIMARY KEY.
+        d.createObjectStore(INBOX_STORE, { keyPath: 'expense_id' });
       }
     };
     // A version bump can't proceed while another tab holds an older-version
@@ -818,5 +825,158 @@ export async function deleteVacation(id: string): Promise<void> {
     }
   }
   tx.objectStore(VACATION_STORE).delete(id);
+  await done(tx);
+}
+
+/** The synthetic transactions id for an imported Splitwise expense. */
+export function importedTransactionId(expenseId: string): string {
+  return `sw:${expenseId}`;
+}
+
+export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {
+  const all = await req(
+    (await dbReady()).transaction(INBOX_STORE).objectStore(INBOX_STORE)
+      .getAll() as IDBRequest<SplitwiseInboxItem[]>
+  );
+  return all
+    .filter((i) => i.state === 'pending')
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+}
+
+/**
+ * Record (or refresh) an offered expense.
+ *
+ * A pre-existing row's `state` is carried forward rather than overwritten:
+ * a dismissed expense that the payer later edits comes back through the poll,
+ * and resurrecting it as pending would re-offer something the user said no to.
+ */
+export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
+  const tx = (await dbReady()).transaction(INBOX_STORE, 'readwrite');
+  const store = tx.objectStore(INBOX_STORE);
+  const existing = await req(
+    store.get(item.expense_id) as IDBRequest<SplitwiseInboxItem | undefined>
+  );
+  store.put({ ...item, state: existing?.state ?? item.state });
+  await done(tx);
+}
+
+export async function dismissInboxItem(expenseId: string): Promise<void> {
+  const tx = (await dbReady()).transaction(INBOX_STORE, 'readwrite');
+  const store = tx.objectStore(INBOX_STORE);
+  const existing = await req(store.get(expenseId) as IDBRequest<SplitwiseInboxItem | undefined>);
+  if (existing) store.put({ ...existing, state: 'dismissed' });
+  await done(tx);
+}
+
+export async function getLocalExpenseState(
+  expenseId: string
+): Promise<{ imported: boolean; dismissed: boolean }> {
+  const tx = (await dbReady()).transaction([TX_STORE, INBOX_STORE]);
+  const [row, inbox] = await Promise.all([
+    req(tx.objectStore(TX_STORE).get(importedTransactionId(expenseId)) as IDBRequest<Transaction | undefined>),
+    req(tx.objectStore(INBOX_STORE).get(expenseId) as IDBRequest<SplitwiseInboxItem | undefined>),
+  ]);
+  return { imported: row !== undefined, dismissed: inbox?.state === 'dismissed' };
+}
+
+/**
+ * Materialize an approved expense as a transaction plus its split decision.
+ * `amount` is the WHOLE cost, `amount_each` the user's own share — the same
+ * contract Plaid-sourced splits use. Mirrors lib/db.ts.
+ */
+export async function acceptSplitwiseExpense(
+  item: SplitwiseInboxItem,
+  bucket: Bucket,
+  vacationId: string | null
+): Promise<void> {
+  const id = importedTransactionId(item.expense_id);
+  const now = new Date().toISOString();
+  const finalBucket: Bucket = vacationId ? 'travel' : bucket;
+  const finalSource: BucketSource = vacationId ? 'vacation' : 'manual';
+
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE, INBOX_STORE], 'readwrite');
+  tx.objectStore(TX_STORE).put({
+    id,
+    merchant_name: item.description,
+    amount: item.cost,
+    currency: item.currency,
+    date: item.date,
+    status: 'split',
+    pending: false,
+    created_at: now,
+    vacation_id: vacationId,
+    review_reason: null,
+    amount_changed_from: null,
+    bucket: finalBucket,
+    bucket_source: finalSource,
+    plaid_category: null,
+    source: 'splitwise',
+    payer_name: item.payer_name,
+  } satisfies Transaction);
+  tx.objectStore(DECISION_STORE).put({
+    id: generateId('sd'),
+    transaction_id: id,
+    splitwise_expense_id: item.expense_id,
+    friend_ids: item.participants.map((p) => p.id),
+    friend_names: item.participants.map((p) => p.name),
+    amount_each: item.my_share,
+    created_at: now,
+  } satisfies SplitDecision);
+  tx.objectStore(INBOX_STORE).delete(item.expense_id);
+  await done(tx);
+}
+
+/**
+ * Apply an upstream edit. bucket, bucket_source, and vacation_id are the
+ * user's and are left strictly alone.
+ */
+export async function updateImportedExpense(item: SplitwiseInboxItem): Promise<void> {
+  const id = importedTransactionId(item.expense_id);
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
+  const txStore = tx.objectStore(TX_STORE);
+  const decStore = tx.objectStore(DECISION_STORE);
+  const row = await req(txStore.get(id) as IDBRequest<Transaction | undefined>);
+  if (row) {
+    txStore.put({
+      ...row,
+      merchant_name: item.description,
+      amount: item.cost,
+      currency: item.currency,
+      date: item.date,
+      payer_name: item.payer_name,
+    });
+  }
+  const dec = await req(decStore.get(id) as IDBRequest<SplitDecision | undefined>);
+  if (dec) {
+    decStore.put({
+      ...dec,
+      amount_each: item.my_share,
+      friend_ids: item.participants.map((p) => p.id),
+      friend_names: item.participants.map((p) => p.name),
+    });
+  }
+  await done(tx);
+}
+
+/**
+ * Drop an imported expense locally. NEVER calls Splitwise. `tombstone`
+ * distinguishes a hand removal (leave a 'dismissed' marker) from an upstream
+ * deletion (no marker needed). Mirrors lib/db.ts.
+ */
+export async function deleteImportedExpense(expenseId: string, tombstone: boolean): Promise<void> {
+  const id = importedTransactionId(expenseId);
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE, INBOX_STORE], 'readwrite');
+  tx.objectStore(TX_STORE).delete(id);
+  tx.objectStore(DECISION_STORE).delete(id);
+  const inbox = tx.objectStore(INBOX_STORE);
+  inbox.delete(expenseId);
+  if (tombstone) {
+    inbox.put({
+      expense_id: expenseId,
+      description: '', cost: 0, currency: '', date: '',
+      payer_name: '', my_share: 0, participants: [], group_id: null,
+      state: 'dismissed', fetched_at: new Date().toISOString(),
+    } satisfies SplitwiseInboxItem);
+  }
   await done(tx);
 }

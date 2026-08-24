@@ -11,8 +11,10 @@ import {
   removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
   getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
+  getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
+  getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
 } from '@/lib/db.web';
-import { PlaidTransaction, SplitDecision } from '@/lib/types';
+import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 
@@ -985,5 +987,89 @@ describe('history rows carry their bucket (IndexedDB)', () => {
     const item = (await getHistoryTransactions()).find((i) => i.combined?.expense_id === 'eh')!;
     expect(item.combined!.transaction_ids.sort()).toEqual(['h2', 'h3']);
     expect(item.bucket).toBeTruthy();
+  });
+});
+
+describe('splitwise inbox (web)', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+    await initDb();
+  });
+
+  function item(over: Partial<SplitwiseInboxItem> = {}): SplitwiseInboxItem {
+    return {
+      expense_id: '555', description: 'Dinner', cost: 60, currency: 'USD',
+      date: '2026-08-20', payer_name: 'Alice Ng', my_share: 30,
+      participants: [{ id: '200', name: 'Alice Ng' }], group_id: null,
+      state: 'pending', fetched_at: '2026-08-24T00:00:00.000Z',
+      ...over,
+    };
+  }
+
+  it('round-trips a pending inbox item', async () => {
+    await upsertInboxItem(item());
+    expect(await getSplitwiseInbox()).toEqual([item()]);
+  });
+
+  it('hides dismissed items from the inbox', async () => {
+    await upsertInboxItem(item());
+    await dismissInboxItem('555');
+    expect(await getSplitwiseInbox()).toEqual([]);
+  });
+
+  it('upsert does not resurrect a dismissed item', async () => {
+    await upsertInboxItem(item());
+    await dismissInboxItem('555');
+    await upsertInboxItem(item({ cost: 90 }));
+    expect(await getSplitwiseInbox()).toEqual([]);
+    expect((await getLocalExpenseState('555')).dismissed).toBe(true);
+  });
+
+  it('accept writes a transaction whose amount is the full cost and share is the user\'s', async () => {
+    await upsertInboxItem(item());
+    await acceptSplitwiseExpense(item(), 'food', null);
+    const [row] = await getHistoryTransactions();
+    expect(row.id).toBe('sw:555');
+    expect(row.amount).toBe(60);
+    expect(row.split?.amount_each).toBe(30);
+    expect(await getSplitwiseInbox()).toEqual([]);
+  });
+
+  it('accept into a vacation locks the bucket to travel', async () => {
+    await acceptSplitwiseExpense(item(), 'food', 'vac1');
+    const [row] = await getHistoryTransactions();
+    expect(row.bucket).toBe('travel');
+    expect(row.vacation_id).toBe('vac1');
+  });
+
+  it('update rewrites amounts and preserves the user\'s bucket', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    await updateImportedExpense(item({ cost: 80, my_share: 40 }));
+    const [row] = await getHistoryTransactions();
+    expect(row.amount).toBe(80);
+    expect(row.split?.amount_each).toBe(40);
+    expect(row.bucket).toBe('food');
+  });
+
+  it('delete with a tombstone removes the row and blocks re-offering', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    await deleteImportedExpense('555', true);
+    expect(await getHistoryTransactions()).toEqual([]);
+    expect(await getLocalExpenseState('555')).toEqual({ imported: false, dismissed: true });
+  });
+
+  it('delete without a tombstone leaves nothing behind', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    await deleteImportedExpense('555', false);
+    expect(await getLocalExpenseState('555')).toEqual({ imported: false, dismissed: false });
+  });
+
+  it('an accepted expense contributes only the user\'s share to spending', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    const rows = await getSpendingRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount).toBe(60);
+    expect(rows[0].amount_each).toBe(30);
   });
 });
