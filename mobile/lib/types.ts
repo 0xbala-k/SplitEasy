@@ -2,6 +2,49 @@
 
 import type { Bucket, BucketSource } from '@/lib/buckets';
 
+// Where a transaction came from. Absent/'plaid' on every row written before
+// the Splitwise inbox shipped, so readers must treat NULL as 'plaid'.
+export type TransactionSource = 'plaid' | 'splitwise';
+
+// One participant's slice of a Splitwise expense. paid_share/owed_share are
+// decimal strings ("12.50"), not numbers — parse at the boundary.
+export interface SplitwiseExpenseUser {
+  user: { id: number; first_name: string | null; last_name: string | null };
+  paid_share: string;
+  owed_share: string;
+}
+
+// Raw expense from GET /get_expenses.
+export interface RawSplitwiseExpense {
+  id: number;
+  description: string;
+  cost: string;
+  currency_code: string;
+  date: string;              // ISO-8601 datetime, NOT a calendar date
+  group_id: number | null;
+  payment: boolean;          // true for a settlement transfer, not spending
+  deleted_at: string | null;
+  updated_at: string;
+  users: SplitwiseExpenseUser[];
+}
+
+export type InboxState = 'pending' | 'dismissed';
+
+// A friend-paid expense awaiting the user's accept/dismiss decision.
+export interface SplitwiseInboxItem {
+  expense_id: string;
+  description: string;
+  cost: number;              // full expense cost, dollars
+  currency: string;
+  date: string;              // "YYYY-MM-DD", device-local
+  payer_name: string;
+  my_share: number;          // the user's owed_share, dollars
+  participants: { id: string; name: string }[];  // everyone except the user
+  group_id: string | null;
+  state: InboxState;
+  fetched_at: string;        // ISO-8601 datetime
+}
+
 export type TransactionStatus = 'new' | 'split' | 'skipped';
 
 export type ReviewReason = 'amount_changed' | 'reversed';
@@ -29,6 +72,10 @@ export interface Transaction {
   bucket?: Bucket | null;
   bucket_source?: BucketSource | null;
   plaid_category?: string | null;   // personal_finance_category.detailed
+  // Where this row came from. NULL means Plaid (every row predating the
+  // Splitwise inbox). Only 'splitwise' rows get special treatment.
+  source?: TransactionSource | null;
+  payer_name?: string | null;   // who paid; only meaningful when source='splitwise'
 }
 
 export interface SplitDecision {
@@ -105,6 +152,8 @@ export interface HistoryItem {
   // member's bucket; re-tagging the row moves every member.
   bucket?: Bucket | null;
   vacation_id?: string | null;
+  source?: TransactionSource | null;
+  payer_name?: string | null;
 }
 
 // A row in the "Needs review" queue: a transaction whose pending→posted
