@@ -5,7 +5,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
-import { getHistoryTransactions, getSplitDecision, getTransactionsByIds, removeTransactionFromVacation } from '@/lib/db';
+import {
+  getHistoryTransactions,
+  getSplitDecision,
+  getTransactionsByIds,
+  removeTransactionFromVacation,
+  deleteImportedExpense,
+} from '@/lib/db';
 import { HistoryItem, SplitDecision, Transaction } from '@/lib/types';
 import { formatDayLabel } from '@/lib/date';
 import { useTransactionStore } from '@/stores/transactionStore';
@@ -32,6 +38,11 @@ function asTransaction(item: HistoryItem): Transaction {
     pending: false,
     created_at: item.date,
   };
+}
+
+// A row imported from Splitwise: someone else paid, so it is read-only here.
+function isImported(item: HistoryItem): boolean {
+  return item.source === 'splitwise';
 }
 
 export default function HistoryScreen() {
@@ -93,7 +104,10 @@ export default function HistoryScreen() {
   }, [pending]);
 
   function handleRowPress(item: HistoryItem) {
-    if (item.status === 'skipped') {
+    if (isImported(item)) {
+      setSelected(item);
+      setPending('action');
+    } else if (item.status === 'skipped') {
       // Split a previously-skipped transaction (create mode).
       setEditDecision(null);
       setCombineTxs(null);
@@ -146,6 +160,33 @@ export default function HistoryScreen() {
     if (!selected) return;
     const item = selected;
     actionRef.current?.dismiss();
+
+    if (isImported(item)) {
+      showDialog(
+        'Remove from SplitEasy?',
+        'This removes it from SplitEasy and stops it counting toward your spending. The Splitwise expense is not affected.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Remove',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                // Tombstone so the next poll doesn't re-offer what the user
+                // just removed. Deliberately no deleteExpense() call.
+                await deleteImportedExpense(item.id.replace(/^sw:/, ''), true);
+                toast.show('Removed', 'success');
+                refreshHistory();
+              } catch {
+                toast.show('Failed to remove. Please try again.', 'error');
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
     const label = item.combined ? `${item.combined.count} transactions` : item.merchant_name;
     showDialog(
       'Delete split?',
@@ -219,6 +260,7 @@ export default function HistoryScreen() {
       <HistoryActionSheet
         ref={actionRef}
         transaction={selected}
+        readOnly={!!selected && isImported(selected)}
         onEdit={handleEdit}
         onDelete={handleDelete}
       />
@@ -259,9 +301,11 @@ function HistoryRow({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={
-        item.status === 'skipped'
-          ? `Split ${item.merchant_name}`
-          : `Edit or delete split for ${item.merchant_name}`
+        isImported(item)
+          ? `Options for ${item.merchant_name}`
+          : item.status === 'skipped'
+            ? `Split ${item.merchant_name}`
+            : `Edit or delete split for ${item.merchant_name}`
       }
     >
       <View style={[styles.avatar, { backgroundColor: avatarColor + '20' }]}>
@@ -282,7 +326,14 @@ function HistoryRow({
             />
           )}
         </View>
-        {isSplit ? (
+        {isImported(item) ? (
+          <View style={styles.splitBadge}>
+            <Ionicons name="people-outline" size={11} color={Colors.success} style={{ marginRight: 3 }} />
+            <Text style={styles.splitText} numberOfLines={1}>
+              {item.payer_name} paid · your share ${(item.split?.amount_each ?? 0).toFixed(2)}
+            </Text>
+          </View>
+        ) : isSplit ? (
           <View style={styles.splitBadge}>
             <Ionicons name="people-outline" size={11} color={Colors.success} style={{ marginRight: 3 }} />
             <Text style={styles.splitText} numberOfLines={1}>
