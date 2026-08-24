@@ -20,11 +20,16 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 import * as db from '@/lib/db';
 import * as worker from '@/lib/worker';
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { useVacationStore } from '@/stores/vacationStore';
-import { useTransactionStore } from '@/stores/transactionStore';
+import { useAuthStore } from '@/stores/authStore';
+import { useTransactionStore, SPLITWISE_WATERMARK_KEY } from '@/stores/transactionStore';
 import { WorkerError } from '@/lib/worker';
 import * as splitwise from '@/lib/splitwise';
+import { SplitwiseAuthError, getExpensesUpdatedAfter } from '@/lib/splitwise';
+import { getLocalExpenseState, upsertInboxItem, updateImportedExpense, deleteImportedExpense, acceptSplitwiseExpense } from '@/lib/db';
+import { SplitwiseInboxItem } from '@/lib/types';
 
 const mockGetNew = db.getNewTransactions as jest.Mock;
 const mockUpsert = db.upsertTransactions as jest.Mock;
@@ -46,6 +51,7 @@ const mockDeleteSplitDecision = db.deleteSplitDecision as jest.Mock;
 const mockPersistCombined = db.persistCombinedSplit as jest.Mock;
 const mockRevertCombined = db.revertCombinedSplit as jest.Mock;
 const mockReconcile = jest.fn();
+const mockGetSplitwiseInbox = db.getSplitwiseInbox as jest.Mock;
 
 function syncPage(overrides: Partial<{
   added: unknown[];
@@ -66,7 +72,8 @@ beforeEach(() => {
     getTokensAndCursors: mockGetTokensAndCursors,
     saveCursor: mockSaveCursor,
   });
-  useTransactionStore.setState({ transactions: [], isLoading: false });
+  useTransactionStore.setState({ transactions: [], isLoading: false, splitwiseInbox: [], splitwiseAuthExpired: false });
+  mockGetSplitwiseInbox.mockResolvedValue([]);
   mockSecureGet.mockResolvedValue('access-token');
   mockGetNew.mockResolvedValue([]);
   mockUpsert.mockResolvedValue(undefined);
@@ -368,4 +375,138 @@ test('setBucket reloads even when a later id throws', async () => {
     .mockRejectedValueOnce(new Error('locked'));
   await expect(useTransactionStore.getState().setBucket(['a', 'b'], 'shopping')).rejects.toThrow();
   expect(mockGetNew).toHaveBeenCalled();
+});
+
+describe('syncSplitwiseInbox', () => {
+  beforeEach(() => {
+    AsyncStorage.clear();
+    useAuthStore.setState({ user_id: '100', isAuthenticated: true });
+  });
+
+  function expense(over = {}) {
+    return {
+      id: 555, description: 'Dinner', cost: '60.00', currency_code: 'USD',
+      date: '2026-08-20T18:30:00Z', group_id: null, payment: false,
+      deleted_at: null, updated_at: '2026-08-20T18:31:00Z',
+      users: [
+        { user: { id: 200, first_name: 'Alice', last_name: 'Ng' }, paid_share: '60.00', owed_share: '30.00' },
+        { user: { id: 100, first_name: 'Bala', last_name: 'K' }, paid_share: '0.00', owed_share: '30.00' },
+      ],
+      ...over,
+    };
+  }
+
+  it('imports nothing on the first run and stamps the watermark', async () => {
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(getExpensesUpdatedAfter).not.toHaveBeenCalled();
+    expect(await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY)).toBeTruthy();
+  });
+
+  it('offers a friend-paid expense on a later run', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([expense()]);
+    (getLocalExpenseState as jest.Mock).mockResolvedValue({ imported: false, dismissed: false });
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(getExpensesUpdatedAfter).toHaveBeenCalledWith('2026-08-01T00:00:00.000Z');
+    expect(upsertInboxItem).toHaveBeenCalledWith(expect.objectContaining({ expense_id: '555', my_share: 30 }));
+  });
+
+  it('advances the watermark after a successful pass', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([]);
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY)).not.toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  it('leaves the watermark alone when the fetch throws, so nothing is skipped', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY)).toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  it('raises the expired flag on a 401 so the screen can toast', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(useTransactionStore.getState().splitwiseAuthExpired).toBe(true);
+  });
+
+  it('stays silent for a non-auth failure', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new Error('SPLITWISE_ERROR'));
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(useTransactionStore.getState().splitwiseAuthExpired).toBe(false);
+  });
+
+  it('does nothing when the user is not signed in to Splitwise', async () => {
+    useAuthStore.setState({ user_id: null, isAuthenticated: false });
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(getExpensesUpdatedAfter).not.toHaveBeenCalled();
+  });
+
+  it('updates an already-imported expense instead of re-offering it', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([expense({ cost: '80.00' })]);
+    (getLocalExpenseState as jest.Mock).mockResolvedValue({ imported: true, dismissed: false });
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(updateImportedExpense).toHaveBeenCalledWith(expect.objectContaining({ cost: 80 }));
+    expect(upsertInboxItem).not.toHaveBeenCalled();
+  });
+
+  it('removes an upstream-deleted expense without leaving a tombstone', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([expense({ deleted_at: '2026-08-21T00:00:00Z' })]);
+    (getLocalExpenseState as jest.Mock).mockResolvedValue({ imported: true, dismissed: false });
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(deleteImportedExpense).toHaveBeenCalledWith('555', false);
+  });
+});
+
+describe('a Splitwise failure never fails the Plaid refresh', () => {
+  it('keeps Plaid results and the saved cursor', async () => {
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    useAuthStore.setState({ user_id: '100', isAuthenticated: true });
+    (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
+    // Arrange one Plaid page exactly as the existing refresh() tests in this
+    // file do, then:
+    mockFetchTxs.mockResolvedValue(syncPage({
+      added: [{ transaction_id: 'tx2', merchant_name: 'Amazon', name: 'AMZN', amount: 29.99, iso_currency_code: 'USD', date: '2026-04-02' }],
+    }));
+    await useTransactionStore.getState().refresh();
+    expect(mockUpsert).toHaveBeenCalled();
+    expect(mockSaveCursor).toHaveBeenCalled();
+  });
+});
+
+describe('accept and dismiss', () => {
+  it('accepts into the active vacation when the group matches', async () => {
+    (useVacationStore.getState as jest.Mock).mockReturnValue({
+      reconcile: mockReconcile,
+      activeVacation: { id: 'vac1', name: 'Tokyo', splitwise_group_id: '42' },
+    });
+    const item = { expense_id: '555', group_id: '42' } as SplitwiseInboxItem;
+    await useTransactionStore.getState().acceptInboxItem(item, 'food');
+    expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', 'vac1');
+  });
+
+  it('accepts outside a vacation when the group does not match', async () => {
+    (useVacationStore.getState as jest.Mock).mockReturnValue({
+      reconcile: mockReconcile,
+      activeVacation: { id: 'vac1', name: 'Tokyo', splitwise_group_id: '99' },
+    });
+    const item = { expense_id: '555', group_id: '42' } as SplitwiseInboxItem;
+    await useTransactionStore.getState().acceptInboxItem(item, 'food');
+    expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', null);
+  });
+
+  it('does not match a null group against a vacation with no group', async () => {
+    (useVacationStore.getState as jest.Mock).mockReturnValue({
+      reconcile: mockReconcile,
+      activeVacation: { id: 'vac1', name: 'Tokyo', splitwise_group_id: null },
+    });
+    const item = { expense_id: '555', group_id: null } as SplitwiseInboxItem;
+    await useTransactionStore.getState().acceptInboxItem(item, 'food');
+    expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', null);
+  });
 });

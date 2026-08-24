@@ -8,7 +8,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as worker from '@/lib/worker';
-import { useAuthStore } from '@/stores/authStore';
+import { useAuthStore, SPLITWISE_WATERMARK_KEY } from '@/stores/authStore';
 
 const mockSetItem = SecureStore.setItemAsync as jest.Mock;
 const mockGetItem = SecureStore.getItemAsync as jest.Mock;
@@ -75,4 +75,10 @@ test('hydrate sets isAuthenticated false when no token', async () => {
   await useAuthStore.getState().hydrate();
   expect(useAuthStore.getState().isAuthenticated).toBe(false);
   expect(useAuthStore.getState().isHydrated).toBe(true);
+});
+
+it('clears the Splitwise watermark on sign-out', async () => {
+  await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+  await useAuthStore.getState().signOut();
+  expect(await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY)).toBeNull();
 });

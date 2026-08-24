@@ -1,7 +1,9 @@
 // mobile/stores/transactionStore.ts
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchTransactions, WorkerError } from '@/lib/worker';
-import { deleteExpense } from '@/lib/splitwise';
+import { deleteExpense, getExpensesUpdatedAfter, SplitwiseAuthError } from '@/lib/splitwise';
+import { decideInboxAction } from '@/lib/splitwiseInbox';
 import {
   getNewTransactions,
   upsertTransactions,
@@ -15,17 +17,31 @@ import {
   clearReview,
   getMerchantBuckets,
   setTransactionBucket,
+  getSplitwiseInbox,
+  upsertInboxItem,
+  dismissInboxItem as dbDismissInboxItem,
+  getLocalExpenseState,
+  acceptSplitwiseExpense,
+  updateImportedExpense,
+  deleteImportedExpense,
 } from '@/lib/db';
-import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
+import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
 import { Bucket } from '@/lib/buckets';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { useVacationStore } from '@/stores/vacationStore';
+import { useAuthStore, SPLITWISE_WATERMARK_KEY } from '@/stores/authStore';
+
+export { SPLITWISE_WATERMARK_KEY };
 
 interface TransactionState {
   transactions: Transaction[];
   isLoading: boolean;
   review: ReviewItem[];
   merchantBuckets: Record<string, Bucket>;
+  splitwiseInbox: SplitwiseInboxItem[];
+  // Raised when the poll hits a 401. The Transactions screen reads it, toasts
+  // once, and clears it — the store never shows UI itself.
+  splitwiseAuthExpired: boolean;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   skip: (id: string) => Promise<void>;
@@ -36,6 +52,11 @@ interface TransactionState {
   loadReview: () => Promise<void>;
   resolveReview: (transactionIds: string[]) => Promise<void>;
   setBucket: (ids: string[], bucket: Bucket) => Promise<void>;
+  loadInbox: () => Promise<void>;
+  syncSplitwiseInbox: () => Promise<void>;
+  acceptInboxItem: (item: SplitwiseInboxItem, bucket: Bucket) => Promise<void>;
+  dismissInboxItem: (expenseId: string) => Promise<void>;
+  clearSplitwiseAuthExpired: () => void;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -43,6 +64,8 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   isLoading: false,
   review: [],
   merchantBuckets: {},
+  splitwiseInbox: [],
+  splitwiseAuthExpired: false,
 
   load: async () => {
     set({ isLoading: true });
@@ -98,6 +121,7 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
           await usePlaidStore.getState().saveCursor(id, pageCursor);
         }
       }
+      await get().syncSplitwiseInbox();
       await get().load();
     } catch (err) {
       if (err instanceof WorkerError && err.code === 'ITEM_LOGIN_REQUIRED') {
@@ -162,5 +186,70 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
       // actually mixed.
       await get().load();
     }
+  },
+
+  loadInbox: async () => {
+    set({ splitwiseInbox: await getSplitwiseInbox() });
+  },
+
+  /**
+   * Pull friend-paid Splitwise expenses since the last watermark.
+   *
+   * Every failure is swallowed: this runs at the tail of the Plaid refresh,
+   * and a Splitwise outage or an expired Splitwise session must not cost the
+   * user their Plaid sync. The watermark only advances on a clean pass, so a
+   * failed pull is retried in full next time rather than skipping a window.
+   */
+  syncSplitwiseInbox: async () => {
+    const myUserId = useAuthStore.getState().user_id;
+    if (!myUserId) return;
+
+    const startedAt = new Date().toISOString();
+    const watermark = await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY);
+    // First run: record where we are and import nothing, mirroring the Plaid
+    // first-sync behaviour of draining the backlog without storing it.
+    if (!watermark) {
+      await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, startedAt);
+      return;
+    }
+
+    try {
+      const expenses = await getExpensesUpdatedAfter(watermark);
+      for (const expense of expenses) {
+        const local = await getLocalExpenseState(String(expense.id));
+        const action = decideInboxAction(expense, myUserId, local);
+        if (action.kind === 'offer') await upsertInboxItem(action.item);
+        else if (action.kind === 'update') await updateImportedExpense(action.item);
+        // No tombstone: the expense is gone upstream, so it can never be
+        // re-offered and a marker would only accumulate.
+        else if (action.kind === 'remove') await deleteImportedExpense(String(expense.id), false);
+      }
+      await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, startedAt);
+      await get().loadInbox();
+    } catch (err) {
+      // The screen owns the toast, so the store only raises a flag. Any other
+      // error is intentionally silent: a Splitwise outage should not nag a
+      // user who was only pulling to refresh their Plaid transactions.
+      if (err instanceof SplitwiseAuthError) set({ splitwiseAuthExpired: true });
+    }
+  },
+
+  clearSplitwiseAuthExpired: () => set({ splitwiseAuthExpired: false }),
+
+  acceptInboxItem: async (item, bucket) => {
+    const active = useVacationStore.getState().activeVacation;
+    // A null group must never match a vacation with no group — that would
+    // sweep every ordinary expense into the trip.
+    const vacationId =
+      active && active.splitwise_group_id && item.group_id === active.splitwise_group_id
+        ? active.id
+        : null;
+    await acceptSplitwiseExpense(item, bucket, vacationId);
+    set((s) => ({ splitwiseInbox: s.splitwiseInbox.filter((i) => i.expense_id !== item.expense_id) }));
+  },
+
+  dismissInboxItem: async (expenseId) => {
+    await dbDismissInboxItem(expenseId);
+    set((s) => ({ splitwiseInbox: s.splitwiseInbox.filter((i) => i.expense_id !== expenseId) }));
   },
 }));
