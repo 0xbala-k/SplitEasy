@@ -205,15 +205,15 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
     if (!myUserId) return;
 
     const startedAt = new Date().toISOString();
-    const watermark = await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY);
-    // First run: record where we are and import nothing, mirroring the Plaid
-    // first-sync behaviour of draining the backlog without storing it.
-    if (!watermark) {
-      await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, startedAt);
-      return;
-    }
-
     try {
+      const watermark = await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY);
+      // First run: record where we are and import nothing, mirroring the Plaid
+      // first-sync behaviour of draining the backlog without storing it.
+      if (!watermark) {
+        await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, startedAt);
+        return;
+      }
+
       const expenses = await getExpensesUpdatedAfter(watermark);
       for (const expense of expenses) {
         const local = await getLocalExpenseState(String(expense.id));

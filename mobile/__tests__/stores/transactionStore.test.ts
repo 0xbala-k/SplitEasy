@@ -476,6 +476,27 @@ describe('a Splitwise failure never fails the Plaid refresh', () => {
     await useTransactionStore.getState().refresh();
     expect(mockUpsert).toHaveBeenCalled();
     expect(mockSaveCursor).toHaveBeenCalled();
+    // getNewTransactions is only reached via get().load(), which runs on the
+    // line AFTER syncSplitwiseInbox() inside refresh(). This proves refresh()
+    // ran to completion past the failed sync, not just that the Plaid loop
+    // (which finishes before syncSplitwiseInbox is even called) succeeded.
+    expect(mockGetNew).toHaveBeenCalled();
+  });
+
+  it('keeps Plaid results and the saved cursor when AsyncStorage itself throws', async () => {
+    // A watermark read/write failure (not a Splitwise API failure) must be
+    // just as harmless to the Plaid refresh: the whole body of
+    // syncSplitwiseInbox needs to be inside its own try/catch, not just the
+    // portion from the network call down.
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    useAuthStore.setState({ user_id: '100', isAuthenticated: true });
+    jest.spyOn(AsyncStorage, 'getItem').mockRejectedValueOnce(new Error('io error'));
+    mockFetchTxs.mockResolvedValue(syncPage({
+      added: [{ transaction_id: 'tx2', merchant_name: 'Amazon', name: 'AMZN', amount: 29.99, iso_currency_code: 'USD', date: '2026-04-02' }],
+    }));
+    await expect(useTransactionStore.getState().refresh()).resolves.not.toThrow();
+    expect(mockUpsert).toHaveBeenCalled();
+    expect(mockGetNew).toHaveBeenCalled();
   });
 });
 
