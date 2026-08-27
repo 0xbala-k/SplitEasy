@@ -250,7 +250,9 @@ export default function HistoryScreen() {
 
       <FriendPickerSheet
         ref={pickerRef}
-        transaction={combineTxs ? null : selected ? asTransaction(selected) : null}
+        transaction={
+          combineTxs || (selected && isImported(selected)) ? null : selected ? asTransaction(selected) : null
+        }
         combineTransactions={combineTxs ?? undefined}
         mode={pickerMode}
         editDecision={editDecision}
