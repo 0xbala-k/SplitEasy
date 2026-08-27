@@ -390,7 +390,11 @@ function HistoryRecapRow({ item }: { item: HistoryItem }) {
       </View>
       <View style={styles.recapInfo}>
         <Text style={styles.recapName} numberOfLines={1}>{item.merchant_name}</Text>
-        {item.split && (
+        {item.source === 'splitwise' ? (
+          <Text style={styles.recapSplit} numberOfLines={1}>
+            {item.payer_name} paid · your share ${(item.split?.amount_each ?? 0).toFixed(2)}
+          </Text>
+        ) : item.split && (
           <Text style={styles.recapSplit} numberOfLines={1}>
             {item.split.friend_names.join(', ')} · ${item.split.amount_each.toFixed(2)} each
           </Text>

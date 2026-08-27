@@ -41,7 +41,8 @@ import React from 'react';
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import TransactionsScreen from '@/app/(tabs)/index';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { SplitwiseInboxItem } from '@/lib/types';
+import { useVacationStore } from '@/stores/vacationStore';
+import { SplitwiseInboxItem, Vacation } from '@/lib/types';
 import { ToastProvider } from '@/components/ToastProvider';
 
 function item(over: Partial<SplitwiseInboxItem> = {}): SplitwiseInboxItem {
@@ -50,6 +51,15 @@ function item(over: Partial<SplitwiseInboxItem> = {}): SplitwiseInboxItem {
     date: '2026-08-20', payer_name: 'Alice Ng', my_share: 30,
     participants: [{ id: '200', name: 'Alice Ng' }], group_id: null,
     state: 'pending', fetched_at: '2026-08-24T00:00:00.000Z',
+    ...over,
+  };
+}
+
+function vacation(over: Partial<Vacation> = {}): Vacation {
+  return {
+    id: 'vac1', name: 'Tokyo', start_date: null, end_date: null, status: 'active',
+    splitwise_group_id: null, splitwise_group_name: null, splitwise_group_member_ids: null,
+    created_at: 'x', started_at: null, ended_at: null,
     ...over,
   };
 }
@@ -65,6 +75,14 @@ beforeEach(() => {
     // directly and overwrite it with whatever the unconfigured
     // getSplitwiseInbox mock resolves to.
     loadInbox: jest.fn(),
+  });
+  useVacationStore.setState({
+    activeVacation: null, vacations: [],
+    // VacationBanner's mount effect (via the expo-router useFocusEffect mock
+    // above, which runs on mount) calls the real load() action, which would
+    // otherwise overwrite activeVacation with whatever the unconfigured
+    // getVacations() mock resolves to, racing whatever a test sets below.
+    load: jest.fn(),
   });
 });
 
@@ -130,5 +148,46 @@ it('dismissing removes it without accepting', async () => {
   render(<TransactionsScreen />);
   fireEvent.press(await screen.findByLabelText('Dismiss Dinner'));
   await waitFor(() => expect(dismiss).toHaveBeenCalledWith('555'));
+  expect(accept).not.toHaveBeenCalled();
+});
+
+it('a group-matched expense accepts straight to the vacation, skipping the picker', async () => {
+  // Same real-ToastProvider timer leak as the "toasts once" test above —
+  // fake timers keep ToastProvider's scheduled hide from escaping past teardown.
+  jest.useFakeTimers();
+  try {
+    const accept = jest.fn().mockResolvedValue(undefined);
+    useVacationStore.setState({ activeVacation: vacation({ splitwise_group_id: '42' }) });
+    useTransactionStore.setState({ splitwiseInbox: [item({ group_id: '42' })], acceptInboxItem: accept });
+    render(<ToastProvider><TransactionsScreen /></ToastProvider>);
+    fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+    expect(screen.queryByLabelText('Move Dinner to Food')).toBeNull();
+    await waitFor(() => expect(accept).toHaveBeenCalledWith(
+      expect.objectContaining({ expense_id: '555', group_id: '42' }), 'travel'
+    ));
+    expect(await screen.findByText('Added to Tokyo')).toBeTruthy();
+  } finally {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  }
+});
+
+it('a non-matching expense still opens the picker even with an active vacation', async () => {
+  const accept = jest.fn();
+  useVacationStore.setState({ activeVacation: vacation({ splitwise_group_id: '99' }) });
+  useTransactionStore.setState({ splitwiseInbox: [item({ group_id: '42' })], acceptInboxItem: accept });
+  render(<TransactionsScreen />);
+  fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+  expect(await screen.findByLabelText('Move Dinner to Food')).toBeTruthy();
+  expect(accept).not.toHaveBeenCalled();
+});
+
+it('a null group_id must not match a vacation whose group is also null', async () => {
+  const accept = jest.fn();
+  useVacationStore.setState({ activeVacation: vacation({ splitwise_group_id: null }) });
+  useTransactionStore.setState({ splitwiseInbox: [item({ group_id: null })], acceptInboxItem: accept });
+  render(<TransactionsScreen />);
+  fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+  expect(await screen.findByLabelText('Move Dinner to Food')).toBeTruthy();
   expect(accept).not.toHaveBeenCalled();
 });

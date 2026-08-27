@@ -180,13 +180,39 @@ test('pruneOldTransactions runs DELETE with 6-month cutoff', async () => {
   );
 });
 
-test('deleteAllTransactions deletes all rows', async () => {
+test('deleteAllTransactions deletes only Plaid-origin rows, including legacy NULL-source ones', async () => {
   await initDb();
   await deleteAllTransactions();
+  // A bare `source <> 'splitwise'` would match nothing for a NULL-source row
+  // (every row written before this branch), since NULL <> 'splitwise' is NULL,
+  // not true, in SQL — the explicit `source IS NULL` arm is required.
   expect(mockDb.runAsync).toHaveBeenCalledWith(
-    expect.stringContaining('DELETE FROM transactions'),
+    expect.stringContaining("DELETE FROM transactions WHERE source IS NULL OR source <> 'splitwise'"),
     []
   );
+});
+
+test('deleteAllTransactions deletes split_decisions only for the rows it deletes, preserving imported ones', async () => {
+  await initDb();
+  await deleteAllTransactions();
+  const decisionCall = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+    sql.includes('DELETE FROM split_decisions')
+  );
+  expect(decisionCall).toBeDefined();
+  expect(decisionCall![0]).toEqual(
+    expect.stringContaining("source IS NULL OR source <> 'splitwise'")
+  );
+});
+
+test('deleteAllTransactions deletes split_decisions before transactions, inside one db transaction', async () => {
+  await initDb();
+  await deleteAllTransactions();
+  expect(mockDb.withTransactionAsync).toHaveBeenCalled();
+  const calls = mockDb.runAsync.mock.calls;
+  const decisionIdx = calls.findIndex(([sql]: [string]) => sql.includes('DELETE FROM split_decisions'));
+  const txIdx = calls.findIndex(([sql]: [string]) => sql.trim().startsWith('DELETE FROM transactions'));
+  expect(decisionIdx).toBeGreaterThanOrEqual(0);
+  expect(txIdx).toBeGreaterThan(decisionIdx);
 });
 
 test('upsertSplitDecision upserts on transaction_id conflict', async () => {

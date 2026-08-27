@@ -661,11 +661,22 @@ export async function pruneOldTransactions(): Promise<void> {
   await done(tx);
 }
 
+// Called when the user disconnects their last bank — every remaining row was
+// Plaid data before this branch shipped, but an imported Splitwise row has no
+// other local source of truth: the watermark has already advanced past it, so
+// deleting it here is unrecoverable. Only Plaid-origin rows (source absent,
+// i.e. legacy, or anything other than 'splitwise') are cleared, along with
+// their paired decision — same iterate-and-match shape as pruneOldTransactions.
 export async function deleteAllTransactions(): Promise<void> {
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
-  tx.objectStore(TX_STORE).clear();
-  // Parity with SQLite ON DELETE CASCADE.
-  tx.objectStore(DECISION_STORE).clear();
+  const store = tx.objectStore(TX_STORE);
+  const all = await req(store.getAll() as IDBRequest<Transaction[]>);
+  for (const t of all) {
+    if (t.source !== 'splitwise') {
+      store.delete(t.id);
+      tx.objectStore(DECISION_STORE).delete(t.id);
+    }
+  }
   await done(tx);
 }
 

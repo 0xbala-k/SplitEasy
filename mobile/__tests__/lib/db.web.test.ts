@@ -183,7 +183,9 @@ describe('db.web (IndexedDB)', () => {
     expect(await getNewTransactions()).toHaveLength(0);
   });
 
-  it('deleteAllTransactions clears both stores', async () => {
+  it('deleteAllTransactions deletes Plaid rows, including legacy rows with no source field at all', async () => {
+    // plaidTx() never sets `source` — matching a real row written before the
+    // inbox shipped, which readers must treat as Plaid-origin.
     await upsertTransactions([plaidTx('t1')]);
     await insertSplitDecision(decision('t1'));
     await deleteAllTransactions();
@@ -1088,5 +1090,17 @@ describe('splitwise inbox (web)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].amount).toBe(60);
     expect(rows[0].amount_each).toBe(30);
+  });
+
+  it('deleteAllTransactions deletes Plaid rows but preserves imported Splitwise rows and their decisions', async () => {
+    await upsertTransactions([plaidTx('t1')]);
+    await insertSplitDecision(decision('t1'));
+    await acceptSplitwiseExpense(item(), 'food', null);
+    await deleteAllTransactions();
+    expect(await getNewTransactions()).toHaveLength(0);
+    expect(await getSplitDecision('t1')).toBeNull();
+    const history = await getHistoryTransactions();
+    expect(history.map((h) => h.id)).toEqual(['sw:555']);
+    expect(history[0].split?.amount_each).toBe(30);
   });
 });

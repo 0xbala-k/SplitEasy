@@ -761,8 +761,28 @@ export async function pruneOldTransactions(): Promise<void> {
   );
 }
 
+// Called when the user disconnects their last bank — every remaining row was
+// Plaid data before this branch shipped, but an imported Splitwise row has no
+// other local source of truth: the watermark has already advanced past it, so
+// deleting it here is unrecoverable. Only Plaid-origin rows are cleared:
+// `source IS NULL` (every row written before this branch) or `source <>
+// 'splitwise'`. The `IS NULL` arm is required — a bare `source <> 'splitwise'`
+// would silently match nothing for those legacy rows, since NULL <> 'splitwise'
+// evaluates to NULL, not true, in SQL. Same trap already documented on
+// updateTransactionStatus's bucket_source clear.
 export async function deleteAllTransactions(): Promise<void> {
-  await (await dbReady()).runAsync(`DELETE FROM transactions`, []);
+  const d = await dbReady();
+  const predicate = `source IS NULL OR source <> 'splitwise'`;
+  await d.withTransactionAsync(async () => {
+    // Decisions deleted first, via a subquery over the still-intact
+    // transactions table — deleting transactions first would leave nothing
+    // for this subquery to match.
+    await d.runAsync(
+      `DELETE FROM split_decisions WHERE transaction_id IN (SELECT id FROM transactions WHERE ${predicate})`,
+      []
+    );
+    await d.runAsync(`DELETE FROM transactions WHERE ${predicate}`, []);
+  });
 }
 
 function mapVacationRow(row: {

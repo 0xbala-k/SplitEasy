@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { useVacationStore } from '@/stores/vacationStore';
 import { TransactionRow } from '@/components/TransactionRow';
 import { VacationBanner } from '@/components/VacationBanner';
 import { ReauthBanner } from '@/components/ReauthBanner';
@@ -15,10 +16,9 @@ import { useToast } from '@/components/ToastProvider';
 import { showDialog } from '@/lib/dialog';
 import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
-import { Bucket } from '@/lib/buckets';
+import { Bucket, resolveBucket } from '@/lib/buckets';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
-import { resolveBucket } from '@/lib/buckets';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
 import { useBucketEditor } from '@/hooks/useBucketEditor';
 
@@ -95,8 +95,29 @@ export default function NewTransactionsScreen() {
   }, [inboxPendingPresent]);
 
   function openInboxAccept(item: SplitwiseInboxItem) {
+    // Vacation exception: a group-matched expense skips the picker entirely —
+    // acceptInboxItem/acceptSplitwiseExpense would override any picker choice
+    // to bucket='travel' anyway, so asking the question first is misleading.
+    // This condition must stay byte-for-byte identical to the one in
+    // transactionStore's acceptInboxItem, which owns the authoritative
+    // decision; this copy only decides which sheet/toast to show. A null
+    // group_id must never match a vacation with no group either.
+    const activeVacation = useVacationStore.getState().activeVacation;
+    if (activeVacation?.splitwise_group_id && item.group_id === activeVacation.splitwise_group_id) {
+      acceptForVacation(item, activeVacation.name);
+      return;
+    }
     setInboxTarget(item);
     setInboxPendingPresent(true);
+  }
+
+  async function acceptForVacation(item: SplitwiseInboxItem, vacationName: string) {
+    try {
+      await acceptInboxItem(item, 'travel');
+      toast.show(`Added to ${vacationName}`, 'success');
+    } catch {
+      toast.show('Could not add that expense. Please try again.', 'error');
+    }
   }
 
   async function handleInboxBucket(bucket: Bucket) {
