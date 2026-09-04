@@ -4,6 +4,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { exchangeSplitwiseCode } from '@/lib/worker';
 import { getSecure, setSecure, deleteSecure, KEYS } from '@/lib/secure';
 
+// Where the Splitwise expenses poll left off. Lives in AsyncStorage beside
+// splitwise_user_id; signOut clears it so a different account doesn't resume
+// from this one's position. Defined here (not in transactionStore, which
+// imports this module for user_id) to avoid a circular import.
+export const SPLITWISE_WATERMARK_KEY = 'splitwise_expenses_watermark';
+
 interface AuthState {
   user_id: string | null;
   display_name: string | null;
@@ -52,6 +58,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       'splitwise_user_id',
       'splitwise_display_name',
       'splitwise_avatar_url',
+      SPLITWISE_WATERMARK_KEY,
     ]);
     set({ isAuthenticated: false, user_id: null, display_name: null, avatar_url: null });
   },

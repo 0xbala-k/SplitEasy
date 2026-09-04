@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { usePlaidStore } from '@/stores/plaidStore';
+import { useVacationStore } from '@/stores/vacationStore';
 import { TransactionRow } from '@/components/TransactionRow';
 import { VacationBanner } from '@/components/VacationBanner';
 import { ReauthBanner } from '@/components/ReauthBanner';
@@ -14,10 +15,10 @@ import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { showDialog } from '@/lib/dialog';
 import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation } from '@/lib/db';
-import { Transaction, SplitDecision, ReviewItem } from '@/lib/types';
+import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
+import { Bucket, resolveBucket } from '@/lib/buckets';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
-import { resolveBucket } from '@/lib/buckets';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
 import { useBucketEditor } from '@/hooks/useBucketEditor';
 
@@ -47,6 +48,8 @@ export default function NewTransactionsScreen() {
   const {
     transactions, isLoading, review, load, refresh, skip, loadReview, resolveReview,
     deleteSplit, deleteCombinedSplit, merchantBuckets, setBucket,
+    splitwiseInbox, loadInbox, acceptInboxItem, dismissInboxItem,
+    splitwiseAuthExpired, clearSplitwiseAuthExpired,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -61,14 +64,82 @@ export default function NewTransactionsScreen() {
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
   const [pickerMode, setPickerMode] = useState<'create' | 'edit'>('create');
   const [reviewResolveIds, setReviewResolveIds] = useState<string[] | null>(null);
+  const [inboxTarget, setInboxTarget] = useState<SplitwiseInboxItem | null>(null);
+  const inboxSheetRef = useRef<BottomSheetModal>(null);
+  const [inboxPendingPresent, setInboxPendingPresent] = useState(false);
 
   useEffect(() => {
     load();
     loadReview();
+    loadInbox();
     refresh().then(() => loadReview());
     const unsub = NetInfo.addEventListener((state) => setIsConnected(!!state.isConnected));
     return unsub;
   }, []);
+
+  // The poll swallows its own errors so it can't fail the Plaid refresh; this
+  // is the one place a dead Splitwise session becomes visible.
+  useEffect(() => {
+    if (!splitwiseAuthExpired) return;
+    toast.show('Splitwise session expired. Please sign in again.', 'error');
+    clearSplitwiseAuthExpired();
+  }, [splitwiseAuthExpired, clearSplitwiseAuthExpired, toast]);
+
+  // Present from an effect, after the sheet has rendered with a target —
+  // BucketPickerSheet returns null while it has no bucket, so on the first tap
+  // the ref is still null and a synchronous present() silently does nothing.
+  useEffect(() => {
+    if (!inboxPendingPresent) return;
+    inboxSheetRef.current?.present();
+    setInboxPendingPresent(false);
+  }, [inboxPendingPresent]);
+
+  function openInboxAccept(item: SplitwiseInboxItem) {
+    // Vacation exception: a group-matched expense skips the picker entirely —
+    // acceptInboxItem/acceptSplitwiseExpense would override any picker choice
+    // to bucket='travel' anyway, so asking the question first is misleading.
+    // This condition must stay byte-for-byte identical to the one in
+    // transactionStore's acceptInboxItem, which owns the authoritative
+    // decision; this copy only decides which sheet/toast to show. A null
+    // group_id must never match a vacation with no group either.
+    const activeVacation = useVacationStore.getState().activeVacation;
+    if (activeVacation?.splitwise_group_id && item.group_id === activeVacation.splitwise_group_id) {
+      acceptForVacation(item, activeVacation.name);
+      return;
+    }
+    setInboxTarget(item);
+    setInboxPendingPresent(true);
+  }
+
+  async function acceptForVacation(item: SplitwiseInboxItem, vacationName: string) {
+    try {
+      await acceptInboxItem(item, 'travel');
+      toast.show(`Added to ${vacationName}`, 'success');
+    } catch {
+      toast.show('Could not add that expense. Please try again.', 'error');
+    }
+  }
+
+  async function handleInboxBucket(bucket: Bucket) {
+    if (!inboxTarget) return;
+    const item = inboxTarget;
+    inboxSheetRef.current?.dismiss();
+    setInboxTarget(null);
+    try {
+      await acceptInboxItem(item, bucket);
+      toast.show('Added to History', 'success');
+    } catch {
+      toast.show('Could not add that expense. Please try again.', 'error');
+    }
+  }
+
+  async function handleInboxDismiss(item: SplitwiseInboxItem) {
+    try {
+      await dismissInboxItem(item.expense_id);
+    } catch {
+      toast.show('Could not dismiss that expense. Please try again.', 'error');
+    }
+  }
 
   // Reload local state (not a Plaid refresh) on every focus, so a re-tag made
   // elsewhere (e.g. teaching a merchant a new bucket from Spending) is
@@ -227,9 +298,11 @@ export default function NewTransactionsScreen() {
   async function handleRefresh() {
     await refresh();
     await loadReview();
+    await loadInbox();
   }
 
-  const isEmptyAndLoaded = !isLoading && transactions.length === 0 && review.length === 0;
+  const isEmptyAndLoaded =
+    !isLoading && transactions.length === 0 && review.length === 0 && splitwiseInbox.length === 0;
   const listExtraData = useMemo(() => ({ selectMode, selectedIds }), [selectMode, selectedIds]);
 
   return (
@@ -276,7 +349,14 @@ export default function NewTransactionsScreen() {
             />
           }
           ListHeaderComponent={
-            <ReviewSection items={review} onAmountChanged={openReviewEdit} onReversed={openReviewReversed} />
+            <>
+              <ReviewSection items={review} onAmountChanged={openReviewEdit} onReversed={openReviewReversed} />
+              <SplitwiseSection
+                items={splitwiseInbox}
+                onAccept={openInboxAccept}
+                onDismiss={handleInboxDismiss}
+              />
+            </>
           }
           ListEmptyComponent={transactions.length === 0 ? <EmptyState /> : null}
           renderItem={({ item }) => (
@@ -306,6 +386,17 @@ export default function NewTransactionsScreen() {
         onSuccess={handleSplitSuccess}
       />
       <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
+      <BucketPickerSheet
+        ref={inboxSheetRef}
+        bucket={inboxTarget ? resolveBucket({
+          merchant_name: inboxTarget.description,
+          plaid_category: null,
+          bucket: null,
+          vacation_id: null,
+        }, merchantBuckets).bucket : null}
+        merchantName={inboxTarget?.description ?? ''}
+        onSelect={handleInboxBucket}
+      />
       {selectMode && (
         <View style={styles.selectBar}>
           <Pressable
@@ -432,6 +523,77 @@ function ReviewRow({ item, onPress }: { item: ReviewItem; onPress: () => void })
   );
 }
 
+// Friend-paid Splitwise expenses awaiting approval, rendered in the FlatList's
+// header alongside "Needs review". These never enter the main list: they are
+// not 'new' transactions and have nothing to split — only accept or dismiss.
+function SplitwiseSection({
+  items,
+  onAccept,
+  onDismiss,
+}: {
+  items: SplitwiseInboxItem[];
+  onAccept: (item: SplitwiseInboxItem) => void;
+  onDismiss: (item: SplitwiseInboxItem) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <View style={styles.reviewSection}>
+      <Text style={styles.reviewHeading}>From Splitwise · {items.length}</Text>
+      {items.map((item) => (
+        <InboxRow
+          key={item.expense_id}
+          item={item}
+          onPress={() => onAccept(item)}
+          onDismiss={() => onDismiss(item)}
+        />
+      ))}
+    </View>
+  );
+}
+
+function InboxRow({
+  item, onPress, onDismiss,
+}: {
+  item: SplitwiseInboxItem;
+  onPress: () => void;
+  onDismiss: () => void;
+}) {
+  const initial = (item.description || '?')[0].toUpperCase();
+  const avatarColor = merchantColor(item.description || '?');
+
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.reviewCard, pressed && styles.reviewCardPressed]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Add ${item.description} to history`}
+    >
+      <View style={[styles.avatar, { backgroundColor: avatarColor + '20' }]}>
+        <Text style={[styles.avatarText, { color: avatarColor }]}>{initial}</Text>
+      </View>
+      {/* minWidth: 0 lets the subtitle truncate instead of pushing the amount
+          off the row on web, where a flex item's default min-width is its
+          content size, not 0. */}
+      <View style={styles.inboxInfo}>
+        <Text style={styles.merchant} numberOfLines={1}>{item.description}</Text>
+        <Text style={styles.reviewDetail} numberOfLines={1}>
+          {item.payer_name} paid · your share ${item.my_share.toFixed(2)}
+        </Text>
+      </View>
+      <Text style={styles.amount}>${item.cost.toFixed(2)}</Text>
+      <Pressable
+        onPress={onDismiss}
+        hitSlop={12}
+        style={styles.inboxDismiss}
+        accessibilityRole="button"
+        accessibilityLabel={`Dismiss ${item.description}`}
+      >
+        <Ionicons name="close" size={18} color={Colors.textTertiary} />
+      </Pressable>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bg },
 
@@ -531,6 +693,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textPrimary,
   },
+  amount: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  inboxInfo: { flex: 1, minWidth: 0, marginRight: Spacing.sm },
+  inboxDismiss: { marginLeft: Spacing.sm, padding: 4 },
 
   emptyContainer: {
     flex: 1,

@@ -1,5 +1,5 @@
 // mobile/lib/splitwise.ts
-import { SplitwiseFriend, SplitwiseGroup } from '@/lib/types';
+import { SplitwiseFriend, SplitwiseGroup, RawSplitwiseExpense } from '@/lib/types';
 import { splitwiseFetch } from '@/lib/splitwiseTransport';
 
 export class SplitwiseAuthError extends Error {
@@ -152,4 +152,28 @@ export async function getExpense(expenseId: string): Promise<Record<string, numb
     shares[String(u.user.id)] = Number.isNaN(owed) ? 0 : owed;
   }
   return shares;
+}
+
+// Splitwise caps a page at 100 and offers no cursor, so pagination is by
+// offset. The cap of 10 pages bounds a first-run-after-a-long-gap pull; a
+// user with more than 1000 changed expenses in one window is beyond what a
+// foreground refresh should be doing, and the watermark still advances so
+// the remainder arrives next pull.
+const EXPENSES_PAGE_SIZE = 100;
+const EXPENSES_MAX_PAGES = 10;
+
+export async function getExpensesUpdatedAfter(iso: string): Promise<RawSplitwiseExpense[]> {
+  const out: RawSplitwiseExpense[] = [];
+  for (let page = 0; page < EXPENSES_MAX_PAGES; page++) {
+    const qs = new URLSearchParams({
+      updated_after: iso,
+      limit: String(EXPENSES_PAGE_SIZE),
+      offset: String(page * EXPENSES_PAGE_SIZE),
+    });
+    const data = await swGet<{ expenses: RawSplitwiseExpense[] }>(`/get_expenses?${qs}`);
+    const expenses = data.expenses ?? [];
+    out.push(...expenses);
+    if (expenses.length < EXPENSES_PAGE_SIZE) break;
+  }
+  return out;
 }

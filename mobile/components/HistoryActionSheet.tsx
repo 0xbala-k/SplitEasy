@@ -10,10 +10,13 @@ interface Props {
   transaction: HistoryItem | null;
   onEdit: () => void;
   onDelete: () => void;
+  // An imported Splitwise expense belongs to whoever paid for it: the app
+  // must never offer to rewrite or delete it upstream.
+  readOnly?: boolean;
 }
 
 export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, onEdit, onDelete }, ref) => {
+  ({ transaction, onEdit, onDelete, readOnly }, ref) => {
     if (!transaction) return null;
 
     const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
@@ -22,7 +25,7 @@ export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
     return (
       <BottomSheetModal
         ref={ref}
-        snapPoints={['38%']}
+        snapPoints={[readOnly ? '30%' : '38%']}
         enableDynamicSizing={false}
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
@@ -39,24 +42,32 @@ export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
             </View>
           </View>
 
-          <Pressable
-            style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
-            onPress={onEdit}
-            accessibilityRole="button"
-            accessibilityLabel={`Edit split for ${transaction.merchant_name}`}
-          >
-            <Ionicons name="create-outline" size={20} color={Colors.textPrimary} />
-            <Text style={styles.actionText}>Edit split</Text>
-          </Pressable>
+          {!readOnly && (
+            <Pressable
+              style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
+              onPress={onEdit}
+              accessibilityRole="button"
+              accessibilityLabel={`Edit split for ${transaction.merchant_name}`}
+            >
+              <Ionicons name="create-outline" size={20} color={Colors.textPrimary} />
+              <Text style={styles.actionText}>Edit split</Text>
+            </Pressable>
+          )}
 
           <Pressable
             style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
             onPress={onDelete}
             accessibilityRole="button"
-            accessibilityLabel={`Delete split for ${transaction.merchant_name}`}
+            accessibilityLabel={
+              readOnly
+                ? `Remove ${transaction.merchant_name} from SplitEasy`
+                : `Delete split for ${transaction.merchant_name}`
+            }
           >
             <Ionicons name="trash-outline" size={20} color={Colors.error} />
-            <Text style={[styles.actionText, styles.deleteText]}>Delete split</Text>
+            <Text style={[styles.actionText, styles.deleteText]}>
+              {readOnly ? 'Remove from SplitEasy' : 'Delete split'}
+            </Text>
           </Pressable>
         </BottomSheetView>
       </BottomSheetModal>

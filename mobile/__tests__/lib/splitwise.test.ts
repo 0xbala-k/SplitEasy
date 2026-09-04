@@ -5,7 +5,16 @@ jest.mock('@/lib/secure', () => ({
 }));
 
 import { getSecure } from '@/lib/secure';
-import { getFriends, getGroups, createExpense, updateExpense, deleteExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import {
+  getFriends,
+  getGroups,
+  createExpense,
+  updateExpense,
+  deleteExpense,
+  getExpense,
+  getExpensesUpdatedAfter,
+  SplitwiseAuthError,
+} from '@/lib/splitwise';
 
 global.fetch = jest.fn();
 const mockFetch = fetch as jest.Mock;
@@ -250,4 +259,63 @@ test('updateExpense includes group_id when provided', async () => {
   });
   const body = new URLSearchParams(mockFetch.mock.calls[0][1].body as string);
   expect(body.get('group_id')).toBe('55');
+});
+
+// The Splitwise API base URL the real splitwiseTransport prefixes onto every path
+// (mobile/lib/splitwiseTransport.ts). Assertions below check the full fetch() URL,
+// matching this file's existing convention of mocking global.fetch rather than
+// mocking @/lib/splitwiseTransport directly.
+const SPLITWISE_API_BASE = 'https://secure.splitwise.com/api/v3.0';
+
+describe('getExpensesUpdatedAfter', () => {
+  // Queues one response per call, in order — for pagination tests where each
+  // page must return a different body. mockResponse (above) only sets a single
+  // default value for every call, which can't express "page 1 full, page 2 short".
+  function mockResponseSequence(bodies: unknown[]) {
+    bodies.forEach((body) => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      });
+    });
+  }
+
+  it('requests the updated_after window and maps the page through', async () => {
+    mockResponse({ expenses: [{ id: 7, description: 'Dinner' }] });
+    const out = await getExpensesUpdatedAfter('2026-08-20T00:00:00.000Z');
+    expect(mockFetch).toHaveBeenCalledWith(
+      `${SPLITWISE_API_BASE}/get_expenses?updated_after=2026-08-20T00%3A00%3A00.000Z&limit=100&offset=0`,
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe(7);
+  });
+
+  it('paginates until a short page comes back', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ id: i }));
+    mockResponseSequence([{ expenses: full }, { expenses: [{ id: 100 }] }]);
+    const out = await getExpensesUpdatedAfter('2026-08-20T00:00:00.000Z');
+    expect(out).toHaveLength(101);
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      `${SPLITWISE_API_BASE}/get_expenses?updated_after=2026-08-20T00%3A00%3A00.000Z&limit=100&offset=100`,
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('stops paginating at the safety cap', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ id: i }));
+    mockResponse({ expenses: full });
+    const out = await getExpensesUpdatedAfter('2026-08-20T00:00:00.000Z');
+    expect(out).toHaveLength(1000);
+    expect(mockFetch).toHaveBeenCalledTimes(10);
+  });
+
+  it('raises SplitwiseAuthError on 401', async () => {
+    mockResponse({}, 401);
+    await expect(getExpensesUpdatedAfter('2026-08-20T00:00:00.000Z')).rejects.toBeInstanceOf(
+      SplitwiseAuthError
+    );
+  });
 });

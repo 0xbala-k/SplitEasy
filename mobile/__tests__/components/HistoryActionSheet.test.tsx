@@ -41,3 +41,15 @@ test('fires onDelete when Delete split is pressed', () => {
   fireEvent.press(screen.getByLabelText('Delete split for Amazon'));
   expect(onDelete).toHaveBeenCalledTimes(1);
 });
+
+it('hides the edit action and relabels delete when readOnly', () => {
+  render(<HistoryActionSheet transaction={tx} onEdit={jest.fn()} onDelete={jest.fn()} readOnly />);
+  expect(screen.queryByText('Edit split')).toBeNull();
+  expect(screen.getByText('Remove from SplitEasy')).toBeTruthy();
+});
+
+it('keeps both actions by default', () => {
+  render(<HistoryActionSheet transaction={tx} onEdit={jest.fn()} onDelete={jest.fn()} />);
+  expect(screen.getByText('Edit split')).toBeTruthy();
+  expect(screen.getByText('Delete split')).toBeTruthy();
+});

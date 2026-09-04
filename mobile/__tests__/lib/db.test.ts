@@ -39,8 +39,16 @@ import {
   getMerchantBuckets,
   setMerchantBucket,
   setTransactionBucket,
+  getSplitwiseInbox,
+  upsertInboxItem,
+  dismissInboxItem,
+  getLocalExpenseState,
+  acceptSplitwiseExpense,
+  updateImportedExpense,
+  deleteImportedExpense,
+  importedTransactionId,
 } from '@/lib/db';
-import { PlaidTransaction, SplitDecision } from '@/lib/types';
+import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 
 const mockDb = {
@@ -172,13 +180,39 @@ test('pruneOldTransactions runs DELETE with 6-month cutoff', async () => {
   );
 });
 
-test('deleteAllTransactions deletes all rows', async () => {
+test('deleteAllTransactions deletes only Plaid-origin rows, including legacy NULL-source ones', async () => {
   await initDb();
   await deleteAllTransactions();
+  // A bare `source <> 'splitwise'` would match nothing for a NULL-source row
+  // (every row written before this branch), since NULL <> 'splitwise' is NULL,
+  // not true, in SQL — the explicit `source IS NULL` arm is required.
   expect(mockDb.runAsync).toHaveBeenCalledWith(
-    expect.stringContaining('DELETE FROM transactions'),
+    expect.stringContaining("DELETE FROM transactions WHERE source IS NULL OR source <> 'splitwise'"),
     []
   );
+});
+
+test('deleteAllTransactions deletes split_decisions only for the rows it deletes, preserving imported ones', async () => {
+  await initDb();
+  await deleteAllTransactions();
+  const decisionCall = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+    sql.includes('DELETE FROM split_decisions')
+  );
+  expect(decisionCall).toBeDefined();
+  expect(decisionCall![0]).toEqual(
+    expect.stringContaining("source IS NULL OR source <> 'splitwise'")
+  );
+});
+
+test('deleteAllTransactions deletes split_decisions before transactions, inside one db transaction', async () => {
+  await initDb();
+  await deleteAllTransactions();
+  expect(mockDb.withTransactionAsync).toHaveBeenCalled();
+  const calls = mockDb.runAsync.mock.calls;
+  const decisionIdx = calls.findIndex(([sql]: [string]) => sql.includes('DELETE FROM split_decisions'));
+  const txIdx = calls.findIndex(([sql]: [string]) => sql.trim().startsWith('DELETE FROM transactions'));
+  expect(decisionIdx).toBeGreaterThanOrEqual(0);
+  expect(txIdx).toBeGreaterThan(decisionIdx);
 });
 
 test('upsertSplitDecision upserts on transaction_id conflict', async () => {
@@ -217,7 +251,7 @@ test('initDb migrates a v1 install by adding both pending and description column
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 6')
+    expect.stringContaining('user_version = 7')
   );
 });
 
@@ -228,7 +262,7 @@ test('initDb migrates an existing v2 install by adding the description column', 
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 6')
+    expect.stringContaining('user_version = 7')
   );
 });
 
@@ -242,7 +276,7 @@ test('initDb migrates an existing v4 install by adding review columns', async ()
     expect.stringContaining('ALTER TABLE transactions ADD COLUMN amount_changed_from')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 6')
+    expect.stringContaining('user_version = 7')
   );
 });
 
@@ -369,6 +403,30 @@ test('getHistoryTransactions keeps skipped rows individual', async () => {
   expect(items[0].id).toBe('tx9');
   expect(items[0].status).toBe('skipped');
   expect(items[0].split).toBeUndefined();
+});
+
+it('history carries source and payer_name through', async () => {
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'sw:555', merchant_name: 'Dinner', amount: 60, currency: 'USD', date: '2026-08-20',
+      status: 'split', pending: 0, created_at: '2026-08-24T00:00:00.000Z',
+      source: 'splitwise', payer_name: 'Alice Ng', bucket: 'food', vacation_id: null,
+      splitwise_expense_id: '555', description: null, friend_names: '["Alice Ng"]', amount_each: 30 },
+  ]);
+  const [row] = await getHistoryTransactions();
+  expect(row.source).toBe('splitwise');
+  expect(row.payer_name).toBe('Alice Ng');
+});
+
+it('a Plaid row reports source plaid even when the column is null', async () => {
+  mockDb.getAllAsync.mockResolvedValueOnce([
+    { id: 'tx1', merchant_name: 'Cafe', amount: 20, currency: 'USD', date: '2026-08-20',
+      status: 'skipped', pending: 0, created_at: '2026-08-24T00:00:00.000Z',
+      source: null, payer_name: null, bucket: 'food', vacation_id: null,
+      splitwise_expense_id: null, description: null, friend_names: null, amount_each: null },
+  ]);
+  const [row] = await getHistoryTransactions();
+  expect(row.source).toBe('plaid');
+  expect(row.payer_name).toBeNull();
 });
 
 test('persistCombinedSplit writes every row and status inside one transaction', async () => {
@@ -883,7 +941,7 @@ test('migration v6 adds bucket columns and the merchant_buckets table', async ()
   expect(sql).toContain('ADD COLUMN bucket_source TEXT');
   expect(sql).toContain('ADD COLUMN plaid_category TEXT');
   expect(sql).toContain('CREATE TABLE IF NOT EXISTS merchant_buckets');
-  expect(sql).toContain('PRAGMA user_version = 6');
+  expect(sql).toContain('PRAGMA user_version = 7');
 });
 
 test('migration v6 columns are added on a fresh install too', async () => {
@@ -1004,4 +1062,122 @@ test('setTransactionBucket rejects a vacation transaction', async () => {
   await initDb();
   mockDb.getFirstAsync.mockResolvedValueOnce({ merchant_name: 'Cafe', vacation_id: 'v1' });
   await expect(setTransactionBucket('tx1', 'food')).rejects.toThrow(BucketLockedError);
+});
+
+describe('splitwise inbox', () => {
+  function item(over: Partial<SplitwiseInboxItem> = {}): SplitwiseInboxItem {
+    return {
+      expense_id: '555', description: 'Dinner', cost: 60, currency: 'USD',
+      date: '2026-08-20', payer_name: 'Alice Ng', my_share: 30,
+      participants: [{ id: '200', name: 'Alice Ng' }], group_id: null,
+      state: 'pending', fetched_at: '2026-08-24T00:00:00.000Z',
+      ...over,
+    };
+  }
+
+  it('creates the inbox table and the new transaction columns on migration', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 6 });
+    await initDb();
+    const sql = mockDb.execAsync.mock.calls.map((c: string[]) => c[0]).join('\n');
+    expect(sql).toContain('ALTER TABLE transactions ADD COLUMN source TEXT');
+    expect(sql).toContain('ALTER TABLE transactions ADD COLUMN payer_name TEXT');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS splitwise_inbox');
+    expect(sql).toContain('PRAGMA user_version = 7');
+  });
+
+  it('adds the new columns on a brand-new install too', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 0 });
+    await initDb();
+    const sql = mockDb.execAsync.mock.calls.map((c: string[]) => c[0]).join('\n');
+    expect(sql).toContain('ALTER TABLE transactions ADD COLUMN source TEXT');
+    expect(sql).toContain('ALTER TABLE transactions ADD COLUMN payer_name TEXT');
+  });
+
+  it('returns only pending inbox rows, parsing participants', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { expense_id: '555', description: 'Dinner', cost: 60, currency: 'USD', date: '2026-08-20',
+        payer_name: 'Alice Ng', my_share: 30, participants: '[{"id":"200","name":"Alice Ng"}]',
+        group_id: null, state: 'pending', fetched_at: '2026-08-24T00:00:00.000Z' },
+    ]);
+    const rows = await getSplitwiseInbox();
+    const sql = mockDb.getAllAsync.mock.calls[0][0];
+    expect(sql).toContain("state = 'pending'");
+    expect(rows[0].participants).toEqual([{ id: '200', name: 'Alice Ng' }]);
+  });
+
+  it('upsert does not resurrect a dismissed row', async () => {
+    await upsertInboxItem(item());
+    const sql = mockDb.runAsync.mock.calls[0][0];
+    expect(sql).toContain('ON CONFLICT(expense_id) DO UPDATE');
+    // state is deliberately absent from the DO UPDATE SET list.
+    expect(sql.split('DO UPDATE')[1]).not.toContain('state =');
+  });
+
+  it('accept writes the transaction and the split decision', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    const calls = mockDb.runAsync.mock.calls;
+    const txInsert = calls.find((c: [string, unknown[]]) => c[0].includes('INTO transactions'));
+    expect(txInsert[1]).toEqual(expect.arrayContaining([
+      'sw:555', 'Dinner', 60, 'USD', '2026-08-20', 'splitwise', 'Alice Ng', 'food', 'manual',
+    ]));
+    const decInsert = calls.find((c: [string, unknown[]]) => c[0].includes('INTO split_decisions'));
+    // amount_each is the user's OWN share, not the full cost.
+    expect(decInsert[1]).toEqual(expect.arrayContaining(['sw:555', '555', 30]));
+    expect(decInsert[1]).toEqual(expect.arrayContaining([JSON.stringify(['Alice Ng'])]));
+  });
+
+  it('accept into a vacation locks the bucket to travel', async () => {
+    await acceptSplitwiseExpense(item({ group_id: '42' }), 'food', 'vac1');
+    const txInsert = mockDb.runAsync.mock.calls.find((c: [string, unknown[]]) =>
+      c[0].includes('INTO transactions'));
+    expect(txInsert[1]).toEqual(expect.arrayContaining(['travel', 'vacation', 'vac1']));
+  });
+
+  it('accept clears the inbox row', async () => {
+    await acceptSplitwiseExpense(item(), 'food', null);
+    const del = mockDb.runAsync.mock.calls.find((c: [string, unknown[]]) =>
+      c[0].includes('DELETE FROM splitwise_inbox'));
+    expect(del[1]).toEqual(['555']);
+  });
+
+  it('update rewrites amounts without touching bucket or vacation', async () => {
+    await updateImportedExpense(item({ cost: 80, my_share: 40 }));
+    const txUpdate = mockDb.runAsync.mock.calls.find((c: [string, unknown[]]) =>
+      c[0].includes('UPDATE transactions'));
+    expect(txUpdate[0]).not.toContain('bucket');
+    expect(txUpdate[0]).not.toContain('vacation_id');
+    expect(txUpdate[1]).toEqual(expect.arrayContaining([80, 'sw:555']));
+    const decUpdate = mockDb.runAsync.mock.calls.find((c: [string, unknown[]]) =>
+      c[0].includes('UPDATE split_decisions'));
+    expect(decUpdate[1]).toEqual(expect.arrayContaining([40, 'sw:555']));
+  });
+
+  it('delete removes both rows and writes a tombstone when asked', async () => {
+    await deleteImportedExpense('555', true);
+    const sqls = mockDb.runAsync.mock.calls.map((c: [string, unknown[]]) => c[0]).join('\n');
+    expect(sqls).toContain('DELETE FROM split_decisions');
+    expect(sqls).toContain('DELETE FROM transactions');
+    expect(sqls).toContain('INTO splitwise_inbox');
+    expect(sqls).toContain("'dismissed'");
+  });
+
+  it('delete without a tombstone leaves no inbox row behind', async () => {
+    await deleteImportedExpense('555', false);
+    const sqls = mockDb.runAsync.mock.calls.map((c: [string, unknown[]]) => c[0]).join('\n');
+    expect(sqls).toContain('DELETE FROM splitwise_inbox');
+    expect(sqls).not.toContain("'dismissed'");
+  });
+
+  it('reports local state for an expense', async () => {
+    // resetDbForTests() runs in this file's beforeEach, so the FIRST
+    // getFirstAsync call inside any test is openDatabase()'s own
+    // `PRAGMA user_version` read. Consume it with initDb() before priming
+    // the fixture chain below, or it swallows the first fixture.
+    await initDb();
+    mockDb.getFirstAsync
+      .mockResolvedValueOnce({ n: 1 })            // transactions row exists
+      .mockResolvedValueOnce({ state: 'dismissed' });
+    const state = await getLocalExpenseState('555');
+    expect(state).toEqual({ imported: true, dismissed: true });
+  });
 });
