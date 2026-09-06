@@ -4,7 +4,8 @@ import type { Bucket, BucketSource } from '@/lib/buckets';
 
 // Where a transaction came from. Absent/'plaid' on every row written before
 // the Splitwise inbox shipped, so readers must treat NULL as 'plaid'.
-export type TransactionSource = 'plaid' | 'splitwise';
+// 'manual' rows have no upstream at all — they are the user's only copy.
+export type TransactionSource = 'plaid' | 'splitwise' | 'manual';
 
 // One participant's slice of a Splitwise expense. paid_share/owed_share are
 // decimal strings ("12.50"), not numbers — parse at the boundary.
@@ -43,9 +44,17 @@ export interface SplitwiseInboxItem {
   group_id: string | null;
   state: InboxState;
   fetched_at: string;        // ISO-8601 datetime
+  // Field names the user has edited by hand, e.g. ["merchant_name","amount"].
+  // Upstream syncs must not overwrite these. Stored as a JSON string; parsed
+  // at the DB boundary like split_decisions.friend_ids already is. Never
+  // contains 'bucket' — see the spec's data-model section.
+  edited_fields?: string[] | null;
 }
 
-export type TransactionStatus = 'new' | 'split' | 'skipped';
+// 'excluded' is a soft delete: the row survives so a sync cannot resurrect it,
+// but every query in the app filters it out by construction, because they all
+// test status positively ("= 'new'", "IN ('split','skipped')").
+export type TransactionStatus = 'new' | 'split' | 'skipped' | 'excluded';
 
 export type ReviewReason = 'amount_changed' | 'reversed';
 
@@ -76,6 +85,11 @@ export interface Transaction {
   // Splitwise inbox). Only 'splitwise' rows get special treatment.
   source?: TransactionSource | null;
   payer_name?: string | null;   // who paid; only meaningful when source='splitwise'
+  // Field names the user has edited by hand, e.g. ["merchant_name","amount"].
+  // Upstream syncs must not overwrite these. Stored as a JSON string; parsed
+  // at the DB boundary like split_decisions.friend_ids already is. Never
+  // contains 'bucket' — see the spec's data-model section.
+  edited_fields?: string[] | null;
 }
 
 export interface SplitDecision {

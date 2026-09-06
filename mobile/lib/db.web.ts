@@ -14,7 +14,10 @@ import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/bu
 import { SpendRow } from '@/lib/spend';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 4;
+// v5 added `edited_fields` to transaction and inbox records. IndexedDB records
+// are schemaless, so there is no upgrade branch: an older record simply has no
+// such key, which parseLocks() reads as "nothing locked" — the correct default.
+const DB_VERSION = 5;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';

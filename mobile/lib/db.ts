@@ -150,11 +150,18 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
       );
     `);
   }
+  if (version < 8) {
+    // Ungated for the same reason as vacation_id above: edited_fields is not in
+    // the base `version < 1` CREATE TABLE, so a fresh install (version 0) must
+    // receive it here too.
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN edited_fields TEXT;`);
+    await d.execAsync(`ALTER TABLE splitwise_inbox ADD COLUMN edited_fields TEXT;`);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 7) {
-    await d.execAsync(`PRAGMA user_version = 7;`);
+  if (version < 8) {
+    await d.execAsync(`PRAGMA user_version = 8;`);
   }
   return d;
 }

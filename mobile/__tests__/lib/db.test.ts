@@ -251,7 +251,7 @@ test('initDb migrates a v1 install by adding both pending and description column
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 7')
+    expect.stringContaining('user_version = 8')
   );
 });
 
@@ -262,7 +262,7 @@ test('initDb migrates an existing v2 install by adding the description column', 
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 7')
+    expect.stringContaining('user_version = 8')
   );
 });
 
@@ -276,7 +276,7 @@ test('initDb migrates an existing v4 install by adding review columns', async ()
     expect.stringContaining('ALTER TABLE transactions ADD COLUMN amount_changed_from')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 7')
+    expect.stringContaining('user_version = 8')
   );
 });
 
@@ -941,7 +941,7 @@ test('migration v6 adds bucket columns and the merchant_buckets table', async ()
   expect(sql).toContain('ADD COLUMN bucket_source TEXT');
   expect(sql).toContain('ADD COLUMN plaid_category TEXT');
   expect(sql).toContain('CREATE TABLE IF NOT EXISTS merchant_buckets');
-  expect(sql).toContain('PRAGMA user_version = 7');
+  expect(sql).toContain('PRAGMA user_version = 8');
 });
 
 test('migration v6 columns are added on a fresh install too', async () => {
@@ -960,6 +960,29 @@ test('initDb runs no migration when already at version 6', async () => {
   const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
   expect(sql).not.toContain('ADD COLUMN bucket TEXT');
   expect(sql).not.toContain('PRAGMA user_version = 6');
+});
+
+test('migration to version 8 adds edited_fields to both tables', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 7 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE transactions ADD COLUMN edited_fields TEXT')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE splitwise_inbox ADD COLUMN edited_fields TEXT')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('PRAGMA user_version = 8')
+  );
+});
+
+test('migration stamps version 8 only once, and not when already current', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 8 });
+  await initDb();
+  const stamps = mockDb.execAsync.mock.calls.filter(([sql]: [string]) =>
+    sql.includes('PRAGMA user_version')
+  );
+  expect(stamps).toHaveLength(0);
 });
 
 test('upsertTransactions stores the detailed Plaid category', async () => {
@@ -1082,7 +1105,7 @@ describe('splitwise inbox', () => {
     expect(sql).toContain('ALTER TABLE transactions ADD COLUMN source TEXT');
     expect(sql).toContain('ALTER TABLE transactions ADD COLUMN payer_name TEXT');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS splitwise_inbox');
-    expect(sql).toContain('PRAGMA user_version = 7');
+    expect(sql).toContain('PRAGMA user_version = 8');
   });
 
   it('adds the new columns on a brand-new install too', async () => {
