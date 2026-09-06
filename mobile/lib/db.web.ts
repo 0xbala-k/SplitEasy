@@ -12,7 +12,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
-import { addLocks, parseLocks } from '@/lib/editLocks';
+import { applyLocks, addLocks, parseLocks } from '@/lib/editLocks';
 
 const DB_NAME = 'spliteasy';
 // v5 added `edited_fields` to transaction and inbox records. IndexedDB records
@@ -400,11 +400,11 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
     } else if (existing.status === 'new') {
       // Mirror the SQL UPDATE: refresh mutable fields, never touch status of
       // already-split/skipped rows.
-      store.put({
-        ...existing,
-        merchant_name: name, amount: p.amount, date: p.date, pending: p.pending,
-        plaid_category: category,
-      });
+      const writable = applyLocks(
+        { merchant_name: name, amount: p.amount, date: p.date },
+        existing.edited_fields
+      );
+      store.put({ ...existing, ...writable, pending: p.pending, plaid_category: category });
     }
   }
   await done(tx);
@@ -537,13 +537,16 @@ export async function rekeyTransaction(
   const reviewReason: ReviewReason | null = changed && existing.status === 'split' ? 'amount_changed' : null;
   const amountChangedFrom = reviewReason ? existing.amount : null;
 
+  const writable = applyLocks(
+    { merchant_name: name, amount: posted.amount, date: posted.date },
+    existing.edited_fields
+  );
+
   txStore.delete(oldId);
   txStore.put({
     ...existing,
+    ...writable,
     id: posted.transaction_id,
-    merchant_name: name,
-    amount: posted.amount,
-    date: posted.date,
     pending: false,
     review_reason: reviewReason,
     amount_changed_from: amountChangedFrom,

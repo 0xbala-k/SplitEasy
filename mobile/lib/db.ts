@@ -7,7 +7,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
-import { addLocks } from '@/lib/editLocks';
+import { applyLocks, addLocks } from '@/lib/editLocks';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -440,17 +440,36 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
     const currency = tx.iso_currency_code ?? 'USD';
     const pending = tx.pending ? 1 : 0;
     const category = tx.personal_finance_category?.detailed ?? null;
-    // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped rows
+    // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped
+    // rows — and, since 'excluded' is just another status, keeps a soft-deleted
+    // row soft-deleted instead of resurrecting it.
     await d.runAsync(
       `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id, plaid_category)
        VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)`,
       [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId, category]
     );
+    const existing = await d.getFirstAsync<{ edited_fields: string | null }>(
+      `SELECT edited_fields FROM transactions WHERE id = ?`,
+      [tx.transaction_id]
+    );
+    // Only user-editable fields are lockable. pending and plaid_category are
+    // Plaid's alone and are always written.
+    const writable = applyLocks(
+      { merchant_name: name, amount: tx.amount, date: tx.date },
+      existing?.edited_fields
+    );
+    // Column names come from the object literal above, never from user input,
+    // so interpolating them into the SET clause cannot inject.
+    const assignments = [
+      ...Object.keys(writable).map((col) => `${col} = ?`),
+      'pending = ?',
+      'plaid_category = ?',
+    ];
     // UPDATE only if still 'new' (don't overwrite user decisions)
     await d.runAsync(
-      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?, plaid_category = ?
+      `UPDATE transactions SET ${assignments.join(', ')}
        WHERE id = ? AND status = 'new'`,
-      [name, tx.amount, tx.date, pending, category, tx.transaction_id]
+      [...Object.values(writable), pending, category, tx.transaction_id]
     );
   }
 }
@@ -623,8 +642,10 @@ export async function rekeyTransaction(
   const d = await dbReady();
   let result: RekeyResult = 'not_found';
   await d.withTransactionAsync(async () => {
-    const row = await d.getFirstAsync<{ id: string; amount: number; status: TransactionStatus }>(
-      `SELECT id, amount, status FROM transactions WHERE id = ?`,
+    const row = await d.getFirstAsync<{
+      id: string; amount: number; status: TransactionStatus; edited_fields: string | null;
+    }>(
+      `SELECT id, amount, status, edited_fields FROM transactions WHERE id = ?`,
       [oldId]
     );
     if (!row) {
@@ -658,10 +679,21 @@ export async function rekeyTransaction(
     const reviewReason: ReviewReason | null = changed && row.status === 'split' ? 'amount_changed' : null;
     const amountChangedFrom = reviewReason ? row.amount : null;
 
+    const writable = applyLocks(
+      { merchant_name: name, amount: posted.amount, date: posted.date },
+      row.edited_fields
+    );
+    // id/pending/review_reason/amount_changed_from are never user-editable.
+    const assignments = [
+      'id = ?',
+      ...Object.keys(writable).map((col) => `${col} = ?`),
+      'pending = 0',
+      'review_reason = ?',
+      'amount_changed_from = ?',
+    ];
     await d.runAsync(
-      `UPDATE transactions SET id = ?, merchant_name = ?, amount = ?, date = ?, pending = 0,
-       review_reason = ?, amount_changed_from = ? WHERE id = ?`,
-      [posted.transaction_id, name, posted.amount, posted.date, reviewReason, amountChangedFrom, oldId]
+      `UPDATE transactions SET ${assignments.join(', ')} WHERE id = ?`,
+      [posted.transaction_id, ...Object.values(writable), reviewReason, amountChangedFrom, oldId]
     );
     await d.runAsync(
       `UPDATE split_decisions SET transaction_id = ? WHERE transaction_id = ?`,

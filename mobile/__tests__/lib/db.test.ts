@@ -139,6 +139,36 @@ test('upsertTransactions uses name when merchant_name is null', async () => {
   );
 });
 
+test('upsertTransactions omits a locked column from the UPDATE SET clause', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValue({ edited_fields: '["merchant_name"]' });
+  await upsertTransactions([{
+    transaction_id: 'p1', merchant_name: 'RAW', name: 'RAW',
+    amount: 25, iso_currency_code: 'USD', date: '2026-07-02', pending: false,
+  }]);
+  const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+    sql.includes('UPDATE transactions SET')
+  );
+  expect(update[0]).not.toContain('merchant_name = ?');
+  expect(update[0]).toContain('amount = ?');
+  expect(update[0]).toContain('date = ?');
+  expect(update[1]).not.toContain('RAW');
+});
+
+test('upsertTransactions writes every column when nothing is locked', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValue({ edited_fields: null });
+  await upsertTransactions([{
+    transaction_id: 'p2', merchant_name: 'RAW', name: 'RAW',
+    amount: 25, iso_currency_code: 'USD', date: '2026-07-02', pending: false,
+  }]);
+  const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+    sql.includes('UPDATE transactions SET')
+  );
+  expect(update[0]).toContain('merchant_name = ?');
+  expect(update[0]).toContain('amount = ?');
+});
+
 test('updateTransactionStatus updates the status field', async () => {
   await initDb();
   await updateTransactionStatus('tx1', 'skipped');

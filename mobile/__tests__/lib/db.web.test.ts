@@ -184,6 +184,35 @@ describe('db.web (IndexedDB)', () => {
     expect(rows[0].merchant_name).toBe('RAW');
   });
 
+  test('upsertTransactions does not overwrite a locked field but still updates siblings', async () => {
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW NAME', amount: 20, date: '2026-07-01' })]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW NAME 2', amount: 25, date: '2026-07-02' })]);
+
+    const [row] = await getNewTransactions();
+    expect(row.merchant_name).toBe('My Cafe');  // locked, preserved
+    expect(row.amount).toBe(25);                // unlocked, updated
+    expect(row.date).toBe('2026-07-02');        // unlocked, updated
+  });
+
+  test('rekeyTransaction preserves a locked field while moving to the posted id', async () => {
+    await upsertTransactions([plaidTx('pend1', { pending: true, amount: 20 })]);
+    await updateTransactionFields('pend1', { merchant_name: 'My Cafe' });
+
+    const result = await rekeyTransaction('pend1', {
+      transaction_id: 'posted1', merchant_name: 'RAW NAME', name: 'RAW',
+      amount: 22, iso_currency_code: 'USD', date: '2026-07-03',
+      pending: false, pending_transaction_id: 'pend1',
+    });
+
+    expect(result).toBe('changed');
+    const [row] = await getNewTransactions();
+    expect(row.id).toBe('posted1');
+    expect(row.merchant_name).toBe('My Cafe');
+    expect(row.amount).toBe(22);
+  });
+
   it('web history reports source plaid for rows written before the inbox shipped', async () => {
     await upsertTransactions([{
       transaction_id: 'tx1', merchant_name: 'Cafe', name: 'Cafe', amount: 20,
