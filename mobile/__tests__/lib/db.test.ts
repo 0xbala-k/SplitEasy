@@ -1161,11 +1161,13 @@ describe('splitwise inbox', () => {
   });
 
   it('upsert does not resurrect a dismissed row', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValueOnce({ edited_fields: null });
     await upsertInboxItem(item());
-    const sql = mockDb.runAsync.mock.calls[0][0];
-    expect(sql).toContain('ON CONFLICT(expense_id) DO UPDATE');
-    // state is deliberately absent from the DO UPDATE SET list.
-    expect(sql.split('DO UPDATE')[1]).not.toContain('state =');
+    const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE splitwise_inbox SET'));
+    // state is deliberately absent from the UPDATE SET list.
+    expect(update[0]).not.toContain('state =');
   });
 
   it('accept writes the transaction and the split decision', async () => {
@@ -1278,5 +1280,36 @@ describe('updateTransactionFields / updateInboxItemFields', () => {
     await initDb();
     await updateInboxItemFields('e1', {});
     expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('upsertInboxItem omits a locked column from the UPDATE', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: '["description"]' });
+    await upsertInboxItem({
+      expense_id: 'e1', description: 'Dinner', cost: 80, currency: 'USD',
+      date: '2026-07-01', payer_name: 'Sam', my_share: 40,
+      participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+      state: 'pending', fetched_at: '2026-07-01T10:00:00Z',
+    });
+    const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE splitwise_inbox SET')
+    );
+    expect(update[0]).not.toContain('description = ?');
+    expect(update[0]).toContain('cost = ?');
+  });
+
+  test('updateImportedExpense leaves amount_each alone when my_share is locked', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: '["my_share"]' });
+    await updateImportedExpense({
+      expense_id: 'e2', description: 'Dinner', cost: 90, currency: 'USD',
+      date: '2026-07-01', payer_name: 'Sam', my_share: 45,
+      participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+      state: 'pending', fetched_at: '2026-07-01T10:00:00Z',
+    });
+    const decisionUpdate = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE split_decisions SET')
+    );
+    expect(decisionUpdate[0]).not.toContain('amount_each = ?');
   });
 });

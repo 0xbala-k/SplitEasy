@@ -13,7 +13,7 @@ import {
   getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
   getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
   getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
-  updateTransactionFields, updateInboxItemFields,
+  updateTransactionFields, updateInboxItemFields, importedTransactionId,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -1162,6 +1162,35 @@ describe('splitwise inbox (web)', () => {
     expect(inboxRow.description).toBe('Birthday dinner');
     expect(inboxRow.my_share).toBe(25);
     expect(inboxRow.edited_fields).toEqual(['description', 'my_share']);
+  });
+
+  test('upsertInboxItem does not overwrite a locked field on a re-poll', async () => {
+    await initDb();
+    await upsertInboxItem(inboxItem('e1', { description: 'Dinner', cost: 60 }));
+    await updateInboxItemFields('e1', { description: 'Birthday dinner' });
+
+    await upsertInboxItem(inboxItem('e1', { description: 'Dinner', cost: 80 }));
+
+    const [item] = await getSplitwiseInbox();
+    expect(item.description).toBe('Birthday dinner');  // locked
+    expect(item.cost).toBe(80);                        // unlocked, refreshed
+  });
+
+  test('acceptSplitwiseExpense carries the lock list onto the transaction row', async () => {
+    await initDb();
+    await upsertInboxItem(inboxItem('e2', { description: 'Dinner' }));
+    await updateInboxItemFields('e2', { description: 'Birthday dinner' });
+    const [item] = await getSplitwiseInbox();
+
+    await acceptSplitwiseExpense(item, 'food', null);
+
+    // The payer edits upstream; the poll pushes it through updateImportedExpense.
+    await updateImportedExpense({ ...item, description: 'Dinner', cost: 90 });
+
+    const rows = await getHistoryTransactions();
+    const row = rows.find((r) => r.id === importedTransactionId('e2'));
+    expect(row!.merchant_name).toBe('Birthday dinner');  // lock survived acceptance
+    expect(row!.amount).toBe(90);                        // unlocked, updated
   });
 
   it('an accepted expense contributes only the user\'s share to spending', async () => {

@@ -7,7 +7,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
-import { applyLocks, addLocks } from '@/lib/editLocks';
+import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -1043,30 +1043,48 @@ export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {
 /**
  * Record (or refresh) an offered expense.
  *
- * `state` is deliberately absent from the DO UPDATE SET list: a dismissed
+ * `state` is deliberately absent from the UPDATE SET list: a dismissed
  * expense that the payer later edits comes back through the poll, and
  * resurrecting it as pending would re-offer something the user already said
  * no to.
  */
 export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
-  await (await dbReady()).runAsync(
-    `INSERT INTO splitwise_inbox
-       (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(expense_id) DO UPDATE SET
-       description = excluded.description,
-       cost = excluded.cost,
-       currency = excluded.currency,
-       date = excluded.date,
-       payer_name = excluded.payer_name,
-       my_share = excluded.my_share,
-       participants = excluded.participants,
-       group_id = excluded.group_id,
-       fetched_at = excluded.fetched_at`,
+  const d = await dbReady();
+  const existing = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM splitwise_inbox WHERE expense_id = ?`,
+    [item.expense_id]
+  );
+  if (!existing) {
+    await d.runAsync(
+      `INSERT INTO splitwise_inbox
+         (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at, edited_fields)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [
+        item.expense_id, item.description, item.cost, item.currency, item.date,
+        item.payer_name, item.my_share, JSON.stringify(item.participants),
+        item.group_id, item.state, item.fetched_at,
+      ]
+    );
+    return;
+  }
+  const writable = applyLocks(
+    {
+      description: item.description, cost: item.cost, currency: item.currency,
+      date: item.date, payer_name: item.payer_name, my_share: item.my_share,
+    },
+    existing.edited_fields
+  );
+  const assignments = [
+    ...Object.keys(writable).map((col) => `${col} = ?`),
+    'participants = ?',
+    'group_id = ?',
+    'fetched_at = ?',
+  ];
+  await d.runAsync(
+    `UPDATE splitwise_inbox SET ${assignments.join(', ')} WHERE expense_id = ?`,
     [
-      item.expense_id, item.description, item.cost, item.currency, item.date,
-      item.payer_name, item.my_share, JSON.stringify(item.participants),
-      item.group_id, item.state, item.fetched_at,
+      ...Object.values(writable), JSON.stringify(item.participants),
+      item.group_id, item.fetched_at, item.expense_id,
     ]
   );
 }
@@ -1121,6 +1139,29 @@ export async function getLocalExpenseState(
 }
 
 /**
+ * Inbox field name → the name the lock carries after acceptance.
+ *
+ * Three map to real transactions columns. 'my_share' maps to itself because it
+ * has no column of its own — it becomes split_decisions.amount_each, which
+ * updateImportedExpense guards separately. Keeping it in the list is what makes
+ * an edited share survive acceptance; applyLocks ignores it harmlessly when
+ * filtering a write that does not carry that key.
+ */
+const INBOX_TO_TX_FIELD: Record<string, string> = {
+  description: 'merchant_name',
+  cost: 'amount',
+  date: 'date',
+  my_share: 'my_share',
+};
+
+function txLocksFromInbox(raw: string | string[] | null | undefined): string | null {
+  const mapped = parseLocks(raw)
+    .map((f) => INBOX_TO_TX_FIELD[f])
+    .filter((f): f is string => !!f);
+  return serializeLocks(mapped);
+}
+
+/**
  * Materialize an approved expense as a transaction plus its split decision.
  *
  * `amount` is the WHOLE expense cost and `amount_each` is the user's own owed
@@ -1143,14 +1184,20 @@ export async function acceptSplitwiseExpense(
   const finalBucket: Bucket = vacationId ? 'travel' : bucket;
   const finalSource: BucketSource = vacationId ? 'vacation' : 'manual';
 
+  const inboxRow = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM splitwise_inbox WHERE expense_id = ?`,
+    [item.expense_id]
+  );
+  const txLocks = txLocksFromInbox(inboxRow?.edited_fields);
+
   await d.withTransactionAsync(async () => {
     await d.runAsync(
       `INSERT OR REPLACE INTO transactions
          (id, merchant_name, amount, currency, date, status, pending, created_at,
-          vacation_id, bucket, bucket_source, plaid_category, source, payer_name)
-       VALUES (?, ?, ?, ?, ?, 'split', 0, ?, ?, ?, ?, NULL, ?, ?)`,
+          vacation_id, bucket, bucket_source, plaid_category, source, payer_name, edited_fields)
+       VALUES (?, ?, ?, ?, ?, 'split', 0, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       [id, item.description, item.cost, item.currency, item.date, now,
-       vacationId, finalBucket, finalSource, 'splitwise', item.payer_name]
+       vacationId, finalBucket, finalSource, 'splitwise', item.payer_name, txLocks]
     );
     await d.runAsync(
       `INSERT OR REPLACE INTO split_decisions
@@ -1168,28 +1215,57 @@ export async function acceptSplitwiseExpense(
 /**
  * Apply an upstream edit to an already-imported expense.
  *
- * Only the payer's facts are rewritten. bucket, bucket_source, and vacation_id
- * are the user's and are left strictly alone.
+ * Only the payer's facts are rewritten, gated on the row's locked fields.
+ * bucket, bucket_source, and vacation_id are the user's and are left strictly
+ * alone.
  */
 export async function updateImportedExpense(item: SplitwiseInboxItem): Promise<void> {
   const d = await dbReady();
   const id = importedTransactionId(item.expense_id);
+  const row = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM transactions WHERE id = ?`,
+    [id]
+  );
+  const locks = parseLocks(row?.edited_fields);
+  const writable = applyLocks(
+    {
+      merchant_name: item.description, amount: item.cost,
+      currency: item.currency, date: item.date,
+    },
+    row?.edited_fields
+  );
   await d.withTransactionAsync(async () => {
+    // payer_name is the payer's own fact and is never user-editable.
+    const assignments = [
+      ...Object.keys(writable).map((col) => `${col} = ?`),
+      'payer_name = ?',
+    ];
     await d.runAsync(
-      `UPDATE transactions
-         SET merchant_name = ?, amount = ?, currency = ?, date = ?, payer_name = ?
-       WHERE id = ?`,
-      [item.description, item.cost, item.currency, item.date, item.payer_name, id]
+      `UPDATE transactions SET ${assignments.join(', ')} WHERE id = ?`,
+      [...Object.values(writable), item.payer_name, id]
     );
-    await d.runAsync(
-      `UPDATE split_decisions
-         SET amount_each = ?, friend_ids = ?, friend_names = ?
-       WHERE transaction_id = ?`,
-      [item.my_share,
-       JSON.stringify(item.participants.map((p) => p.id)),
-       JSON.stringify(item.participants.map((p) => p.name)),
-       id]
-    );
+    // amount_each carries the user's share. It is locked under the inbox-side
+    // name 'my_share', which has no transactions column of its own.
+    if (locks.includes('my_share')) {
+      await d.runAsync(
+        `UPDATE split_decisions SET friend_ids = ?, friend_names = ? WHERE transaction_id = ?`,
+        [
+          JSON.stringify(item.participants.map((p) => p.id)),
+          JSON.stringify(item.participants.map((p) => p.name)),
+          id,
+        ]
+      );
+    } else {
+      await d.runAsync(
+        `UPDATE split_decisions SET amount_each = ?, friend_ids = ?, friend_names = ? WHERE transaction_id = ?`,
+        [
+          item.my_share,
+          JSON.stringify(item.participants.map((p) => p.id)),
+          JSON.stringify(item.participants.map((p) => p.name)),
+          id,
+        ]
+      );
+    }
   });
 }
 
