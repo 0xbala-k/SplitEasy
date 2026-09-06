@@ -12,6 +12,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
+import { addLocks, parseLocks } from '@/lib/editLocks';
 
 const DB_NAME = 'spliteasy';
 // v5 added `edited_fields` to transaction and inbox records. IndexedDB records
@@ -477,6 +478,27 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   await done(tx);
 }
 
+/**
+ * Apply a user's hand edit and lock the fields it touched.
+ *
+ * Gated on status='new': a 'split' row has a live Splitwise expense that this
+ * would silently desync, and an 'excluded' row is soft-deleted. Both are out of
+ * scope by design, and the guard lives here so no caller can forget it.
+ */
+export async function updateTransactionFields(
+  id: string,
+  patch: { merchant_name?: string; amount?: number; date?: string }
+): Promise<void> {
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return;
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+  if (!existing || existing.status !== 'new') return;
+  store.put({ ...existing, ...patch, edited_fields: parseLocks(addLocks(existing.edited_fields, keys)) });
+  await done(tx);
+}
+
 // Mirrors lib/db.ts's rekeyTransaction — see that function's comment for why
 // this exists. Deletes the old key and re-puts under the new key in both
 // stores, inside one readwrite transaction spanning both so a failure can't
@@ -875,6 +897,20 @@ export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
     store.get(item.expense_id) as IDBRequest<SplitwiseInboxItem | undefined>
   );
   store.put({ ...item, state: existing?.state ?? item.state });
+  await done(tx);
+}
+
+export async function updateInboxItemFields(
+  expenseId: string,
+  patch: { description?: string; cost?: number; date?: string; my_share?: number }
+): Promise<void> {
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return;
+  const tx = (await dbReady()).transaction(INBOX_STORE, 'readwrite');
+  const store = tx.objectStore(INBOX_STORE);
+  const existing = await req(store.get(expenseId) as IDBRequest<SplitwiseInboxItem | undefined>);
+  if (!existing) return;
+  store.put({ ...existing, ...patch, edited_fields: parseLocks(addLocks(existing.edited_fields, keys)) });
   await done(tx);
 }
 

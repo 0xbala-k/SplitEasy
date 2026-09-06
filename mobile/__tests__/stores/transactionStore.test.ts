@@ -28,7 +28,7 @@ import { useTransactionStore, SPLITWISE_WATERMARK_KEY } from '@/stores/transacti
 import { WorkerError } from '@/lib/worker';
 import * as splitwise from '@/lib/splitwise';
 import { SplitwiseAuthError, getExpensesUpdatedAfter } from '@/lib/splitwise';
-import { getLocalExpenseState, upsertInboxItem, updateImportedExpense, deleteImportedExpense, acceptSplitwiseExpense } from '@/lib/db';
+import { getLocalExpenseState, upsertInboxItem, updateImportedExpense, deleteImportedExpense, acceptSplitwiseExpense, updateTransactionFields, updateInboxItemFields, getNewTransactions } from '@/lib/db';
 import { SplitwiseInboxItem } from '@/lib/types';
 
 const mockGetNew = db.getNewTransactions as jest.Mock;
@@ -529,5 +529,23 @@ describe('accept and dismiss', () => {
     const item = { expense_id: '555', group_id: null } as SplitwiseInboxItem;
     await useTransactionStore.getState().acceptInboxItem(item, 'food');
     expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', null);
+  });
+});
+
+describe('editTransaction / editInboxItem', () => {
+  test('editTransaction persists the patch then reloads the list', async () => {
+    (updateTransactionFields as jest.Mock).mockResolvedValue(undefined);
+    (getNewTransactions as jest.Mock).mockResolvedValue([]);
+    await useTransactionStore.getState().editTransaction('p1', { amount: 12 });
+    expect(updateTransactionFields).toHaveBeenCalledWith('p1', { amount: 12 });
+    expect(getNewTransactions).toHaveBeenCalled();
+  });
+
+  test('editInboxItem persists the patch then reloads the inbox', async () => {
+    (updateInboxItemFields as jest.Mock).mockResolvedValue(undefined);
+    mockGetSplitwiseInbox.mockResolvedValue([]);
+    await useTransactionStore.getState().editInboxItem('e1', { description: 'Birthday dinner' });
+    expect(updateInboxItemFields).toHaveBeenCalledWith('e1', { description: 'Birthday dinner' });
+    expect(mockGetSplitwiseInbox).toHaveBeenCalled();
   });
 });

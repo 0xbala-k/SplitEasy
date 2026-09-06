@@ -47,6 +47,8 @@ import {
   updateImportedExpense,
   deleteImportedExpense,
   importedTransactionId,
+  updateTransactionFields,
+  updateInboxItemFields,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
@@ -1202,5 +1204,49 @@ describe('splitwise inbox', () => {
       .mockResolvedValueOnce({ state: 'dismissed' });
     const state = await getLocalExpenseState('555');
     expect(state).toEqual({ imported: true, dismissed: true });
+  });
+});
+
+describe('updateTransactionFields / updateInboxItemFields', () => {
+  test('updateTransactionFields is gated on status new and records locks', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: null });
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain("status = 'new'");
+    expect(sql).toContain('merchant_name = ?');
+    expect(sql).toContain('edited_fields = ?');
+    expect(params).toEqual(['My Cafe', '["merchant_name"]', 'p1']);
+  });
+
+  test('updateTransactionFields is a no-op for an empty patch', async () => {
+    await initDb();
+    await updateTransactionFields('p1', {});
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('updateTransactionFields does nothing when no row matches the gate', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue(null);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('updateInboxItemFields writes the value and records the lock', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: null });
+    await updateInboxItemFields('e1', { description: 'Birthday dinner', my_share: 25 });
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain('UPDATE splitwise_inbox');
+    expect(sql).toContain('description = ?');
+    expect(sql).toContain('my_share = ?');
+    expect(sql).toContain('edited_fields = ?');
+    expect(params).toEqual(['Birthday dinner', 25, '["description","my_share"]', 'e1']);
+  });
+
+  test('updateInboxItemFields is a no-op for an empty patch', async () => {
+    await initDb();
+    await updateInboxItemFields('e1', {});
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
   });
 });

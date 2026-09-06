@@ -13,6 +13,7 @@ import {
   getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
   getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
   getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
+  updateTransactionFields, updateInboxItemFields,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -33,6 +34,15 @@ function plaidTx(id: string, over: Partial<PlaidTransaction> = {}): PlaidTransac
   return {
     transaction_id: id, merchant_name: 'Cafe', name: 'CAFE 123', amount: 20,
     iso_currency_code: 'USD', date: '2026-07-01', pending: false, ...over,
+  };
+}
+
+function inboxItem(id: string, over: Partial<SplitwiseInboxItem> = {}): SplitwiseInboxItem {
+  return {
+    expense_id: id, description: 'Dinner', cost: 60, currency: 'USD',
+    date: '2026-07-01', payer_name: 'Sam', my_share: 30,
+    participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+    state: 'pending', fetched_at: '2026-07-01T10:00:00Z', ...over,
   };
 }
 
@@ -142,6 +152,36 @@ describe('db.web (IndexedDB)', () => {
     const [row] = await getNewTransactions();
     expect(row.amount).toBe(25);
     expect(row.pending).toBe(false);
+  });
+
+  test('updateTransactionFields writes the value and records the lock', async () => {
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW', amount: 20 })]);
+
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+
+    const [row] = await getNewTransactions();
+    expect(row.merchant_name).toBe('My Cafe');
+    expect(row.edited_fields).toEqual(['merchant_name']);
+  });
+
+  test('updateTransactionFields unions locks across successive edits', async () => {
+    await upsertTransactions([plaidTx('p1')]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    await updateTransactionFields('p1', { amount: 33 });
+
+    const [row] = await getNewTransactions();
+    expect(row.edited_fields).toEqual(['amount', 'merchant_name']);
+    expect(row.amount).toBe(33);
+  });
+
+  test('updateTransactionFields refuses to touch a row that is not new', async () => {
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW' })]);
+    await updateTransactionStatus('p1', 'split');
+
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+
+    const rows = await getHistoryTransactions();
+    expect(rows[0].merchant_name).toBe('RAW');
   });
 
   it('web history reports source plaid for rows written before the inbox shipped', async () => {
@@ -1082,6 +1122,17 @@ describe('splitwise inbox (web)', () => {
     await acceptSplitwiseExpense(item(), 'food', null);
     await deleteImportedExpense('555', false);
     expect(await getLocalExpenseState('555')).toEqual({ imported: false, dismissed: false });
+  });
+
+  test('updateInboxItemFields writes the value and records the lock', async () => {
+    await upsertInboxItem(inboxItem('e1', { description: 'Dinner' }));
+
+    await updateInboxItemFields('e1', { description: 'Birthday dinner', my_share: 25 });
+
+    const [inboxRow] = await getSplitwiseInbox();
+    expect(inboxRow.description).toBe('Birthday dinner');
+    expect(inboxRow.my_share).toBe(25);
+    expect(inboxRow.edited_fields).toEqual(['description', 'my_share']);
   });
 
   it('an accepted expense contributes only the user\'s share to spending', async () => {

@@ -7,6 +7,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
+import { addLocks } from '@/lib/editLocks';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -547,6 +548,39 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   }
 }
 
+/** Fields a user may edit on a transaction row. */
+export interface TransactionFieldPatch {
+  merchant_name?: string;
+  amount?: number;
+  date?: string;
+}
+
+/**
+ * Apply a user's hand edit and lock the fields it touched.
+ *
+ * Gated on status='new': a 'split' row has a live Splitwise expense that this
+ * would silently desync, and an 'excluded' row is soft-deleted. Both are out of
+ * scope by design, and the guard lives in SQL so no caller can forget it.
+ */
+export async function updateTransactionFields(
+  id: string,
+  patch: TransactionFieldPatch
+): Promise<void> {
+  const keys = Object.keys(patch) as (keyof TransactionFieldPatch)[];
+  if (keys.length === 0) return;
+  const d = await dbReady();
+  const row = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM transactions WHERE id = ? AND status = 'new'`,
+    [id]
+  );
+  if (!row) return;
+  const assignments = [...keys.map((col) => `${col} = ?`), 'edited_fields = ?'];
+  await d.runAsync(
+    `UPDATE transactions SET ${assignments.join(', ')} WHERE id = ? AND status = 'new'`,
+    [...keys.map((k) => patch[k] as string | number), addLocks(row.edited_fields, keys), id]
+  );
+}
+
 /**
  * Move a transaction to a bucket by hand, and remember the merchant for next
  * time. Forward-only: transactions already committed under the old bucket are
@@ -1002,6 +1036,33 @@ export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
       item.payer_name, item.my_share, JSON.stringify(item.participants),
       item.group_id, item.state, item.fetched_at,
     ]
+  );
+}
+
+/** Fields a user may edit on an unaccepted inbox row. */
+export interface InboxFieldPatch {
+  description?: string;
+  cost?: number;
+  date?: string;
+  my_share?: number;
+}
+
+export async function updateInboxItemFields(
+  expenseId: string,
+  patch: InboxFieldPatch
+): Promise<void> {
+  const keys = Object.keys(patch) as (keyof InboxFieldPatch)[];
+  if (keys.length === 0) return;
+  const d = await dbReady();
+  const row = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM splitwise_inbox WHERE expense_id = ?`,
+    [expenseId]
+  );
+  if (!row) return;
+  const assignments = [...keys.map((col) => `${col} = ?`), 'edited_fields = ?'];
+  await d.runAsync(
+    `UPDATE splitwise_inbox SET ${assignments.join(', ')} WHERE expense_id = ?`,
+    [...keys.map((k) => patch[k] as string | number), addLocks(row.edited_fields, keys), expenseId]
   );
 }
 
