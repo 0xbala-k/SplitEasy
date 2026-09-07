@@ -14,6 +14,7 @@ import {
   getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
   getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
   updateTransactionFields, updateInboxItemFields, importedTransactionId,
+  excludeTransaction, restoreTransaction, getExcludedTransactions,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -211,6 +212,61 @@ describe('db.web (IndexedDB)', () => {
     expect(row.id).toBe('posted1');
     expect(row.merchant_name).toBe('My Cafe');
     expect(row.amount).toBe(22);
+  });
+
+  test('excluded rows leave the transactions tab, history and spending', async () => {
+    // excludeTransaction is scoped to status='new' (docs/superpowers/specs/
+    // 2026-09-04-transaction-editing-design.md: "flip status between 'new'
+    // and 'excluded'"); a 'split'/'skipped' row already has its own delete
+    // flow and is out of scope. p2 stays untouched here to prove exclude only
+    // ever removes the row it targets.
+    await initDb();
+    await upsertTransactions([plaidTx('p1'), plaidTx('p2')]);
+
+    await excludeTransaction('p1');
+
+    const remaining = await getNewTransactions();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe('p2');
+    expect(await getHistoryTransactions()).toEqual([]);
+    expect(await getSpendingRows()).toEqual([]);
+  });
+
+  test('an excluded row is listed by getExcludedTransactions and can be restored', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'Cafe' })]);
+    await excludeTransaction('p1');
+
+    const excluded = await getExcludedTransactions();
+    expect(excluded).toHaveLength(1);
+    expect(excluded[0].merchant_name).toBe('Cafe');
+
+    await restoreTransaction('p1');
+    expect(await getExcludedTransactions()).toEqual([]);
+    expect(await getNewTransactions()).toHaveLength(1);
+  });
+
+  test('a plaid re-sync cannot resurrect an excluded row', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1', { amount: 20 })]);
+    await excludeTransaction('p1');
+
+    await upsertTransactions([plaidTx('p1', { amount: 25 })]);
+
+    expect(await getNewTransactions()).toEqual([]);
+    expect(await getExcludedTransactions()).toHaveLength(1);
+  });
+
+  test('an edited row keeps its locks across exclude and restore', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW' })]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    await excludeTransaction('p1');
+    await restoreTransaction('p1');
+
+    const [row] = await getNewTransactions();
+    expect(row.merchant_name).toBe('My Cafe');
+    expect(row.edited_fields).toEqual(['merchant_name']);
   });
 
   it('web history reports source plaid for rows written before the inbox shipped', async () => {

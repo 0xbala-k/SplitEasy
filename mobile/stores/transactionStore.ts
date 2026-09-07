@@ -26,6 +26,8 @@ import {
   deleteImportedExpense,
   updateTransactionFields,
   updateInboxItemFields,
+  excludeTransaction as dbExcludeTransaction,
+  restoreTransaction as dbRestoreTransaction,
   TransactionFieldPatch,
   InboxFieldPatch,
 } from '@/lib/db';
@@ -63,6 +65,8 @@ interface TransactionState {
   clearSplitwiseAuthExpired: () => void;
   editTransaction: (id: string, patch: TransactionFieldPatch) => Promise<void>;
   editInboxItem: (expenseId: string, patch: InboxFieldPatch) => Promise<void>;
+  excludeTransaction: (id: string) => Promise<void>;
+  restoreTransaction: (id: string) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -267,5 +271,15 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   editInboxItem: async (expenseId, patch) => {
     await updateInboxItemFields(expenseId, patch);
     await get().loadInbox();
+  },
+
+  excludeTransaction: async (id) => {
+    await dbExcludeTransaction(id);
+    set((s) => ({ transactions: s.transactions.filter((t) => t.id !== id) }));
+  },
+
+  restoreTransaction: async (id) => {
+    await dbRestoreTransaction(id);
+    await get().load();
   },
 }));

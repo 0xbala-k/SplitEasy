@@ -549,3 +549,24 @@ describe('editTransaction / editInboxItem', () => {
     expect(mockGetSplitwiseInbox).toHaveBeenCalled();
   });
 });
+
+describe('excludeTransaction / restoreTransaction', () => {
+  test('excludeTransaction persists the exclusion and optimistically drops the row', async () => {
+    (db.excludeTransaction as jest.Mock).mockResolvedValue(undefined);
+    useTransactionStore.setState({
+      transactions: [{ id: 'p1' }, { id: 'p2' }] as never,
+    });
+    await useTransactionStore.getState().excludeTransaction('p1');
+    expect(db.excludeTransaction).toHaveBeenCalledWith('p1');
+    expect(useTransactionStore.getState().transactions.map((t) => t.id)).toEqual(['p2']);
+  });
+
+  test('restoreTransaction persists the restore then reloads the list', async () => {
+    (db.restoreTransaction as jest.Mock).mockResolvedValue(undefined);
+    mockGetNew.mockResolvedValue([]);
+    mockGetMerchantBuckets.mockResolvedValue({});
+    await useTransactionStore.getState().restoreTransaction('p1');
+    expect(db.restoreTransaction).toHaveBeenCalledWith('p1');
+    expect(mockGetNew).toHaveBeenCalled();
+  });
+});

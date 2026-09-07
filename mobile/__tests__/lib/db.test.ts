@@ -49,6 +49,9 @@ import {
   importedTransactionId,
   updateTransactionFields,
   updateInboxItemFields,
+  excludeTransaction,
+  restoreTransaction,
+  getExcludedTransactions,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
@@ -1280,6 +1283,33 @@ describe('updateTransactionFields / updateInboxItemFields', () => {
     await initDb();
     await updateInboxItemFields('e1', {});
     expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('excludeTransaction flips status and only from new', async () => {
+    await initDb();
+    await excludeTransaction('p1');
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain("SET status = 'excluded'");
+    expect(sql).toContain("AND status = 'new'");
+    expect(params).toEqual(['p1']);
+  });
+
+  test('restoreTransaction flips status and only from excluded', async () => {
+    await initDb();
+    await restoreTransaction('p1');
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain("SET status = 'new'");
+    expect(sql).toContain("AND status = 'excluded'");
+    expect(params).toEqual(['p1']);
+  });
+
+  test('getExcludedTransactions queries only excluded rows', async () => {
+    await initDb();
+    await getExcludedTransactions();
+    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining("t.status = 'excluded'"),
+      []
+    );
   });
 
   test('upsertInboxItem omits a locked column from the UPDATE', async () => {

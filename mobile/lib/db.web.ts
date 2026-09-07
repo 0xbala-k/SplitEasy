@@ -499,6 +499,38 @@ export async function updateTransactionFields(
   await done(tx);
 }
 
+/**
+ * Soft-delete a transaction. Mirrors lib/db.ts's excludeTransaction — see that
+ * function's comment for why this bypasses updateTransactionStatus and needs
+ * no tombstone table.
+ */
+export async function excludeTransaction(id: string): Promise<void> {
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+  if (existing && existing.status === 'new') store.put({ ...existing, status: 'excluded' });
+  await done(tx);
+}
+
+export async function restoreTransaction(id: string): Promise<void> {
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+  if (existing && existing.status === 'excluded') store.put({ ...existing, status: 'new' });
+  await done(tx);
+}
+
+/** Excluded rows, shaped like history rows so the History list can render them. */
+export async function getExcludedTransactions(): Promise<HistoryItem[]> {
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all.filter((t) => t.status === 'excluded').sort(byDateDesc);
+  return groupHistoryRows(rows, decisions);
+}
+
 // Mirrors lib/db.ts's rekeyTransaction — see that function's comment for why
 // this exists. Deletes the old key and re-puts under the new key in both
 // stores, inside one readwrite transaction spanning both so a failure can't

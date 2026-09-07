@@ -601,6 +601,44 @@ export async function updateTransactionFields(
 }
 
 /**
+ * Soft-delete a transaction.
+ *
+ * Deliberately NOT routed through updateTransactionStatus(), whose
+ * materializeBuckets() would resolve and write a bucket for the row on its way
+ * out — an excluded row must not acquire spending data.
+ *
+ * The row survives so that upsertTransactions' `WHERE status = 'new'` guard
+ * keeps a later Plaid sync from resurrecting it. That is why this feature needs
+ * no tombstone table.
+ */
+export async function excludeTransaction(id: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE transactions SET status = 'excluded' WHERE id = ? AND status = 'new'`,
+    [id]
+  );
+}
+
+export async function restoreTransaction(id: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE transactions SET status = 'new' WHERE id = ? AND status = 'excluded'`,
+    [id]
+  );
+}
+
+/** Excluded rows, shaped like history rows so the History list can render them. */
+export async function getExcludedTransactions(): Promise<HistoryItem[]> {
+  const rows = await (await dbReady()).getAllAsync<HistoryRow>(
+    `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     WHERE t.status = 'excluded'
+     ORDER BY t.date DESC`,
+    []
+  );
+  return groupHistoryRows(rows);
+}
+
+/**
  * Move a transaction to a bucket by hand, and remember the merchant for next
  * time. Forward-only: transactions already committed under the old bucket are
  * left alone, so a month the user has already reviewed keeps its numbers.
@@ -669,8 +707,8 @@ export async function rekeyTransaction(
           result = 'conflict';
           return;
         }
-        // Otherwise it's the duplicate 'new'/'skipped' row this rekey is meant
-        // to supersede — no expense attached, safe to drop.
+        // Otherwise it's the duplicate 'new'/'skipped'/'excluded' row this
+        // rekey is meant to supersede — no expense attached, safe to drop.
         await deleteTransactionsByPlaidIds([posted.transaction_id]);
       }
     }
@@ -707,8 +745,8 @@ export async function rekeyTransaction(
 // A pending split transaction Plaid reports as `removed` without a matching
 // `added`/`modified` posting is a reversal: the charge never posted. A
 // 'split' row is kept and flagged so the queue can offer to delete the now-
-// stranded Splitwise expense; a 'new'/'skipped' row has no expense to
-// reconcile, so it's deleted today (mirrors the old unconditional delete).
+// stranded Splitwise expense; a 'new'/'skipped'/'excluded' row has no expense
+// to reconcile, so it's deleted today (mirrors the old unconditional delete).
 // Returns the ids that were kept, for logging/testing.
 export async function markTransactionsReversed(ids: string[]): Promise<string[]> {
   if (ids.length === 0) return [];
