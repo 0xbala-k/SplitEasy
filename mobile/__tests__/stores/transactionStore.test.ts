@@ -570,3 +570,17 @@ describe('excludeTransaction / restoreTransaction', () => {
     expect(mockGetNew).toHaveBeenCalled();
   });
 });
+
+describe('addManualTransaction', () => {
+  test('persists the manual row then reloads the list', async () => {
+    (db.createManualTransaction as jest.Mock).mockResolvedValue('mn_1_abc');
+    mockGetNew.mockResolvedValue([]);
+    mockGetMerchantBuckets.mockResolvedValue({});
+    const input = { merchant_name: 'Cash lunch', amount: 9, date: '2026-07-04' };
+
+    await useTransactionStore.getState().addManualTransaction(input);
+
+    expect(db.createManualTransaction).toHaveBeenCalledWith(input);
+    expect(mockGetNew).toHaveBeenCalled();
+  });
+});

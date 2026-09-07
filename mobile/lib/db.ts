@@ -659,6 +659,40 @@ export async function setTransactionBucket(id: string, bucket: Bucket): Promise<
   await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
+export interface ManualTransactionInput {
+  merchant_name: string;
+  amount: number;
+  date: string;          // "YYYY-MM-DD", device-local (see lib/date.ts)
+  currency?: string;
+  bucket?: Bucket | null;
+}
+
+/**
+ * Record spending that never passed through a linked account — cash, or a card
+ * the app does not know about.
+ *
+ * The row is deliberately ordinary: status 'new', not pending, no
+ * plaid_category. That is what lets the entire existing split flow, the
+ * spending tracker and vacation assignment work on it with no special case.
+ *
+ * bucket is left NULL unless the caller supplies one, matching the rule that a
+ * bucket is written when a transaction is committed by a skip or a split.
+ */
+export async function createManualTransaction(input: ManualTransactionInput): Promise<string> {
+  const id = generateId('mn');
+  await (await dbReady()).runAsync(
+    `INSERT INTO transactions
+       (id, merchant_name, amount, currency, date, status, pending, created_at,
+        vacation_id, bucket, bucket_source, plaid_category, source, payer_name, edited_fields)
+     VALUES (?, ?, ?, ?, ?, 'new', 0, ?, NULL, ?, ?, NULL, 'manual', NULL, NULL)`,
+    [
+      id, input.merchant_name, input.amount, input.currency ?? 'USD', input.date,
+      new Date().toISOString(), input.bucket ?? null, input.bucket ? 'manual' : null,
+    ]
+  );
+  return id;
+}
+
 // Rekey a pending transaction's row to the id Plaid assigns once it posts.
 // Plaid's transaction_id is NOT stable across the pending → posted
 // transition: the posted transaction arrives with a brand-new id and only
@@ -872,18 +906,20 @@ export async function pruneOldTransactions(): Promise<void> {
   );
 }
 
-// Called when the user disconnects their last bank — every remaining row was
-// Plaid data before this branch shipped, but an imported Splitwise row has no
-// other local source of truth: the watermark has already advanced past it, so
-// deleting it here is unrecoverable. Only Plaid-origin rows are cleared:
-// `source IS NULL` (every row written before this branch) or `source <>
-// 'splitwise'`. The `IS NULL` arm is required — a bare `source <> 'splitwise'`
-// would silently match nothing for those legacy rows, since NULL <> 'splitwise'
-// evaluates to NULL, not true, in SQL. Same trap already documented on
-// updateTransactionStatus's bucket_source clear.
+// Called when the user disconnects their last bank. Only Plaid-origin rows are
+// cleared. An imported Splitwise row and a manual row each have no other local
+// source of truth — the Splitwise watermark has already advanced past the
+// former, and the latter was never anywhere but here — so deleting either is
+// unrecoverable.
+//
+// This is an allowlist, not a denylist. A denylist ("everything except
+// splitwise") silently destroys every source added later, which is exactly how
+// manual rows would have been lost. The `IS NULL` arm is required: every row
+// written before the source column existed has NULL, and `source <> 'plaid'`
+// would evaluate to NULL rather than true for those, matching nothing.
 export async function deleteAllTransactions(): Promise<void> {
   const d = await dbReady();
-  const predicate = `source IS NULL OR source <> 'splitwise'`;
+  const predicate = `source IS NULL OR source = 'plaid'`;
   await d.withTransactionAsync(async () => {
     // Decisions deleted first, via a subquery over the still-intact
     // transactions table — deleting transactions first would leave nothing

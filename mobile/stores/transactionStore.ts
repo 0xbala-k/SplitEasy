@@ -28,8 +28,10 @@ import {
   updateInboxItemFields,
   excludeTransaction as dbExcludeTransaction,
   restoreTransaction as dbRestoreTransaction,
+  createManualTransaction as dbCreateManualTransaction,
   TransactionFieldPatch,
   InboxFieldPatch,
+  ManualTransactionInput,
 } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
 import { Bucket } from '@/lib/buckets';
@@ -67,6 +69,7 @@ interface TransactionState {
   editInboxItem: (expenseId: string, patch: InboxFieldPatch) => Promise<void>;
   excludeTransaction: (id: string) => Promise<void>;
   restoreTransaction: (id: string) => Promise<void>;
+  addManualTransaction: (input: ManualTransactionInput) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -280,6 +283,11 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
 
   restoreTransaction: async (id) => {
     await dbRestoreTransaction(id);
+    await get().load();
+  },
+
+  addManualTransaction: async (input) => {
+    await dbCreateManualTransaction(input);
     await get().load();
   },
 }));

@@ -15,6 +15,7 @@ import {
   getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
   updateTransactionFields, updateInboxItemFields, importedTransactionId,
   excludeTransaction, restoreTransaction, getExcludedTransactions,
+  createManualTransaction,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -325,6 +326,55 @@ describe('db.web (IndexedDB)', () => {
     await deleteAllTransactions();
     expect(await getNewTransactions()).toHaveLength(0);
     expect(await getSplitDecision('t1')).toBeNull();
+  });
+
+  test('createManualTransaction lands as a normal new row', async () => {
+    await initDb();
+    const id = await createManualTransaction({
+      merchant_name: 'Taco stand', amount: 12.5, date: '2026-07-04',
+    });
+
+    expect(id).toMatch(/^mn_/);
+    const [row] = await getNewTransactions();
+    expect(row.id).toBe(id);
+    expect(row.merchant_name).toBe('Taco stand');
+    expect(row.amount).toBe(12.5);
+    expect(row.currency).toBe('USD');
+    expect(row.status).toBe('new');
+    expect(row.source).toBe('manual');
+    expect(row.pending).toBe(false);
+  });
+
+  test('deleteAllTransactions spares manual and splitwise rows', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1')]);
+    const manualId = await createManualTransaction({
+      merchant_name: 'Cash lunch', amount: 9, date: '2026-07-04',
+    });
+    await upsertInboxItem(inboxItem('e1'));
+    const [item] = await getSplitwiseInbox();
+    await acceptSplitwiseExpense(item, 'food', null);
+
+    await deleteAllTransactions();
+
+    const remaining = await getNewTransactions();
+    expect(remaining.map((r) => r.id)).toEqual([manualId]);
+    const history = await getHistoryTransactions();
+    expect(history.map((h) => h.id)).toEqual([importedTransactionId('e1')]);
+  });
+
+  test('deleteAllTransactions still clears legacy rows with an explicit null source', async () => {
+    await initDb();
+    // Distinct from the "no source field at all" case above: this covers a
+    // row that explicitly stores `source: null` rather than omitting the key,
+    // exercising IndexedDB's `== null` arm from the other side.
+    await seedRaw('transactions', {
+      id: 'legacy', merchant_name: 'Old cash', amount: 3, currency: 'USD',
+      date: '2026-07-04', status: 'new', pending: false,
+      created_at: new Date().toISOString(), source: null,
+    });
+    await deleteAllTransactions();
+    expect(await getNewTransactions()).toEqual([]);
   });
 
   it('prunes transactions older than 6 months', async () => {

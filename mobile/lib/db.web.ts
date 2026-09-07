@@ -705,6 +705,50 @@ export async function setTransactionBucket(id: string, bucket: Bucket): Promise<
   await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
+export interface ManualTransactionInput {
+  merchant_name: string;
+  amount: number;
+  date: string;          // "YYYY-MM-DD", device-local (see lib/date.ts)
+  currency?: string;
+  bucket?: Bucket | null;
+}
+
+/**
+ * Record spending that never passed through a linked account — cash, or a card
+ * the app does not know about.
+ *
+ * The row is deliberately ordinary: status 'new', not pending, no
+ * plaid_category. That is what lets the entire existing split flow, the
+ * spending tracker and vacation assignment work on it with no special case.
+ *
+ * bucket is left NULL unless the caller supplies one, matching the rule that a
+ * bucket is written when a transaction is committed by a skip or a split.
+ */
+export async function createManualTransaction(input: ManualTransactionInput): Promise<string> {
+  const id = generateId('mn');
+  const bucket = input.bucket ?? null;
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  tx.objectStore(TX_STORE).put({
+    id,
+    merchant_name: input.merchant_name,
+    amount: input.amount,
+    currency: input.currency ?? 'USD',
+    date: input.date,
+    status: 'new',
+    pending: false,
+    created_at: new Date().toISOString(),
+    vacation_id: null,
+    bucket,
+    bucket_source: bucket ? 'manual' : null,
+    plaid_category: null,
+    source: 'manual',
+    payer_name: null,
+    edited_fields: null,
+  } satisfies Transaction);
+  await done(tx);
+  return id;
+}
+
 export async function pruneOldTransactions(): Promise<void> {
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
@@ -721,21 +765,25 @@ export async function pruneOldTransactions(): Promise<void> {
   await done(tx);
 }
 
-// Called when the user disconnects their last bank — every remaining row was
-// Plaid data before this branch shipped, but an imported Splitwise row has no
-// other local source of truth: the watermark has already advanced past it, so
-// deleting it here is unrecoverable. Only Plaid-origin rows (source absent,
-// i.e. legacy, or anything other than 'splitwise') are cleared, along with
-// their paired decision — same iterate-and-match shape as pruneOldTransactions.
+// Called when the user disconnects their last bank. Only Plaid-origin rows are
+// cleared. An imported Splitwise row and a manual row each have no other local
+// source of truth — the Splitwise watermark has already advanced past the
+// former, and the latter was never anywhere but here — so deleting either is
+// unrecoverable.
+//
+// This is an allowlist, not a denylist. A denylist ("everything except
+// splitwise") silently destroys every source added later, which is exactly how
+// manual rows would have been lost. `== null` (not `=== null`) is deliberate:
+// it catches both `null` and the `undefined` that legacy web records carry —
+// the IndexedDB equivalent of SQL's `source IS NULL` arm.
 export async function deleteAllTransactions(): Promise<void> {
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const all = await req(store.getAll() as IDBRequest<Transaction[]>);
-  for (const t of all) {
-    if (t.source !== 'splitwise') {
-      store.delete(t.id);
-      tx.objectStore(DECISION_STORE).delete(t.id);
-    }
+  const doomed = all.filter((t) => t.source == null || t.source === 'plaid');
+  for (const t of doomed) {
+    store.delete(t.id);
+    tx.objectStore(DECISION_STORE).delete(t.id);
   }
   await done(tx);
 }

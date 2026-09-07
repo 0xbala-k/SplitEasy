@@ -52,6 +52,7 @@ import {
   excludeTransaction,
   restoreTransaction,
   getExcludedTransactions,
+  createManualTransaction,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
@@ -218,11 +219,12 @@ test('pruneOldTransactions runs DELETE with 6-month cutoff', async () => {
 test('deleteAllTransactions deletes only Plaid-origin rows, including legacy NULL-source ones', async () => {
   await initDb();
   await deleteAllTransactions();
-  // A bare `source <> 'splitwise'` would match nothing for a NULL-source row
-  // (every row written before this branch), since NULL <> 'splitwise' is NULL,
-  // not true, in SQL — the explicit `source IS NULL` arm is required.
+  // A bare `source <> 'plaid'` would match nothing for a NULL-source row
+  // (every row written before the source column existed), since
+  // NULL <> 'plaid' is NULL, not true, in SQL — the explicit `source IS NULL`
+  // arm is required.
   expect(mockDb.runAsync).toHaveBeenCalledWith(
-    expect.stringContaining("DELETE FROM transactions WHERE source IS NULL OR source <> 'splitwise'"),
+    expect.stringContaining("DELETE FROM transactions WHERE source IS NULL OR source = 'plaid'"),
     []
   );
 });
@@ -235,8 +237,28 @@ test('deleteAllTransactions deletes split_decisions only for the rows it deletes
   );
   expect(decisionCall).toBeDefined();
   expect(decisionCall![0]).toEqual(
-    expect.stringContaining("source IS NULL OR source <> 'splitwise'")
+    expect.stringContaining("source IS NULL OR source = 'plaid'")
   );
+});
+
+test('deleteAllTransactions uses a plaid allowlist, not a splitwise denylist', async () => {
+  await initDb();
+  await deleteAllTransactions();
+  const calls = mockDb.runAsync.mock.calls.map(([sql]: [string]) => sql);
+  expect(calls.some((sql) => sql.includes("source = 'plaid'"))).toBe(true);
+  expect(calls.some((sql) => sql.includes("source <> 'splitwise'"))).toBe(false);
+});
+
+test('createManualTransaction inserts a new manual row', async () => {
+  await initDb();
+  const id = await createManualTransaction({
+    merchant_name: 'Taco stand', amount: 12.5, date: '2026-07-04',
+  });
+  const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+  expect(sql).toContain('INSERT INTO transactions');
+  expect(sql).toContain("'manual'");
+  expect(params).toEqual(expect.arrayContaining([id, 'Taco stand', 12.5, 'USD', '2026-07-04']));
+  expect(id).toMatch(/^mn_/);
 });
 
 test('deleteAllTransactions deletes split_decisions before transactions, inside one db transaction', async () => {
