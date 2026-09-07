@@ -220,6 +220,15 @@ describe('db.web (IndexedDB)', () => {
     // and 'excluded'"); a 'split'/'skipped' row already has its own delete
     // flow and is out of scope. p2 stays untouched here to prove exclude only
     // ever removes the row it targets.
+    //
+    // Because a 'new' row was never selected by getHistoryTransactions/
+    // getSpendingRows (both require status IN ('split','skipped')) either
+    // before or after excludeTransaction runs, no single test can show a
+    // "was visible there, now isn't" transition under this status='new'-only
+    // scope. The two assertions below are a regression guard against someone
+    // later adding 'excluded' to those IN(...) filters, not proof that
+    // exclusion removes something from those views — they'd pass unchanged
+    // even if excludeTransaction were a no-op.
     await initDb();
     await upsertTransactions([plaidTx('p1'), plaidTx('p2')]);
 
