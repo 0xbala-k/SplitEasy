@@ -14,13 +14,17 @@ import { OfflineBanner } from '@/components/OfflineBanner';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { showDialog } from '@/lib/dialog';
-import { getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation } from '@/lib/db';
+import {
+  getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation,
+  TransactionFieldPatch, InboxFieldPatch,
+} from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
 import { Bucket, resolveBucket } from '@/lib/buckets';
 import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
 import { useBucketEditor } from '@/hooks/useBucketEditor';
+import { TransactionDetailSheet, DetailSheetMode, DetailSheetResult } from '@/components/TransactionDetailSheet';
 
 // Clears the absolute-positioned selectBar so it doesn't cover the last row.
 const SELECT_BAR_CLEARANCE = 88;
@@ -50,6 +54,7 @@ export default function NewTransactionsScreen() {
     deleteSplit, deleteCombinedSplit, merchantBuckets, setBucket,
     splitwiseInbox, loadInbox, acceptInboxItem, dismissInboxItem,
     splitwiseAuthExpired, clearSplitwiseAuthExpired,
+    editTransaction, editInboxItem, excludeTransaction, addManualTransaction,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -64,9 +69,18 @@ export default function NewTransactionsScreen() {
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
   const [pickerMode, setPickerMode] = useState<'create' | 'edit'>('create');
   const [reviewResolveIds, setReviewResolveIds] = useState<string[] | null>(null);
-  const [inboxTarget, setInboxTarget] = useState<SplitwiseInboxItem | null>(null);
-  const inboxSheetRef = useRef<BottomSheetModal>(null);
-  const [inboxPendingPresent, setInboxPendingPresent] = useState(false);
+
+  // TransactionDetailSheet's state: one sheet reused for create/edit/inbox.
+  // detailBucket is initialized on every open() and holds the in-flight
+  // selection until Add/Save/Accept is pressed — nothing is written until then.
+  const [detailTarget, setDetailTarget] = useState<Transaction | null>(null);
+  const [detailInbox, setDetailInbox] = useState<SplitwiseInboxItem | null>(null);
+  const [detailMode, setDetailMode] = useState<DetailSheetMode>('create');
+  const [detailToken, setDetailToken] = useState(0);
+  const [detailPendingPresent, setDetailPendingPresent] = useState(false);
+  const detailSheetRef = useRef<BottomSheetModal>(null);
+  const [detailBucket, setDetailBucket] = useState<Bucket>('misc');
+  const detailBucketSheetRef = useRef<BottomSheetModal>(null);
 
   useEffect(() => {
     load();
@@ -86,50 +100,120 @@ export default function NewTransactionsScreen() {
   }, [splitwiseAuthExpired, clearSplitwiseAuthExpired, toast]);
 
   // Present from an effect, after the sheet has rendered with a target —
-  // BucketPickerSheet returns null while it has no bucket, so on the first tap
-  // the ref is still null and a synchronous present() silently does nothing.
+  // TransactionDetailSheet returns null in 'edit'/'inbox' mode until it has
+  // the row/item to show, so on the first tap the ref is still null and a
+  // synchronous present() silently does nothing.
   useEffect(() => {
-    if (!inboxPendingPresent) return;
-    inboxSheetRef.current?.present();
-    setInboxPendingPresent(false);
-  }, [inboxPendingPresent]);
+    if (!detailPendingPresent) return;
+    detailSheetRef.current?.present();
+    setDetailPendingPresent(false);
+  }, [detailPendingPresent]);
 
-  function openInboxAccept(item: SplitwiseInboxItem) {
-    // Vacation exception: a group-matched expense skips the picker entirely —
-    // acceptInboxItem/acceptSplitwiseExpense would override any picker choice
-    // to bucket='travel' anyway, so asking the question first is misleading.
-    // This condition must stay byte-for-byte identical to the one in
-    // transactionStore's acceptInboxItem, which owns the authoritative
-    // decision; this copy only decides which sheet/toast to show. A null
-    // group_id must never match a vacation with no group either.
-    const activeVacation = useVacationStore.getState().activeVacation;
-    if (activeVacation?.splitwise_group_id && item.group_id === activeVacation.splitwise_group_id) {
-      acceptForVacation(item, activeVacation.name);
+  function openDetail(tx: Transaction) {
+    setDetailMode('edit');
+    setDetailTarget(tx);
+    setDetailInbox(null);
+    setDetailBucket(resolveBucket(tx, merchantBuckets).bucket);
+    setDetailToken((t) => t + 1);
+    setDetailPendingPresent(true);
+  }
+
+  function openDetailCreate() {
+    setDetailMode('create');
+    setDetailTarget(null);
+    setDetailInbox(null);
+    setDetailBucket('misc');
+    setDetailToken((t) => t + 1);
+    setDetailPendingPresent(true);
+  }
+
+  function openDetailInbox(item: SplitwiseInboxItem) {
+    setDetailMode('inbox');
+    setDetailInbox(item);
+    setDetailTarget(null);
+    setDetailBucket(resolveBucket({
+      merchant_name: item.description,
+      plaid_category: null,
+      bucket: null,
+      vacation_id: null,
+    }, merchantBuckets).bucket);
+    setDetailToken((t) => t + 1);
+    setDetailPendingPresent(true);
+  }
+
+  function handleDetailBucketSelect(bucket: Bucket) {
+    setDetailBucket(bucket);
+    detailBucketSheetRef.current?.dismiss();
+  }
+
+  async function handleDetailSubmit(result: DetailSheetResult) {
+    detailSheetRef.current?.dismiss();
+    if (detailMode === 'create') {
+      try {
+        await addManualTransaction({
+          merchant_name: result.merchant_name,
+          amount: result.amount,
+          date: result.date,
+          bucket: result.bucket,
+        });
+        toast.show('Transaction added', 'success');
+      } catch {
+        toast.show('Could not save. Please try again.', 'error');
+      }
       return;
     }
-    setInboxTarget(item);
-    setInboxPendingPresent(true);
-  }
-
-  async function acceptForVacation(item: SplitwiseInboxItem, vacationName: string) {
-    try {
-      await acceptInboxItem(item, 'travel');
-      toast.show(`Added to ${vacationName}`, 'success');
-    } catch {
-      toast.show('Could not add that expense. Please try again.', 'error');
+    if (detailMode === 'edit' && detailTarget) {
+      try {
+        const patch: TransactionFieldPatch = {};
+        if (result.merchant_name !== detailTarget.merchant_name) patch.merchant_name = result.merchant_name;
+        if (result.amount !== detailTarget.amount) patch.amount = result.amount;
+        if (result.date !== detailTarget.date) patch.date = result.date;
+        if (Object.keys(patch).length > 0) await editTransaction(detailTarget.id, patch);
+        // Bucket is not part of the patch: it is not lockable (no sync path
+        // writes it) and setBucket owns writing it plus the merchant_buckets
+        // lesson. Sending it through editTransaction would lock it for nothing.
+        if (result.bucket !== resolveBucket(detailTarget, merchantBuckets).bucket) {
+          await setBucket([detailTarget.id], result.bucket);
+        }
+        toast.show('Saved', 'success');
+      } catch {
+        toast.show('Could not save. Please try again.', 'error');
+      }
+      return;
+    }
+    if (detailMode === 'inbox' && detailInbox) {
+      try {
+        const patch: InboxFieldPatch = {};
+        if (result.merchant_name !== detailInbox.description) patch.description = result.merchant_name;
+        if (result.amount !== detailInbox.cost) patch.cost = result.amount;
+        if (result.date !== detailInbox.date) patch.date = result.date;
+        if (result.my_share !== undefined && result.my_share !== detailInbox.my_share) {
+          patch.my_share = result.my_share;
+        }
+        if (Object.keys(patch).length > 0) await editInboxItem(detailInbox.expense_id, patch);
+        // Re-read: acceptInboxItem materializes the row from the item it is
+        // handed, so it must see the edited values, not the stale ones.
+        const fresh = useTransactionStore.getState().splitwiseInbox
+          .find((i) => i.expense_id === detailInbox.expense_id) ?? { ...detailInbox, ...patch };
+        await acceptInboxItem(fresh, result.bucket);
+        toast.show('Added to History', 'success');
+      } catch {
+        toast.show('Could not save. Please try again.', 'error');
+      }
     }
   }
 
-  async function handleInboxBucket(bucket: Bucket) {
-    if (!inboxTarget) return;
-    const item = inboxTarget;
-    inboxSheetRef.current?.dismiss();
-    setInboxTarget(null);
-    try {
-      await acceptInboxItem(item, bucket);
-      toast.show('Added to History', 'success');
-    } catch {
-      toast.show('Could not add that expense. Please try again.', 'error');
+  async function handleDetailDelete() {
+    detailSheetRef.current?.dismiss();
+    if (detailMode === 'edit' && detailTarget) {
+      try {
+        await excludeTransaction(detailTarget.id);
+        toast.show('Removed', 'success');
+      } catch {
+        toast.show('Could not save. Please try again.', 'error');
+      }
+    } else if (detailMode === 'inbox' && detailInbox) {
+      await handleInboxDismiss(detailInbox);
     }
   }
 
@@ -319,11 +403,21 @@ export default function NewTransactionsScreen() {
             </Text>
           )}
         </View>
-        {transactions.length > 0 && (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{transactions.length}</Text>
-          </View>
-        )}
+        <View style={styles.headerActions}>
+          {transactions.length > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{transactions.length}</Text>
+            </View>
+          )}
+          <Pressable
+            style={styles.addButton}
+            onPress={openDetailCreate}
+            accessibilityRole="button"
+            accessibilityLabel="Add transaction"
+          >
+            <Ionicons name="add" size={22} color={Colors.textInverse} />
+          </Pressable>
+        </View>
       </View>
 
       <VacationBanner />
@@ -353,7 +447,7 @@ export default function NewTransactionsScreen() {
               <ReviewSection items={review} onAmountChanged={openReviewEdit} onReversed={openReviewReversed} />
               <SplitwiseSection
                 items={splitwiseInbox}
-                onAccept={openInboxAccept}
+                onAccept={openDetailInbox}
                 onDismiss={handleInboxDismiss}
               />
             </>
@@ -364,6 +458,7 @@ export default function NewTransactionsScreen() {
               transaction={item}
               onSkip={() => skip(item.id)}
               onSplit={() => openSheet(item)}
+              onPress={() => openDetail(item)}
               onLongPress={() => enterSelect(item)}
               selectMode={selectMode}
               selected={selectedIds.has(item.id)}
@@ -386,16 +481,27 @@ export default function NewTransactionsScreen() {
         onSuccess={handleSplitSuccess}
       />
       <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
+      <TransactionDetailSheet
+        ref={detailSheetRef}
+        mode={detailMode}
+        transaction={detailTarget}
+        inboxItem={detailInbox}
+        bucket={detailBucket}
+        bucketLocked={!!(() => {
+          const activeVacation = useVacationStore.getState().activeVacation;
+          return activeVacation?.splitwise_group_id &&
+            detailInbox?.group_id === activeVacation.splitwise_group_id;
+        })()}
+        openToken={detailToken}
+        onSubmit={handleDetailSubmit}
+        onDelete={detailMode === 'create' ? undefined : handleDetailDelete}
+        onBucketPress={() => detailBucketSheetRef.current?.present()}
+      />
       <BucketPickerSheet
-        ref={inboxSheetRef}
-        bucket={inboxTarget ? resolveBucket({
-          merchant_name: inboxTarget.description,
-          plaid_category: null,
-          bucket: null,
-          vacation_id: null,
-        }, merchantBuckets).bucket : null}
-        merchantName={inboxTarget?.description ?? ''}
-        onSelect={handleInboxBucket}
+        ref={detailBucketSheetRef}
+        bucket={detailBucket}
+        merchantName={detailTarget?.merchant_name ?? detailInbox?.description ?? ''}
+        onSelect={handleDetailBucketSelect}
       />
       {selectMode && (
         <View style={styles.selectBar}>
@@ -617,6 +723,19 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 2,
     fontWeight: '500',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  addButton: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   badge: {
     backgroundColor: Colors.primary,

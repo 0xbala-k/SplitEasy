@@ -144,3 +144,24 @@ test('a locked chip announces the vacation', () => {
   );
   expect(screen.getByLabelText('Category: Travel, set by a vacation.')).toBeTruthy();
 });
+
+test('tapping the card opens the detail sheet', () => {
+  const onPress = jest.fn();
+  const { getByText } = render(
+    <TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()} onPress={onPress} />
+  );
+  fireEvent.press(getByText('Amazon'));
+  expect(onPress).toHaveBeenCalled();
+});
+
+test('tapping the card does nothing in select mode', () => {
+  const onPress = jest.fn();
+  const onToggleSelect = jest.fn();
+  const { getByText } = render(
+    <TransactionRow transaction={tx} onSkip={jest.fn()} onSplit={jest.fn()}
+      onPress={onPress} selectMode onToggleSelect={onToggleSelect} />
+  );
+  fireEvent.press(getByText('Amazon'));
+  expect(onPress).not.toHaveBeenCalled();
+  expect(onToggleSelect).toHaveBeenCalled();
+});
