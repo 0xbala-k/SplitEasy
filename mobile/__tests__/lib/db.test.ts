@@ -47,6 +47,12 @@ import {
   updateImportedExpense,
   deleteImportedExpense,
   importedTransactionId,
+  updateTransactionFields,
+  updateInboxItemFields,
+  excludeTransaction,
+  restoreTransaction,
+  getExcludedTransactions,
+  createManualTransaction,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
@@ -137,6 +143,36 @@ test('upsertTransactions uses name when merchant_name is null', async () => {
   );
 });
 
+test('upsertTransactions omits a locked column from the UPDATE SET clause', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValue({ edited_fields: '["merchant_name"]' });
+  await upsertTransactions([{
+    transaction_id: 'p1', merchant_name: 'RAW', name: 'RAW',
+    amount: 25, iso_currency_code: 'USD', date: '2026-07-02', pending: false,
+  }]);
+  const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+    sql.includes('UPDATE transactions SET')
+  );
+  expect(update[0]).not.toContain('merchant_name = ?');
+  expect(update[0]).toContain('amount = ?');
+  expect(update[0]).toContain('date = ?');
+  expect(update[1]).not.toContain('RAW');
+});
+
+test('upsertTransactions writes every column when nothing is locked', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValue({ edited_fields: null });
+  await upsertTransactions([{
+    transaction_id: 'p2', merchant_name: 'RAW', name: 'RAW',
+    amount: 25, iso_currency_code: 'USD', date: '2026-07-02', pending: false,
+  }]);
+  const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+    sql.includes('UPDATE transactions SET')
+  );
+  expect(update[0]).toContain('merchant_name = ?');
+  expect(update[0]).toContain('amount = ?');
+});
+
 test('updateTransactionStatus updates the status field', async () => {
   await initDb();
   await updateTransactionStatus('tx1', 'skipped');
@@ -183,11 +219,12 @@ test('pruneOldTransactions runs DELETE with 6-month cutoff', async () => {
 test('deleteAllTransactions deletes only Plaid-origin rows, including legacy NULL-source ones', async () => {
   await initDb();
   await deleteAllTransactions();
-  // A bare `source <> 'splitwise'` would match nothing for a NULL-source row
-  // (every row written before this branch), since NULL <> 'splitwise' is NULL,
-  // not true, in SQL — the explicit `source IS NULL` arm is required.
+  // A bare `source <> 'plaid'` would match nothing for a NULL-source row
+  // (every row written before the source column existed), since
+  // NULL <> 'plaid' is NULL, not true, in SQL — the explicit `source IS NULL`
+  // arm is required.
   expect(mockDb.runAsync).toHaveBeenCalledWith(
-    expect.stringContaining("DELETE FROM transactions WHERE source IS NULL OR source <> 'splitwise'"),
+    expect.stringContaining("DELETE FROM transactions WHERE source IS NULL OR source = 'plaid'"),
     []
   );
 });
@@ -200,8 +237,28 @@ test('deleteAllTransactions deletes split_decisions only for the rows it deletes
   );
   expect(decisionCall).toBeDefined();
   expect(decisionCall![0]).toEqual(
-    expect.stringContaining("source IS NULL OR source <> 'splitwise'")
+    expect.stringContaining("source IS NULL OR source = 'plaid'")
   );
+});
+
+test('deleteAllTransactions uses a plaid allowlist, not a splitwise denylist', async () => {
+  await initDb();
+  await deleteAllTransactions();
+  const calls = mockDb.runAsync.mock.calls.map(([sql]: [string]) => sql);
+  expect(calls.some((sql) => sql.includes("source = 'plaid'"))).toBe(true);
+  expect(calls.some((sql) => sql.includes("source <> 'splitwise'"))).toBe(false);
+});
+
+test('createManualTransaction inserts a new manual row', async () => {
+  await initDb();
+  const id = await createManualTransaction({
+    merchant_name: 'Taco stand', amount: 12.5, date: '2026-07-04',
+  });
+  const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+  expect(sql).toContain('INSERT INTO transactions');
+  expect(sql).toContain("'manual'");
+  expect(params).toEqual(expect.arrayContaining([id, 'Taco stand', 12.5, 'USD', '2026-07-04']));
+  expect(id).toMatch(/^mn_/);
 });
 
 test('deleteAllTransactions deletes split_decisions before transactions, inside one db transaction', async () => {
@@ -251,7 +308,7 @@ test('initDb migrates a v1 install by adding both pending and description column
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 7')
+    expect.stringContaining('user_version = 8')
   );
 });
 
@@ -262,7 +319,7 @@ test('initDb migrates an existing v2 install by adding the description column', 
     expect.stringContaining('ALTER TABLE split_decisions ADD COLUMN description')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 7')
+    expect.stringContaining('user_version = 8')
   );
 });
 
@@ -276,7 +333,7 @@ test('initDb migrates an existing v4 install by adding review columns', async ()
     expect.stringContaining('ALTER TABLE transactions ADD COLUMN amount_changed_from')
   );
   expect(mockDb.execAsync).toHaveBeenCalledWith(
-    expect.stringContaining('user_version = 7')
+    expect.stringContaining('user_version = 8')
   );
 });
 
@@ -941,7 +998,7 @@ test('migration v6 adds bucket columns and the merchant_buckets table', async ()
   expect(sql).toContain('ADD COLUMN bucket_source TEXT');
   expect(sql).toContain('ADD COLUMN plaid_category TEXT');
   expect(sql).toContain('CREATE TABLE IF NOT EXISTS merchant_buckets');
-  expect(sql).toContain('PRAGMA user_version = 7');
+  expect(sql).toContain('PRAGMA user_version = 8');
 });
 
 test('migration v6 columns are added on a fresh install too', async () => {
@@ -960,6 +1017,29 @@ test('initDb runs no migration when already at version 6', async () => {
   const sql = mockDb.execAsync.mock.calls.map(([s]: [string]) => s).join('\n');
   expect(sql).not.toContain('ADD COLUMN bucket TEXT');
   expect(sql).not.toContain('PRAGMA user_version = 6');
+});
+
+test('migration to version 8 adds edited_fields to both tables', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 7 });
+  await initDb();
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE transactions ADD COLUMN edited_fields TEXT')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('ALTER TABLE splitwise_inbox ADD COLUMN edited_fields TEXT')
+  );
+  expect(mockDb.execAsync).toHaveBeenCalledWith(
+    expect.stringContaining('PRAGMA user_version = 8')
+  );
+});
+
+test('migration stamps version 8 only once, and not when already current', async () => {
+  mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 8 });
+  await initDb();
+  const stamps = mockDb.execAsync.mock.calls.filter(([sql]: [string]) =>
+    sql.includes('PRAGMA user_version')
+  );
+  expect(stamps).toHaveLength(0);
 });
 
 test('upsertTransactions stores the detailed Plaid category', async () => {
@@ -1082,7 +1162,7 @@ describe('splitwise inbox', () => {
     expect(sql).toContain('ALTER TABLE transactions ADD COLUMN source TEXT');
     expect(sql).toContain('ALTER TABLE transactions ADD COLUMN payer_name TEXT');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS splitwise_inbox');
-    expect(sql).toContain('PRAGMA user_version = 7');
+    expect(sql).toContain('PRAGMA user_version = 8');
   });
 
   it('adds the new columns on a brand-new install too', async () => {
@@ -1105,12 +1185,26 @@ describe('splitwise inbox', () => {
     expect(rows[0].participants).toEqual([{ id: '200', name: 'Alice Ng' }]);
   });
 
+  it('parses edited_fields into a real array, not the raw JSON string', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { expense_id: '555', description: 'Dinner', cost: 60, currency: 'USD', date: '2026-08-20',
+        payer_name: 'Alice Ng', my_share: 30, participants: '[{"id":"200","name":"Alice Ng"}]',
+        group_id: null, state: 'pending', fetched_at: '2026-08-24T00:00:00.000Z',
+        edited_fields: '["description"]' },
+    ]);
+    const rows = await getSplitwiseInbox();
+    expect(Array.isArray(rows[0].edited_fields)).toBe(true);
+    expect(rows[0].edited_fields).toEqual(['description']);
+  });
+
   it('upsert does not resurrect a dismissed row', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValueOnce({ edited_fields: null });
     await upsertInboxItem(item());
-    const sql = mockDb.runAsync.mock.calls[0][0];
-    expect(sql).toContain('ON CONFLICT(expense_id) DO UPDATE');
-    // state is deliberately absent from the DO UPDATE SET list.
-    expect(sql.split('DO UPDATE')[1]).not.toContain('state =');
+    const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE splitwise_inbox SET'));
+    // state is deliberately absent from the UPDATE SET list.
+    expect(update[0]).not.toContain('state =');
   });
 
   it('accept writes the transaction and the split decision', async () => {
@@ -1179,5 +1273,107 @@ describe('splitwise inbox', () => {
       .mockResolvedValueOnce({ state: 'dismissed' });
     const state = await getLocalExpenseState('555');
     expect(state).toEqual({ imported: true, dismissed: true });
+  });
+});
+
+describe('updateTransactionFields / updateInboxItemFields', () => {
+  test('updateTransactionFields is gated on status new and records locks', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: null });
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain("status = 'new'");
+    expect(sql).toContain('merchant_name = ?');
+    expect(sql).toContain('edited_fields = ?');
+    expect(params).toEqual(['My Cafe', '["merchant_name"]', 'p1']);
+  });
+
+  test('updateTransactionFields is a no-op for an empty patch', async () => {
+    await initDb();
+    await updateTransactionFields('p1', {});
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('updateTransactionFields does nothing when no row matches the gate', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue(null);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('updateInboxItemFields writes the value and records the lock', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: null });
+    await updateInboxItemFields('e1', { description: 'Birthday dinner', my_share: 25 });
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain('UPDATE splitwise_inbox');
+    expect(sql).toContain('description = ?');
+    expect(sql).toContain('my_share = ?');
+    expect(sql).toContain('edited_fields = ?');
+    expect(params).toEqual(['Birthday dinner', 25, '["description","my_share"]', 'e1']);
+  });
+
+  test('updateInboxItemFields is a no-op for an empty patch', async () => {
+    await initDb();
+    await updateInboxItemFields('e1', {});
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('excludeTransaction flips status and only from new', async () => {
+    await initDb();
+    await excludeTransaction('p1');
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain("SET status = 'excluded'");
+    expect(sql).toContain("AND status = 'new'");
+    expect(params).toEqual(['p1']);
+  });
+
+  test('restoreTransaction flips status and only from excluded', async () => {
+    await initDb();
+    await restoreTransaction('p1');
+    const [sql, params] = mockDb.runAsync.mock.calls.at(-1);
+    expect(sql).toContain("SET status = 'new'");
+    expect(sql).toContain("AND status = 'excluded'");
+    expect(params).toEqual(['p1']);
+  });
+
+  test('getExcludedTransactions queries only excluded rows', async () => {
+    await initDb();
+    await getExcludedTransactions();
+    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining("t.status = 'excluded'"),
+      []
+    );
+  });
+
+  test('upsertInboxItem omits a locked column from the UPDATE', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: '["description"]' });
+    await upsertInboxItem({
+      expense_id: 'e1', description: 'Dinner', cost: 80, currency: 'USD',
+      date: '2026-07-01', payer_name: 'Sam', my_share: 40,
+      participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+      state: 'pending', fetched_at: '2026-07-01T10:00:00Z',
+    });
+    const update = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE splitwise_inbox SET')
+    );
+    expect(update[0]).not.toContain('description = ?');
+    expect(update[0]).toContain('cost = ?');
+  });
+
+  test('updateImportedExpense leaves amount_each alone when my_share is locked', async () => {
+    await initDb();
+    mockDb.getFirstAsync.mockResolvedValue({ edited_fields: '["my_share"]' });
+    await updateImportedExpense({
+      expense_id: 'e2', description: 'Dinner', cost: 90, currency: 'USD',
+      date: '2026-07-01', payer_name: 'Sam', my_share: 45,
+      participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+      state: 'pending', fetched_at: '2026-07-01T10:00:00Z',
+    });
+    const decisionUpdate = mockDb.runAsync.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE split_decisions SET')
+    );
+    expect(decisionUpdate[0]).not.toContain('amount_each = ?');
   });
 });

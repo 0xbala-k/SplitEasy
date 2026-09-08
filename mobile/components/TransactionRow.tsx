@@ -17,6 +17,7 @@ interface Props {
   // entirely by the user can still be committed (and counted as Travel)
   // instead of only being splittable or ejectable.
   onRemove?: () => void;
+  onPress?: () => void;
   onLongPress?: () => void;
   selectMode?: boolean;
   selected?: boolean;
@@ -29,7 +30,7 @@ interface Props {
 }
 
 export function TransactionRow({
-  transaction, onSkip, onSplit, onRemove, onLongPress,
+  transaction, onSkip, onSplit, onRemove, onPress, onLongPress,
   selectMode, selected, onToggleSelect,
   bucket, bucketLocked, onBucketPress,
 }: Props) {
@@ -97,7 +98,7 @@ export function TransactionRow({
       leftThreshold={72}
       friction={1.5}
     >
-      <Pressable style={styles.card} onLongPress={onLongPress} delayLongPress={300}>
+      <Pressable style={styles.card} onPress={onPress} onLongPress={onLongPress} delayLongPress={300}>
         {/* Merchant avatar */}
         <View style={[styles.avatar, { backgroundColor: avatarBg + '18' }]}>
           <Text style={[styles.avatarText, { color: avatarBg }]}>{initial}</Text>
