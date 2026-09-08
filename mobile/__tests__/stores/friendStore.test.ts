@@ -5,12 +5,16 @@ import * as splitwise from '@/lib/splitwise';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { getFriends, SplitwiseAuthError } from '@/lib/splitwise';
+import { getCachedFriends, replaceCachedFriends } from '@/lib/db';
+
+jest.mock('@/lib/db');
 
 const mockGetFriends = splitwise.getFriends as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  useFriendStore.setState({ friends: [], isLoading: false });
+  useFriendStore.setState({ friends: [], isLoading: false, isStale: false });
+  (getCachedFriends as jest.Mock).mockResolvedValue([]);
 });
 
 test('load populates friends from Splitwise', async () => {
@@ -53,9 +57,10 @@ test('clear empties the friends list', () => {
 
 describe('friendStore auth reporting', () => {
   beforeEach(() => {
-    useFriendStore.setState({ friends: [], isLoading: false });
+    useFriendStore.setState({ friends: [], isLoading: false, isStale: false });
     useAuthStore.setState({ hasSession: true, tokenValid: true });
     jest.clearAllMocks();
+    (getCachedFriends as jest.Mock).mockResolvedValue([]);
   });
 
   it('reports a 401 instead of swallowing it', async () => {
@@ -87,5 +92,58 @@ describe('friendStore auth reporting', () => {
     // A 500 or a network blip is not an auth problem and must not tell the
     // user to reconnect.
     expect(useAuthStore.getState().tokenValid).toBe(true);
+  });
+});
+
+describe('cache-first loading', () => {
+  beforeEach(() => {
+    useFriendStore.setState({ friends: [], isLoading: false, isStale: false });
+    useAuthStore.setState({ hasSession: true, tokenValid: true });
+    jest.clearAllMocks();
+  });
+
+  it('renders the cache before the network returns', async () => {
+    (getCachedFriends as jest.Mock).mockResolvedValue([
+      { id: '1', display_name: 'Cached Ada', avatar_url: null },
+    ]);
+    let release: (v: any) => void;
+    (getFriends as jest.Mock).mockReturnValue(new Promise((r) => { release = r; }));
+
+    const loading = useFriendStore.getState().load();
+    await new Promise((r) => setImmediate(r));
+
+    // The cache must be on screen while the request is still in flight.
+    expect(useFriendStore.getState().friends[0].display_name).toBe('Cached Ada');
+
+    release!([{ id: '1', display_name: 'Fresh Ada', avatar_url: null }]);
+    await loading;
+    expect(useFriendStore.getState().friends[0].display_name).toBe('Fresh Ada');
+  });
+
+  it('keeps the cache and marks it stale when the refresh 401s', async () => {
+    (getCachedFriends as jest.Mock).mockResolvedValue([
+      { id: '1', display_name: 'Cached Ada', avatar_url: null },
+    ]);
+    (getFriends as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
+
+    await useFriendStore.getState().load();
+
+    // The bug this fixes: the picker went empty on any failure.
+    expect(useFriendStore.getState().friends).toHaveLength(1);
+    expect(useFriendStore.getState().isStale).toBe(true);
+    expect(useAuthStore.getState().tokenValid).toBe(false);
+  });
+
+  it('persists a successful fetch to the cache', async () => {
+    (getCachedFriends as jest.Mock).mockResolvedValue([]);
+    (getFriends as jest.Mock).mockResolvedValue([
+      { id: '9', display_name: 'Grace', avatar_url: null },
+    ]);
+
+    await useFriendStore.getState().load();
+
+    expect(replaceCachedFriends).toHaveBeenCalledWith([
+      { id: '9', display_name: 'Grace', avatar_url: null },
+    ]);
   });
 });
