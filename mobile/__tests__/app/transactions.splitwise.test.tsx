@@ -89,7 +89,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   useTransactionStore.setState({
     transactions: [], review: [], splitwiseInbox: [], isLoading: false,
-    merchantBuckets: {}, splitwiseAuthExpired: false,
+    merchantBuckets: {},
     // The mount effect calls loadInbox() itself (to hydrate from the local
     // cache, same as load()/loadReview()); stub it here so that hitting the
     // real store action doesn't race the splitwiseInbox this file sets
@@ -141,28 +141,6 @@ it('choosing a bucket in the sheet, then accepting, uses that bucket', async () 
   await waitFor(() => expect(accept).toHaveBeenCalledWith(
     expect.objectContaining({ expense_id: '555' }), 'food'
   ));
-});
-
-it('toasts once when the Splitwise session has expired', async () => {
-  // ToastProvider's show() schedules a 2800ms hide timeout, plus RN's Animated
-  // drives its show/hide transitions off recursive frame timers, and none of
-  // it is cancelled on unmount. Left on real timers, those fire after Jest
-  // tears the environment down and crash the process even though every test
-  // passed. Fake timers (cleared below) keep them from ever escaping the test.
-  jest.useFakeTimers();
-  try {
-    const clear = jest.fn();
-    useTransactionStore.setState({ splitwiseAuthExpired: true, clearSplitwiseAuthExpired: clear });
-    // useToast() no-ops silently without a provider (ToastContext's default is
-    // { show: () => {} }), so this test needs a real ToastProvider or the
-    // assertion below would pass against text that never renders.
-    render(<ToastProvider><TransactionsScreen /></ToastProvider>);
-    await waitFor(() => expect(screen.getByText('Splitwise session expired. Please sign in again.')).toBeTruthy());
-    expect(clear).toHaveBeenCalled();
-  } finally {
-    jest.clearAllTimers();
-    jest.useRealTimers();
-  }
 });
 
 it('dismissing removes it without accepting', async () => {

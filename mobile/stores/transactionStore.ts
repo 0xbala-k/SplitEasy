@@ -47,9 +47,6 @@ interface TransactionState {
   review: ReviewItem[];
   merchantBuckets: Record<string, Bucket>;
   splitwiseInbox: SplitwiseInboxItem[];
-  // Raised when the poll hits a 401. The Transactions screen reads it, toasts
-  // once, and clears it — the store never shows UI itself.
-  splitwiseAuthExpired: boolean;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   skip: (id: string) => Promise<void>;
@@ -64,7 +61,6 @@ interface TransactionState {
   syncSplitwiseInbox: () => Promise<void>;
   acceptInboxItem: (item: SplitwiseInboxItem, bucket: Bucket) => Promise<void>;
   dismissInboxItem: (expenseId: string) => Promise<void>;
-  clearSplitwiseAuthExpired: () => void;
   editTransaction: (id: string, patch: TransactionFieldPatch) => Promise<void>;
   editInboxItem: (expenseId: string, patch: InboxFieldPatch) => Promise<void>;
   excludeTransaction: (id: string) => Promise<void>;
@@ -78,7 +74,6 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   review: [],
   merchantBuckets: {},
   splitwiseInbox: [],
-  splitwiseAuthExpired: false,
 
   load: async () => {
     set({ isLoading: true });
@@ -239,15 +234,15 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
       }
       await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, startedAt);
       await get().loadInbox();
+      useAuthStore.getState().reportAuthSuccess();
     } catch (err) {
-      // The screen owns the toast, so the store only raises a flag. Any other
-      // error is intentionally silent: a Splitwise outage should not nag a
-      // user who was only pulling to refresh their Plaid transactions.
-      if (err instanceof SplitwiseAuthError) set({ splitwiseAuthExpired: true });
+      // Any other error is intentionally quiet: a Splitwise outage should not
+      // nag a user who was only pulling to refresh their Plaid transactions.
+      if (err instanceof SplitwiseAuthError) {
+        useAuthStore.getState().reportAuthFailure();
+      }
     }
   },
-
-  clearSplitwiseAuthExpired: () => set({ splitwiseAuthExpired: false }),
 
   acceptInboxItem: async (item, bucket) => {
     const active = useVacationStore.getState().activeVacation;

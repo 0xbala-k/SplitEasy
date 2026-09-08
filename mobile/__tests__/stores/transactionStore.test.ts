@@ -72,7 +72,7 @@ beforeEach(() => {
     getTokensAndCursors: mockGetTokensAndCursors,
     saveCursor: mockSaveCursor,
   });
-  useTransactionStore.setState({ transactions: [], isLoading: false, splitwiseInbox: [], splitwiseAuthExpired: false });
+  useTransactionStore.setState({ transactions: [], isLoading: false, splitwiseInbox: [] });
   mockGetSplitwiseInbox.mockResolvedValue([]);
   mockSecureGet.mockResolvedValue('access-token');
   mockGetNew.mockResolvedValue([]);
@@ -380,7 +380,7 @@ test('setBucket reloads even when a later id throws', async () => {
 describe('syncSplitwiseInbox', () => {
   beforeEach(() => {
     AsyncStorage.clear();
-    useAuthStore.setState({ user_id: '100', isAuthenticated: true });
+    useAuthStore.setState({ user_id: '100', isAuthenticated: true, tokenValid: true });
   });
 
   function expense(over = {}) {
@@ -425,18 +425,26 @@ describe('syncSplitwiseInbox', () => {
     expect(await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY)).toBe('2026-08-01T00:00:00.000Z');
   });
 
-  it('raises the expired flag on a 401 so the screen can toast', async () => {
+  it('reports the auth failure to authStore on a 401', async () => {
     await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
     (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
     await useTransactionStore.getState().syncSplitwiseInbox();
-    expect(useTransactionStore.getState().splitwiseAuthExpired).toBe(true);
+    expect(useAuthStore.getState().tokenValid).toBe(false);
   });
 
   it('stays silent for a non-auth failure', async () => {
     await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
     (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new Error('SPLITWISE_ERROR'));
     await useTransactionStore.getState().syncSplitwiseInbox();
-    expect(useTransactionStore.getState().splitwiseAuthExpired).toBe(false);
+    expect(useAuthStore.getState().tokenValid).toBe(true);
+  });
+
+  it('reports auth success after a clean pass so the banner clears', async () => {
+    useAuthStore.setState({ tokenValid: false });
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([]);
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(useAuthStore.getState().tokenValid).toBe(true);
   });
 
   it('does nothing when the user is not signed in to Splitwise', async () => {

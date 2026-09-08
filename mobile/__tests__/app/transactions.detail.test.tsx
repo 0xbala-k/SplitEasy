@@ -78,7 +78,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   useTransactionStore.setState({
     transactions: [], review: [], splitwiseInbox: [], isLoading: false,
-    merchantBuckets: {}, splitwiseAuthExpired: false,
+    merchantBuckets: {},
     // The mount effect calls load()/loadReview()/loadInbox()/refresh() itself
     // (to hydrate from the local cache); stub them all so the real actions
     // (which hit the mocked-empty @/lib/db functions) don't race and wipe out
