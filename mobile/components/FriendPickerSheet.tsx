@@ -137,7 +137,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       let ignored = false;
       (async () => {
         try {
-          const shares = await getExpense(editDecision.splitwise_expense_id);
+          // Non-null: the write path is still remote-first, so every persisted
+          // SplitDecision has a real expense id until Task 14 makes it local-first
+          // (queued creates), at which point this needs a real guard.
+          const shares = await getExpense(editDecision.splitwise_expense_id!);
           if (ignored) return;
           const amounts: Record<string, number> = {};
           editDecision.friend_ids.forEach((fid) => {
@@ -443,7 +446,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           : {};
       try {
         if (mode === 'edit' && editDecision) {
-          const { amount_each } = await updateExpense(editDecision.splitwise_expense_id, {
+          // Non-null: the write path is still remote-first, so every persisted
+          // SplitDecision has a real expense id until Task 14 makes it local-first
+          // (queued creates), at which point this needs a real guard.
+          const { amount_each } = await updateExpense(editDecision.splitwise_expense_id!, {
             amount: effectiveTotal,
             description: desc,
             currency,
