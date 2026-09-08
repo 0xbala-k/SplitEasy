@@ -1,6 +1,6 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
-import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup } from '@/lib/types';
+import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup, PendingOp } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
@@ -8,6 +8,7 @@ import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
 import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
+import { collapseOps } from '@/lib/splitwiseQueue';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -1454,4 +1455,40 @@ export async function replaceCachedGroups(groups: SplitwiseGroup[]): Promise<voi
       );
     }
   });
+}
+
+export async function getPendingOps(): Promise<PendingOp[]> {
+  return (await dbReady()).getAllAsync<PendingOp>(
+    `SELECT * FROM pending_splitwise_ops ORDER BY created_at ASC`, []
+  );
+}
+
+// Collapses before writing: the queue's invariant is at most one pending op per
+// transaction, so an edit folds into an unsent create instead of chasing it.
+export async function enqueueOp(op: PendingOp): Promise<void> {
+  const d = await dbReady();
+  const current = await getPendingOps();
+  const next = collapseOps(current, op);
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM pending_splitwise_ops`, []);
+    for (const o of next) {
+      await d.runAsync(
+        `INSERT INTO pending_splitwise_ops
+           (id, op_type, transaction_id, expense_id, payload, attempts, last_error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [o.id, o.op_type, o.transaction_id, o.expense_id, o.payload, o.attempts, o.last_error, o.created_at]
+      );
+    }
+  });
+}
+
+export async function dequeueOp(id: string): Promise<void> {
+  await (await dbReady()).runAsync(`DELETE FROM pending_splitwise_ops WHERE id = ?`, [id]);
+}
+
+export async function recordOpFailure(id: string, error: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE pending_splitwise_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?`,
+    [error, id]
+  );
 }

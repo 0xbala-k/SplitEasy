@@ -43,10 +43,28 @@ function createFakeSqliteDb() {
       await task();
     }),
     runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+      const delById = sql.match(/^DELETE FROM (\w+) WHERE id = \?$/);
+      if (delById) {
+        const rows = rowsFor(delById[1]);
+        const idx = rows.findIndex((r) => r.id === params[0]);
+        if (idx !== -1) rows.splice(idx, 1);
+        return { lastInsertRowId: 0, changes: idx === -1 ? 0 : 1 };
+      }
       const del = sql.match(/^DELETE FROM (\w+)/);
       if (del) {
         rowsFor(del[1]).length = 0;
         return { lastInsertRowId: 0, changes: 0 };
+      }
+      const upd = sql.match(
+        /^UPDATE (\w+) SET attempts = attempts \+ 1, last_error = \? WHERE id = \?$/
+      );
+      if (upd) {
+        const row = rowsFor(upd[1]).find((r) => r.id === params[1]);
+        if (row) {
+          row.attempts = (Number(row.attempts) || 0) + 1;
+          row.last_error = params[0];
+        }
+        return { lastInsertRowId: 0, changes: row ? 1 : 0 };
       }
       const ins = sql.match(/^INSERT INTO (\w+)\s*\(([^)]+)\)/);
       if (ins) {
@@ -60,12 +78,16 @@ function createFakeSqliteDb() {
       return { lastInsertRowId: 0, changes: 0 };
     }),
     getAllAsync: jest.fn(async (sql: string) => {
-      const sel = sql.match(/^SELECT ([\w, ]+) FROM (\w+)/);
+      const sel = sql.match(/^SELECT (\*|[\w, ]+) FROM (\w+)/);
       if (!sel) return [];
       const [, colsRaw, table] = sel;
-      const cols = colsRaw.split(',').map((c) => c.trim());
+      const rows =
+        colsRaw.trim() === '*'
+          ? rowsFor(table).map((r) => ({ ...r }))
+          : rowsFor(table).map((r) =>
+              Object.fromEntries(colsRaw.split(',').map((c) => c.trim()).map((c) => [c, r[c]]))
+            );
       const orderBy = sql.match(/ORDER BY (\w+)/)?.[1];
-      const rows = rowsFor(table).map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
       if (orderBy) {
         rows.sort((a: Record<string, unknown>, b: Record<string, unknown>) =>
           String(a[orderBy]).localeCompare(String(b[orderBy]))
@@ -124,5 +146,61 @@ describe.each([
     const out = await db.getCachedGroups();
     expect(out[0].member_ids).toEqual(['1', '2']);
     expect(out[0].member_names).toEqual(['Ada', 'Grace']);
+  });
+});
+
+describe.each([
+  ['sqlite', () => native as Record<string, any>],
+  ['indexeddb', () => web as Record<string, any>],
+])('%s pending op queue', (backendName, load) => {
+  beforeEach(() => {
+    if (backendName === 'sqlite') {
+      (SQLite.openDatabaseAsync as jest.Mock).mockResolvedValue(createFakeSqliteDb());
+      native.resetDbForTests();
+    } else {
+      (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+      web.resetDbForTests();
+    }
+  });
+
+  const op = (over: any) => ({
+    id: 'op1', op_type: 'create', transaction_id: 't1', expense_id: null,
+    payload: '{}', attempts: 0, last_error: null,
+    created_at: '2026-09-08T00:00:00.000Z', ...over,
+  });
+
+  it('returns ops in FIFO order', async () => {
+    const db = load();
+    await db.enqueueOp(op({ id: 'b', transaction_id: 'y', created_at: '2026-09-08T00:00:02.000Z' }));
+    await db.enqueueOp(op({ id: 'a', transaction_id: 'x', created_at: '2026-09-08T00:00:01.000Z' }));
+
+    const out = await db.getPendingOps();
+    expect(out.map((o: any) => o.id)).toEqual(['a', 'b']);
+  });
+
+  it('collapses on enqueue rather than appending', async () => {
+    const db = load();
+    await db.enqueueOp(op({ id: 'a', op_type: 'create' }));
+    await db.enqueueOp(op({ id: 'b', op_type: 'delete' }));
+
+    // create + delete for the same transaction annihilate.
+    expect(await db.getPendingOps()).toHaveLength(0);
+  });
+
+  it('increments attempts and records the error', async () => {
+    const db = load();
+    await db.enqueueOp(op({ id: 'a' }));
+    await db.recordOpFailure('a', 'HTTP 500');
+
+    const [stored] = await db.getPendingOps();
+    expect(stored.attempts).toBe(1);
+    expect(stored.last_error).toBe('HTTP 500');
+  });
+
+  it('dequeues by id', async () => {
+    const db = load();
+    await db.enqueueOp(op({ id: 'a' }));
+    await db.dequeueOp('a');
+    expect(await db.getPendingOps()).toHaveLength(0);
   });
 });

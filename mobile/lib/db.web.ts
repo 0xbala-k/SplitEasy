@@ -4,7 +4,7 @@
 // cross-origin isolation, which breaks Plaid Link popups (see design spec).
 import {
   Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult,
-  SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup,
+  SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup, PendingOp,
 } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
@@ -13,6 +13,7 @@ import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
 import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
+import { collapseOps } from '@/lib/splitwiseQueue';
 
 const DB_NAME = 'spliteasy';
 // v6 added the splitwise_friends / splitwise_groups caches and the pending_ops
@@ -1221,5 +1222,37 @@ export async function replaceCachedGroups(groups: SplitwiseGroup[]): Promise<voi
   const cached_at = new Date().toISOString();
   store.clear();
   for (const g of groups) store.put({ ...g, cached_at });
+  await done(tx);
+}
+
+export async function getPendingOps(): Promise<PendingOp[]> {
+  const all = await req(
+    (await dbReady()).transaction(PENDING_OPS_STORE).objectStore(PENDING_OPS_STORE)
+      .getAll() as IDBRequest<PendingOp[]>
+  );
+  return all.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+}
+
+export async function enqueueOp(op: PendingOp): Promise<void> {
+  const current = await getPendingOps();
+  const next = collapseOps(current, op);
+  const tx = (await dbReady()).transaction(PENDING_OPS_STORE, 'readwrite');
+  const store = tx.objectStore(PENDING_OPS_STORE);
+  store.clear();
+  for (const o of next) store.put(o);
+  await done(tx);
+}
+
+export async function dequeueOp(id: string): Promise<void> {
+  const tx = (await dbReady()).transaction(PENDING_OPS_STORE, 'readwrite');
+  tx.objectStore(PENDING_OPS_STORE).delete(id);
+  await done(tx);
+}
+
+export async function recordOpFailure(id: string, error: string): Promise<void> {
+  const tx = (await dbReady()).transaction(PENDING_OPS_STORE, 'readwrite');
+  const store = tx.objectStore(PENDING_OPS_STORE);
+  const existing = await req(store.get(id) as IDBRequest<PendingOp | undefined>);
+  if (existing) store.put({ ...existing, attempts: existing.attempts + 1, last_error: error });
   await done(tx);
 }
