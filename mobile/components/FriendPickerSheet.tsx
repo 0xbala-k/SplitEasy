@@ -19,8 +19,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
-import { getSplitDecision, upsertSplitDecision } from '@/lib/db';
-import { createExpense, updateExpense, deleteExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { getSplitDecision, upsertSplitDecision, enqueueOp } from '@/lib/db';
+import { updateExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { flushQueue } from '@/lib/splitwiseQueue';
 import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
@@ -137,9 +138,13 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       let ignored = false;
       (async () => {
         try {
-          // Non-null: the write path is still remote-first, so every persisted
-          // SplitDecision has a real expense id until Task 14 makes it local-first
-          // (queued creates), at which point this needs a real guard.
+          // Non-null: Task 14 made the *create* path local-first, so a
+          // SplitDecision can now genuinely have a null splitwise_expense_id
+          // while its create is still queued. The edit/update path is left
+          // remote-first, unconverted, as a deliberate, documented gap — so
+          // this assertion can be unsound for a split that hasn't pushed yet.
+          // A real guard (block editing, or reroute into the queue) belongs
+          // to whichever task closes that gap, not this one.
           const shares = await getExpense(editDecision.splitwise_expense_id!);
           if (ignored) return;
           const amounts: Record<string, number> = {};
@@ -446,9 +451,13 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           : {};
       try {
         if (mode === 'edit' && editDecision) {
-          // Non-null: the write path is still remote-first, so every persisted
-          // SplitDecision has a real expense id until Task 14 makes it local-first
-          // (queued creates), at which point this needs a real guard.
+          // Non-null: Task 14 made the *create* path local-first, so a
+          // SplitDecision can now genuinely have a null splitwise_expense_id
+          // while its create is still queued. The edit/update path is left
+          // remote-first, unconverted, as a deliberate, documented gap — so
+          // this assertion can be unsound for a split that hasn't pushed yet.
+          // A real guard (block editing, or reroute into the queue) belongs
+          // to whichever task closes that gap, not this one.
           const { amount_each } = await updateExpense(editDecision.splitwise_expense_id!, {
             amount: effectiveTotal,
             description: desc,
@@ -486,42 +495,44 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           }
         }
 
-        const { expense_id, amount_each } = await createExpense({
-          amount: effectiveTotal,
-          description: desc,
-          currency,
-          currentUserId: user_id!,
-          friendIds,
-          groupId,
-          ...shares,
-        });
-
+        // Local-first: commit the split, then push. The previous order
+        // (remote, then local, rolling the remote back on local failure) lost
+        // the user's work whenever Splitwise was unreachable.
         const ts = Date.now();
         const createdAt = new Date().toISOString();
+        const params = {
+          amount: effectiveTotal, description: desc, currency,
+          currentUserId: user_id!, friendIds, groupId, ...shares,
+        };
+
+        const equalShare = effectiveTotal / (friendIds.length + 1);
         const decisions: SplitDecision[] = members.map((t) => ({
           id: `${t.id}-${ts}`,
           transaction_id: t.id,
-          splitwise_expense_id: expense_id,
+          splitwise_expense_id: null,   // backfilled when the push succeeds
           friend_ids: friendIds,
           friend_names: friendNames,
-          amount_each,
+          amount_each: equalShare,
           created_at: createdAt,
           description: desc,
         }));
-        try {
-          // Persist all member rows + statuses atomically.
-          await commitCombinedSplit(decisions);
-        } catch (dbErr) {
-          // Local commit failed after the remote expense was created — undo the
-          // remote side so no orphan is left and a retry won't create a duplicate.
-          try {
-            await deleteExpense(expense_id);
-          } catch {
-            // Best-effort rollback; surface the original failure below.
-          }
-          throw dbErr;
-        }
-        onSuccess(amount_each);
+
+        await commitCombinedSplit(decisions);
+        await enqueueOp({
+          id: generateId('op'),
+          op_type: 'create',
+          transaction_id: members[0].id,
+          expense_id: null,
+          payload: JSON.stringify(params),
+          attempts: 0,
+          last_error: null,
+          created_at: createdAt,
+        });
+
+        // Fire and forget: the split is already safe locally, so a slow or
+        // failing push must not block dismissing the sheet.
+        void flushQueue();
+        onSuccess(equalShare);
       } catch (err) {
         if (err instanceof SplitwiseAuthError) {
           toast.show('Splitwise session expired. Please sign in again.', 'error');

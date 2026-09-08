@@ -45,12 +45,17 @@ jest.mock('@/stores/authStore', () => ({ useAuthStore: jest.fn() }));
 jest.mock('@/stores/transactionStore', () => ({ useTransactionStore: jest.fn() }));
 jest.mock('@/components/ToastProvider', () => ({ useToast: () => ({ show: jest.fn() }) }));
 jest.mock('@/lib/receiptScan', () => ({ scanReceipt: jest.fn() }));
+// The queue's actual flush logic (network calls, retry bookkeeping) is
+// covered by splitwiseQueue's own tests (Task 13) — here it's fire-and-forget
+// noise from the component's perspective, so stub it out.
+jest.mock('@/lib/splitwiseQueue', () => ({ flushQueue: jest.fn() }));
 
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import * as db from '@/lib/db';
 import * as splitwise from '@/lib/splitwise';
 import * as receiptScan from '@/lib/receiptScan';
+import { flushQueue } from '@/lib/splitwiseQueue';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
@@ -61,7 +66,19 @@ const mockUpdateExpense = splitwise.updateExpense as jest.Mock;
 const mockUpsert = db.upsertSplitDecision as jest.Mock;
 const mockCreateExpense = splitwise.createExpense as jest.Mock;
 const mockScanReceipt = receiptScan.scanReceipt as jest.Mock;
+const mockEnqueueOp = db.enqueueOp as jest.Mock;
+const mockFlushQueue = flushQueue as jest.Mock;
 const mockCommitCombined = jest.fn();
+
+// The create path (Task 14) no longer calls createExpense synchronously — it
+// enqueues a `create` op whose JSON-serialized payload carries the params
+// that used to go straight to the API. Tests that used to assert against
+// mockCreateExpense's call args now assert against this instead.
+function lastEnqueuedPayload(): Record<string, unknown> {
+  const calls = mockEnqueueOp.mock.calls;
+  const [op] = calls[calls.length - 1];
+  return JSON.parse(op.payload);
+}
 
 const tx: Transaction = {
   id: 'tx1',
@@ -112,6 +129,8 @@ beforeEach(() => {
   mockUpsert.mockResolvedValue(undefined);
   mockCreateExpense.mockResolvedValue({ expense_id: 'expNew', amount_each: 10 });
   (db.getSplitDecision as jest.Mock).mockResolvedValue(null);
+  mockEnqueueOp.mockResolvedValue(undefined);
+  mockFlushQueue.mockResolvedValue(undefined);
 });
 
 test('edit mode pre-fills from the existing Splitwise expense', async () => {
@@ -199,23 +218,30 @@ test('combine create sums amounts and commits one decision row per member atomic
   fireEvent.press(screen.getByLabelText('Sam'));
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
 
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  expect(mockCreateExpense).toHaveBeenCalledWith(
-    expect.objectContaining({ amount: 20, description: 'Starbucks, Uber' })
-  );
   await waitFor(() => expect(mockCommitCombined).toHaveBeenCalledTimes(1));
   const decisions = mockCommitCombined.mock.calls[0][0];
   expect(decisions).toHaveLength(2);
   expect(decisions).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ transaction_id: 'txA', splitwise_expense_id: 'expNew', description: 'Starbucks, Uber' }),
-      expect.objectContaining({ transaction_id: 'txB', splitwise_expense_id: 'expNew', description: 'Starbucks, Uber' }),
+      expect.objectContaining({ transaction_id: 'txA', splitwise_expense_id: null, description: 'Starbucks, Uber' }),
+      expect.objectContaining({ transaction_id: 'txB', splitwise_expense_id: null, description: 'Starbucks, Uber' }),
     ])
   );
+  // The push is queued (anchored on the first member) and kicked off, but the
+  // remote call itself is not this component's job — that's flushQueue's.
+  expect(mockEnqueueOp).toHaveBeenCalledTimes(1);
+  expect(mockEnqueueOp).toHaveBeenCalledWith(
+    expect.objectContaining({ op_type: 'create', transaction_id: 'txA', expense_id: null })
+  );
+  expect(lastEnqueuedPayload()).toEqual(
+    expect.objectContaining({ amount: 20, description: 'Starbucks, Uber' })
+  );
+  expect(mockFlushQueue).toHaveBeenCalledTimes(1);
+  expect(mockCreateExpense).not.toHaveBeenCalled();
   expect(onSuccess).toHaveBeenCalledWith(10);
 });
 
-test('combine create rolls back the remote expense when the local commit fails', async () => {
+test('combine create does not queue a push when the local commit fails', async () => {
   mockCommitCombined.mockRejectedValue(new Error('DB_FAIL'));
   const members: Transaction[] = [
     { ...tx, id: 'txA', merchant_name: 'Starbucks', amount: 5 },
@@ -228,8 +254,13 @@ test('combine create rolls back the remote expense when the local commit fails',
   fireEvent.press(screen.getByLabelText('Sam'));
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
 
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(splitwise.deleteExpense as jest.Mock).toHaveBeenCalledWith('expNew'));
+  await waitFor(() => expect(mockCommitCombined).toHaveBeenCalledTimes(1));
+  // Nothing is queued or pushed when the local commit itself fails — unlike
+  // the old remote-first flow, there is no remote expense to roll back here,
+  // since the local commit now runs before anything reaches Splitwise.
+  expect(mockEnqueueOp).not.toHaveBeenCalled();
+  expect(mockFlushQueue).not.toHaveBeenCalled();
+  expect(mockCreateExpense).not.toHaveBeenCalled();
 });
 
 test('combine edit upserts one row per member, reusing the decision id for its own row', async () => {
@@ -272,14 +303,35 @@ test('single create passes the edited title as the description', async () => {
   fireEvent.press(screen.getByLabelText('Sam'));
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
 
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  expect(mockCreateExpense).toHaveBeenCalledWith(
-    expect.objectContaining({ description: 'Groceries' })
-  );
   await waitFor(() => expect(mockCommitCombined).toHaveBeenCalledTimes(1));
   expect(mockCommitCombined.mock.calls[0][0]).toEqual([
     expect.objectContaining({ transaction_id: 'tx1', description: 'Groceries' }),
   ]);
+  await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalledTimes(1));
+  expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ description: 'Groceries' }));
+});
+
+// Local-first create (Task 14): previously the create branch was remote-first
+// (create on Splitwise, then commit locally), so an unreachable Splitwise API
+// meant the split was never created at all — the catch block just showed a
+// toast and discarded the user's work. Now the split commits locally first,
+// with a null expense id, and the push to Splitwise is queued and retried
+// separately (fire-and-forget), so a Splitwise outage no longer loses data.
+test('keeps the split locally and queues the push when Splitwise is down', async () => {
+  mockCreateExpense.mockRejectedValue(new splitwise.SplitwiseAuthError());
+  const onSuccess = jest.fn();
+  render(
+    <FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={onSuccess} />
+  );
+  fireEvent.press(screen.getByLabelText('Sam'));
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+  await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalled());
+  // The work must survive: previously the remote failure discarded it entirely.
+  expect(mockCommitCombined).toHaveBeenCalled();
+  const [[decisions]] = mockCommitCombined.mock.calls;
+  expect(decisions[0].splitwise_expense_id).toBeNull();
+  expect(onSuccess).toHaveBeenCalled();
 });
 
 // Regression: the CTA lives in the sheet's pinned footer, which the library
@@ -298,10 +350,8 @@ test('create uses the title edited after the CTA became enabled', async () => {
   fireEvent.changeText(screen.getByLabelText('Split title'), 'Late edit');
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
 
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  expect(mockCreateExpense).toHaveBeenCalledWith(
-    expect.objectContaining({ description: 'Late edit' })
-  );
+  await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalledTimes(1));
+  expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ description: 'Late edit' }));
 });
 
 // Regression: the sheet renders null until it has a transaction, so every hook
@@ -327,7 +377,7 @@ test('going from no transaction to a transaction does not change the hook count'
   expect(screen.getByLabelText('Split title').props.value).toBe('Amazon');
 });
 
-test('passes groupId through to createExpense when set', async () => {
+test('passes groupId through to the queued create payload when set', async () => {
   render(
     <FriendPickerSheet
       transaction={{ ...tx, status: 'new' }}
@@ -338,8 +388,8 @@ test('passes groupId through to createExpense when set', async () => {
   );
   fireEvent.press(screen.getByLabelText('Sam'));
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  expect(mockCreateExpense).toHaveBeenCalledWith(expect.objectContaining({ groupId: '55' }));
+  await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalledTimes(1));
+  expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ groupId: '55' }));
 });
 
 test('sorts group members ahead of other friends without hiding non-members', async () => {
@@ -457,7 +507,7 @@ test('an item with no assignees disables the CTA', async () => {
   expect(screen.getByLabelText('Add split to Splitwise').props.accessibilityState.disabled).toBe(true);
 });
 
-test('creates the expense with the reconciled receipt shares when the receipt total matches the charge', async () => {
+test('queues the create with the reconciled receipt shares when the receipt total matches the charge', async () => {
   mockScanReceipt.mockResolvedValue({ status: 'ok', receipt: scannedReceipt });
   render(
     <FriendPickerSheet
@@ -475,8 +525,8 @@ test('creates the expense with the reconciled receipt shares when the receipt to
 
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
 
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  expect(mockCreateExpense).toHaveBeenCalledWith(
+  await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalledTimes(1));
+  expect(lastEnqueuedPayload()).toEqual(
     expect.objectContaining({ amount: 39, friendShares: { '2': 19.5 } })
   );
 });
@@ -513,6 +563,6 @@ test('reconciliation auto-enables and charges the receipt total when it exceeds 
 
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
 
-  await waitFor(() => expect(mockCreateExpense).toHaveBeenCalledTimes(1));
-  expect(mockCreateExpense).toHaveBeenCalledWith(expect.objectContaining({ amount: 39 }));
+  await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalledTimes(1));
+  expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ amount: 39 }));
 });
