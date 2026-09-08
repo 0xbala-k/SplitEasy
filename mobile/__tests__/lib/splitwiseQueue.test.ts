@@ -156,6 +156,38 @@ describe('flushQueue', () => {
     expect(db.dequeueOp).toHaveBeenCalledWith('a');
   });
 
+  it('backfills every combined member via the adoption path when a retry finds a matching expense', async () => {
+    // A retried combine-mode create (attempts: 1) whose previous attempt's
+    // response was lost but actually landed on Splitwise: flushQueue must
+    // adopt the existing expense (not call createExpense again) and still
+    // backfill every id in combinedTransactionIds, not just the anchor.
+    (db.getPendingOps as jest.Mock).mockResolvedValue([
+      op({
+        id: 'a',
+        op_type: 'create',
+        transaction_id: 't1',
+        attempts: 1,
+        payload: JSON.stringify({
+          amount: 20, description: 'Combined', currency: 'USD', friendIds: ['2'],
+          combinedTransactionIds: ['t1', 't2', 't3'],
+        }),
+      }),
+    ]);
+    (splitwise.getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([
+      { id: 77, cost: '20.00', description: 'Combined', currency_code: 'USD',
+        users: [{ user: { id: 1 } }] },
+    ]);
+
+    await flushQueue();
+
+    expect(splitwise.createExpense).not.toHaveBeenCalled();
+    expect(db.backfillExpenseId).toHaveBeenCalledTimes(3);
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t1', '77');
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t2', '77');
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t3', '77');
+    expect(db.dequeueOp).toHaveBeenCalledWith('a');
+  });
+
   it('falls back to the anchor transaction_id when the payload has no combinedTransactionIds', async () => {
     (db.getPendingOps as jest.Mock).mockResolvedValue([
       op({

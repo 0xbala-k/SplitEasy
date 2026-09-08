@@ -234,7 +234,11 @@ test('combine create sums amounts and commits one decision row per member atomic
     expect.objectContaining({ op_type: 'create', transaction_id: 'txA', expense_id: null })
   );
   expect(lastEnqueuedPayload()).toEqual(
-    expect.objectContaining({ amount: 20, description: 'Starbucks, Uber' })
+    expect.objectContaining({
+      amount: 20,
+      description: 'Starbucks, Uber',
+      combinedTransactionIds: ['txA', 'txB'],
+    })
   );
   expect(mockFlushQueue).toHaveBeenCalledTimes(1);
   expect(mockCreateExpense).not.toHaveBeenCalled();
