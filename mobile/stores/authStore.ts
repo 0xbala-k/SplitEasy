@@ -14,18 +14,34 @@ interface AuthState {
   user_id: string | null;
   display_name: string | null;
   avatar_url: string | null;
-  isAuthenticated: boolean;
+  /**
+   * This device has been set up. Derived from splitwise_user_id, NOT from the
+   * token — it must survive token death so a user with a dead token still
+   * reaches their local data instead of the welcome screen.
+   */
+  hasSession: boolean;
+  /**
+   * A token exists and has not been observed to be rejected. Gates sync only.
+   * MUST NOT gate routing.
+   */
+  tokenValid: boolean;
+  /** When OAuth last completed. Lets the UI tell a stale token from a Pro lapse. */
+  lastReconnectAt: string | null;
   isHydrated: boolean;
   hydrate: () => Promise<void>;
   signIn: (code: string, redirect_uri: string) => Promise<void>;
   signOut: () => Promise<void>;
+  reportAuthFailure: () => void;
+  reportAuthSuccess: () => void;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user_id: null,
   display_name: null,
   avatar_url: null,
-  isAuthenticated: false,
+  hasSession: false,
+  tokenValid: false,
+  lastReconnectAt: null,
   isHydrated: false,
 
   hydrate: async () => {
@@ -33,10 +49,20 @@ export const useAuthStore = create<AuthState>((set) => ({
     const user_id = await AsyncStorage.getItem('splitwise_user_id');
     const display_name = await AsyncStorage.getItem('splitwise_display_name');
     const avatar_url = await AsyncStorage.getItem('splitwise_avatar_url');
-    set({ isAuthenticated: !!token, user_id, display_name, avatar_url, isHydrated: true });
+    set({
+      hasSession: !!user_id,
+      tokenValid: !!token,
+      user_id,
+      display_name,
+      avatar_url,
+      isHydrated: true,
+    });
   },
 
   signIn: async (code, redirect_uri) => {
+    // Read the prior user BEFORE writing, so a reconnect by the same account
+    // can be told from a genuine account switch.
+    const priorUserId = await AsyncStorage.getItem('splitwise_user_id');
     const res = await exchangeSplitwiseCode(code, redirect_uri);
     await setSecure(KEYS.SPLITWISE_ACCESS_TOKEN, res.access_token);
     await AsyncStorage.multiSet([
@@ -44,8 +70,16 @@ export const useAuthStore = create<AuthState>((set) => ({
       ['splitwise_display_name', res.display_name],
       ['splitwise_avatar_url', res.avatar_url ?? ''],
     ]);
+    // Same account reconnecting: keep the watermark so the inbox resumes where
+    // it left off instead of re-pulling every expense. A different account must
+    // not inherit this one's position.
+    if (priorUserId && priorUserId !== res.user_id) {
+      await AsyncStorage.removeItem(SPLITWISE_WATERMARK_KEY);
+    }
     set({
-      isAuthenticated: true,
+      hasSession: true,
+      tokenValid: true,
+      lastReconnectAt: new Date().toISOString(),
       user_id: res.user_id,
       display_name: res.display_name,
       avatar_url: res.avatar_url,
@@ -60,6 +94,17 @@ export const useAuthStore = create<AuthState>((set) => ({
       'splitwise_avatar_url',
       SPLITWISE_WATERMARK_KEY,
     ]);
-    set({ isAuthenticated: false, user_id: null, display_name: null, avatar_url: null });
+    set({
+      hasSession: false, tokenValid: false, lastReconnectAt: null,
+      user_id: null, display_name: null, avatar_url: null,
+    });
+  },
+
+  // Splitwise returns a bare 401 for BOTH an expired token and a lapsed Pro
+  // subscription, so this records only the observable fact. The UI decides how
+  // to describe it (see SplitwiseStatusBanner).
+  reportAuthFailure: () => set({ tokenValid: false }),
+  reportAuthSuccess: () => {
+    if (!get().tokenValid) set({ tokenValid: true });
   },
 }));
