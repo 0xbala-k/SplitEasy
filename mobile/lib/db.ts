@@ -1,6 +1,6 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
-import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem } from '@/lib/types';
+import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
@@ -1400,6 +1400,57 @@ export async function deleteImportedExpense(expenseId: string, tombstone: boolea
            (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at)
          VALUES (?, '', 0, '', '', '', 0, '[]', NULL, 'dismissed', ?)`,
         [expenseId, new Date().toISOString()]
+      );
+    }
+  });
+}
+
+export async function getCachedFriends(): Promise<SplitwiseFriend[]> {
+  const rows = await (await dbReady()).getAllAsync<{
+    id: string; display_name: string; avatar_url: string | null;
+  }>(`SELECT id, display_name, avatar_url FROM splitwise_friends ORDER BY display_name`, []);
+  return rows.map((r) => ({ ...r, avatar_url: r.avatar_url ?? null }));
+}
+
+// Wholesale replace, not merge: a friend removed on Splitwise must disappear
+// locally. Safe because nothing holds a foreign key to this table — split
+// history denormalizes friend_names for exactly this reason.
+export async function replaceCachedFriends(friends: SplitwiseFriend[]): Promise<void> {
+  const d = await dbReady();
+  const cachedAt = new Date().toISOString();
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM splitwise_friends`, []);
+    for (const f of friends) {
+      await d.runAsync(
+        `INSERT INTO splitwise_friends (id, display_name, avatar_url, cached_at) VALUES (?, ?, ?, ?)`,
+        [f.id, f.display_name, f.avatar_url, cachedAt]
+      );
+    }
+  });
+}
+
+export async function getCachedGroups(): Promise<SplitwiseGroup[]> {
+  const rows = await (await dbReady()).getAllAsync<{
+    id: string; name: string; member_ids: string; member_names: string;
+  }>(`SELECT id, name, member_ids, member_names FROM splitwise_groups ORDER BY name`, []);
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    member_ids: JSON.parse(r.member_ids),
+    member_names: JSON.parse(r.member_names),
+  }));
+}
+
+// Wholesale replace, same rationale as replaceCachedFriends above.
+export async function replaceCachedGroups(groups: SplitwiseGroup[]): Promise<void> {
+  const d = await dbReady();
+  const cachedAt = new Date().toISOString();
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM splitwise_groups`, []);
+    for (const g of groups) {
+      await d.runAsync(
+        `INSERT INTO splitwise_groups (id, name, member_ids, member_names, cached_at) VALUES (?, ?, ?, ?, ?)`,
+        [g.id, g.name, JSON.stringify(g.member_ids), JSON.stringify(g.member_names), cachedAt]
       );
     }
   });

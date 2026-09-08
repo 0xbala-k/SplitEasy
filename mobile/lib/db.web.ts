@@ -4,7 +4,7 @@
 // cross-origin isolation, which breaks Plaid Link popups (see design spec).
 import {
   Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult,
-  SplitwiseInboxItem,
+  SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup,
 } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
@@ -1179,5 +1179,47 @@ export async function deleteImportedExpense(expenseId: string, tombstone: boolea
       state: 'dismissed', fetched_at: new Date().toISOString(),
     } satisfies SplitwiseInboxItem);
   }
+  await done(tx);
+}
+
+export async function getCachedFriends(): Promise<SplitwiseFriend[]> {
+  const all = await req(
+    (await dbReady()).transaction(FRIEND_STORE).objectStore(FRIEND_STORE)
+      .getAll() as IDBRequest<(SplitwiseFriend & { cached_at: string })[]>
+  );
+  return all
+    .map(({ id, display_name, avatar_url }) => ({ id, display_name, avatar_url: avatar_url ?? null }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+}
+
+// Wholesale replace, not merge: a friend removed on Splitwise must disappear
+// locally. Safe because nothing holds a foreign key to this table — split
+// history denormalizes friend_names for exactly this reason.
+export async function replaceCachedFriends(friends: SplitwiseFriend[]): Promise<void> {
+  const tx = (await dbReady()).transaction(FRIEND_STORE, 'readwrite');
+  const store = tx.objectStore(FRIEND_STORE);
+  const cached_at = new Date().toISOString();
+  store.clear();
+  for (const f of friends) store.put({ ...f, avatar_url: f.avatar_url ?? null, cached_at });
+  await done(tx);
+}
+
+export async function getCachedGroups(): Promise<SplitwiseGroup[]> {
+  const all = await req(
+    (await dbReady()).transaction(GROUP_STORE).objectStore(GROUP_STORE)
+      .getAll() as IDBRequest<(SplitwiseGroup & { cached_at: string })[]>
+  );
+  return all
+    .map(({ id, name, member_ids, member_names }) => ({ id, name, member_ids, member_names }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Wholesale replace, same rationale as replaceCachedFriends above.
+export async function replaceCachedGroups(groups: SplitwiseGroup[]): Promise<void> {
+  const tx = (await dbReady()).transaction(GROUP_STORE, 'readwrite');
+  const store = tx.objectStore(GROUP_STORE);
+  const cached_at = new Date().toISOString();
+  store.clear();
+  for (const g of groups) store.put({ ...g, cached_at });
   await done(tx);
 }
