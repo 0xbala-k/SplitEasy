@@ -1256,3 +1256,14 @@ export async function recordOpFailure(id: string, error: string): Promise<void> 
   if (existing) store.put({ ...existing, attempts: existing.attempts + 1, last_error: error });
   await done(tx);
 }
+
+// Fills in the Splitwise expense id after a create lands — either the normal
+// success path, or a retry that adopted a matching expense instead of
+// creating a duplicate (see splitwiseQueue.findMatchingExpense).
+export async function backfillExpenseId(transactionId: string, expenseId: string): Promise<void> {
+  const tx = (await dbReady()).transaction(DECISION_STORE, 'readwrite');
+  const store = tx.objectStore(DECISION_STORE);
+  const existing = await req(store.get(transactionId) as IDBRequest<SplitDecision | undefined>);
+  if (existing) store.put({ ...existing, splitwise_expense_id: expenseId });
+  await done(tx);
+}

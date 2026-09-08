@@ -1492,3 +1492,13 @@ export async function recordOpFailure(id: string, error: string): Promise<void> 
     [error, id]
   );
 }
+
+// Fills in the Splitwise expense id after a create lands — either the normal
+// success path, or a retry that adopted a matching expense instead of
+// creating a duplicate (see splitwiseQueue.findMatchingExpense).
+export async function backfillExpenseId(transactionId: string, expenseId: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE split_decisions SET splitwise_expense_id = ? WHERE transaction_id = ?`,
+    [expenseId, transactionId]
+  );
+}
