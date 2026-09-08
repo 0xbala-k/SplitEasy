@@ -3,13 +3,16 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ back: jest.fn(), replace: jest.fn() }),
 }));
 jest.mock('@/stores/vacationStore', () => ({ useVacationStore: jest.fn() }));
-jest.mock('@/lib/splitwise', () => ({ getGroups: jest.fn() }));
+jest.mock('@/lib/splitwise');
+jest.mock('@/lib/db');
 jest.mock('@/components/ToastProvider', () => ({ useToast: () => ({ show: jest.fn() }) }));
 
 import { render, fireEvent, screen, waitFor, act } from '@testing-library/react-native';
 import NewVacationScreen from '@/app/vacation/new';
 import { useVacationStore } from '@/stores/vacationStore';
-import { getGroups } from '@/lib/splitwise';
+import { useAuthStore } from '@/stores/authStore';
+import { getGroups, SplitwiseAuthError } from '@/lib/splitwise';
+import { getCachedGroups, replaceCachedGroups } from '@/lib/db';
 import { formatDayLabelWithYear, toLocalDateString, yearMonthOf } from '@/lib/date';
 import { SplitwiseGroup } from '@/lib/types';
 
@@ -32,6 +35,9 @@ beforeEach(() => {
   mockCreate.mockResolvedValue({ id: 'vac_1' });
   (useVacationStore as unknown as jest.Mock).mockImplementation((sel) => sel({ create: mockCreate }));
   mockGetGroups.mockResolvedValue(groups);
+  (getCachedGroups as jest.Mock).mockResolvedValue([]);
+  (replaceCachedGroups as jest.Mock).mockResolvedValue(undefined);
+  useAuthStore.setState({ tokenValid: true });
 });
 
 async function renderScreen() {
@@ -119,4 +125,23 @@ test('a half-picked range blocks saving until the end date is chosen', async () 
     fireEvent.press(screen.getByLabelText('Save vacation'));
   });
   expect(mockCreate).toHaveBeenCalledTimes(1);
+});
+
+it('offers cached groups when the group fetch 401s', async () => {
+  (getCachedGroups as jest.Mock).mockResolvedValue([
+    { id: 'g1', name: 'Cached Trip', member_ids: ['1'], member_names: ['Ada'] },
+  ]);
+  (getGroups as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
+
+  render(<NewVacationScreen />);
+
+  // The picker is collapsed by default (see the test above); open it to
+  // reveal the cached group that survived the failed refresh.
+  await waitFor(() => expect(screen.getByLabelText('Select Splitwise group')).toBeTruthy());
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('Select Splitwise group'));
+  });
+
+  expect(screen.getByText('Cached Trip')).toBeTruthy();
+  expect(useAuthStore.getState().tokenValid).toBe(false);
 });
