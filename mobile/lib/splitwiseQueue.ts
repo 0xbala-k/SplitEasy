@@ -90,11 +90,22 @@ export async function flushQueue(): Promise<void> {
         if (op.op_type === 'create') {
           // A retry may be chasing a create that already landed.
           const adopted = op.attempts > 0 ? await findMatchingExpense(op) : null;
-          if (adopted) {
-            if (op.transaction_id) await backfillExpenseId(op.transaction_id, adopted);
-          } else {
-            const { expense_id } = await createExpense(JSON.parse(op.payload));
-            if (op.transaction_id) await backfillExpenseId(op.transaction_id, expense_id);
+          const expenseId = adopted ?? (await createExpense(JSON.parse(op.payload))).expense_id;
+
+          // A combined split anchors the op on a single transaction_id, but
+          // every member's SplitDecision needs the same expense id — backfill
+          // them all so no member is silently left with a null
+          // splitwise_expense_id forever. Falls back to the single anchor id
+          // for a payload that doesn't carry the combined list.
+          const { combinedTransactionIds } = JSON.parse(op.payload);
+          const idsToBackfill: string[] =
+            Array.isArray(combinedTransactionIds) && combinedTransactionIds.length > 0
+              ? combinedTransactionIds
+              : op.transaction_id
+              ? [op.transaction_id]
+              : [];
+          for (const id of idsToBackfill) {
+            await backfillExpenseId(id, expenseId);
           }
         } else if (op.op_type === 'update') {
           await updateExpense(op.expense_id!, JSON.parse(op.payload));

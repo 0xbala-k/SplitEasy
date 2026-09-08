@@ -129,6 +129,49 @@ describe('flushQueue', () => {
     expect(db.dequeueOp).not.toHaveBeenCalled();
   });
 
+  it('backfills every combined member, not just the anchor transaction_id, on a successful create', async () => {
+    // A combined split's op is anchored on transaction_id: 't1' (the first
+    // member), but the create payload also carries the full member list via
+    // combinedTransactionIds — every member's SplitDecision needs the same
+    // expense id backfilled, or the others are left with a null
+    // splitwise_expense_id forever.
+    (db.getPendingOps as jest.Mock).mockResolvedValue([
+      op({
+        id: 'a',
+        transaction_id: 't1',
+        payload: JSON.stringify({
+          amount: 20, description: 'Combined', currency: 'USD', friendIds: ['2'],
+          combinedTransactionIds: ['t1', 't2', 't3'],
+        }),
+      }),
+    ]);
+    (splitwise.createExpense as jest.Mock).mockResolvedValue({ expense_id: 'e9', amount_each: 5 });
+
+    await flushQueue();
+
+    expect(db.backfillExpenseId).toHaveBeenCalledTimes(3);
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t1', 'e9');
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t2', 'e9');
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t3', 'e9');
+    expect(db.dequeueOp).toHaveBeenCalledWith('a');
+  });
+
+  it('falls back to the anchor transaction_id when the payload has no combinedTransactionIds', async () => {
+    (db.getPendingOps as jest.Mock).mockResolvedValue([
+      op({
+        id: 'a',
+        transaction_id: 't1',
+        payload: JSON.stringify({ amount: 20, description: 'Solo', currency: 'USD', friendIds: ['2'] }),
+      }),
+    ]);
+    (splitwise.createExpense as jest.Mock).mockResolvedValue({ expense_id: 'e9', amount_each: 5 });
+
+    await flushQueue();
+
+    expect(db.backfillExpenseId).toHaveBeenCalledTimes(1);
+    expect(db.backfillExpenseId).toHaveBeenCalledWith('t1', 'e9');
+  });
+
   it('records the error and continues on a non-auth failure', async () => {
     (db.getPendingOps as jest.Mock).mockResolvedValue([
       op({ id: 'a', transaction_id: 'x' }), op({ id: 'b', transaction_id: 'y' }),

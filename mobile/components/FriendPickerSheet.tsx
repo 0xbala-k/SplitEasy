@@ -20,7 +20,7 @@ import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { getSplitDecision, upsertSplitDecision, enqueueOp } from '@/lib/db';
-import { updateExpense, getExpense, SplitwiseAuthError } from '@/lib/splitwise';
+import { updateExpense, getExpense, buildExpenseBody, SplitwiseAuthError } from '@/lib/splitwise';
 import { flushQueue } from '@/lib/splitwiseQueue';
 import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
@@ -505,14 +505,19 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           currentUserId: user_id!, friendIds, groupId, ...shares,
         };
 
-        const equalShare = effectiveTotal / (friendIds.length + 1);
+        // amount_each must be the owner's actual owed share (not a naive
+        // equal division), so it matches exactly what the real Splitwise
+        // expense will show once the queued push succeeds. buildExpenseBody
+        // is the same owner-owed-share math createExpense/updateExpense use.
+        const { ownerOwedCents } = buildExpenseBody(params);
+        const ownerOwedShare = ownerOwedCents / 100;
         const decisions: SplitDecision[] = members.map((t) => ({
           id: `${t.id}-${ts}`,
           transaction_id: t.id,
           splitwise_expense_id: null,   // backfilled when the push succeeds
           friend_ids: friendIds,
           friend_names: friendNames,
-          amount_each: equalShare,
+          amount_each: ownerOwedShare,
           created_at: createdAt,
           description: desc,
         }));
@@ -523,7 +528,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           op_type: 'create',
           transaction_id: members[0].id,
           expense_id: null,
-          payload: JSON.stringify(params),
+          // combinedTransactionIds lets flushQueue backfill every member's
+          // decision row on success, not just the anchor transaction_id.
+          payload: JSON.stringify({ ...params, combinedTransactionIds: members.map((t) => t.id) }),
           attempts: 0,
           last_error: null,
           created_at: createdAt,
@@ -532,7 +539,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         // Fire and forget: the split is already safe locally, so a slow or
         // failing push must not block dismissing the sheet.
         void flushQueue();
-        onSuccess(equalShare);
+        onSuccess(ownerOwedShare);
       } catch (err) {
         if (err instanceof SplitwiseAuthError) {
           toast.show('Splitwise session expired. Please sign in again.', 'error');

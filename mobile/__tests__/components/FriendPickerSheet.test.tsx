@@ -334,6 +334,42 @@ test('keeps the split locally and queues the push when Splitwise is down', async
   expect(onSuccess).toHaveBeenCalled();
 });
 
+// Fix round: the create branch used to store a naive equal division
+// (effectiveTotal / (friendIds.length + 1)) as amount_each, ignoring
+// friendShares entirely — wrong for any non-symmetric custom/receipt split.
+// amount_each must instead be the owner's actual owed share (amount minus
+// the sum of friend shares), matching buildExpenseBody's math exactly, since
+// nothing later reconciles this value against the server's response.
+test('local-first create stores the owner\'s actual owed share for an uneven custom split, not a naive equal split', async () => {
+  // Splitwise unreachable: forces the local-first/queued path (though the
+  // create branch is unconditionally local-first regardless).
+  mockCreateExpense.mockRejectedValue(new splitwise.SplitwiseAuthError());
+  render(
+    <FriendPickerSheet
+      transaction={{ ...tx, id: 'txU1', amount: 100, status: 'new' }}
+      openToken={1}
+      onSuccess={jest.fn()}
+    />
+  );
+  fireEvent.press(screen.getByLabelText('Sam'));
+  fireEvent.press(screen.getByText('Custom'));
+
+  const amountInput = screen.getByLabelText("Sam's share amount");
+  fireEvent.changeText(amountInput, '30.00');
+  fireEvent(amountInput, 'blur');
+
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+  await waitFor(() => expect(mockCommitCombined).toHaveBeenCalledTimes(1));
+  const [[decisions]] = mockCommitCombined.mock.calls;
+  // Owner's true owed share = amount - sum(friendShares) = 100 - 30 = 70.
+  // A naive equal division would have wrongly stored 100 / 2 = 50.
+  expect(decisions[0].amount_each).toBe(70);
+  expect(lastEnqueuedPayload()).toEqual(
+    expect.objectContaining({ amount: 100, friendShares: { '2': 30 } })
+  );
+});
+
 // Regression: the CTA lives in the sheet's pinned footer, which the library
 // renders as a component type — so `renderFooter` is memoized on a narrow dep
 // list to avoid remounting the footer subtree on every keystroke. Editing the
