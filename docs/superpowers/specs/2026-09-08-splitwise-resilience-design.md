@@ -6,8 +6,13 @@
 
 ## Problem
 
-Splitwise has begun gating API access behind a Pro subscription. SplitEasy
-depends on that API in four load-bearing ways:
+Splitwise has begun gating API access behind a Pro subscription. This was
+confirmed empirically on 2026-09-08: `/get_friends` returned **401** on a
+free account with an otherwise valid OAuth token, and purchasing Pro restored
+it immediately with no re-authentication. **The gate is indistinguishable from
+an expired token on the wire** — a fact that shapes Section 2.
+
+SplitEasy depends on that API in four load-bearing ways:
 
 1. **Identity provider.** Sign-in *is* Splitwise OAuth (`authStore.signIn` →
    `exchangeSplitwiseCode`). No API, no login.
@@ -119,16 +124,48 @@ sets it:
 `transactionStore.splitwiseAuthExpired` and `clearSplitwiseAuthExpired` are
 removed; consumers read `authStore`.
 
+### Two causes, one status code
+
+A 401 has **two distinct causes with different remedies**, and Splitwise does not
+distinguish them on the wire:
+
+| Cause | Remedy | What `reconnect()` does |
+|---|---|---|
+| Expired / revoked OAuth token | Re-run OAuth | Fixes it |
+| Lapsed Pro subscription | Renew Pro | **Nothing** — OAuth succeeds, next call still 401s |
+
+A banner that unconditionally offers "Reconnect" therefore traps a Pro-lapsed
+user in a loop: reconnecting appears to succeed, issues a valid token, and the
+next request fails identically. The UI must not assert a cause it cannot observe.
+
+**Disambiguation by elimination.** Track `lastReconnectAt` in `authStore`. If a
+401 arrives from a token minted after the most recent successful OAuth, the
+token is definitionally fresh and the cause is not token expiry. Escalate the
+banner accordingly.
+
 ### Surfacing
 
 A **persistent banner**, not a transient toast. A toast that scrolls away leaves
-the user guessing — which is the observed failure mode that motivated this work.
-The banner states that the Splitwise connection needs attention and offers
-**Reconnect**, wired to `authStore.reconnect()`. It clears when a request
-succeeds.
+the user guessing — the observed failure mode that motivated this work, which
+went undiagnosed for weeks precisely because nothing persisted.
+
+Two states:
+
+1. **First 401 (cause unknown).** "Splitwise isn't responding. Your data is safe
+   on this device." Primary action **Reconnect**. Neutral about the cause.
+2. **401 on a freshly minted token.** "Reconnecting didn't help — this usually
+   means a lapsed Splitwise Pro subscription, which the API now requires."
+   Primary action links to Splitwise subscription settings; **Reconnect**
+   demoted to secondary.
+
+Both states must say the local data is safe. The absence of that reassurance is
+what made sign-out feel dangerous during this incident, when it never was.
+
+The banner clears when any Splitwise request succeeds.
 
 The static "Connected" badge in `settings.tsx:83-85` is hardcoded and does not
-reflect real state. It must render from `tokenValid`.
+reflect real state. It must render from `tokenValid`, and must not read
+"Connected" when the API is 401ing.
 
 ## Section 3 — Persist the friends and groups cache
 
@@ -318,4 +355,11 @@ Sections are independently shippable and ordered by value:
 - **Pro subscription is a live dependency.** This design makes lapsing
   *survivable*, not *irrelevant*. With Splitwise disconnected, friends stop
   seeing expenses entirely; the local ledger keeps the user's own records intact
-  but is not a substitute for the shared ledger.
+  but is not a substitute for the shared ledger. Renewal lapse is now a
+  first-class failure mode, not an edge case — Section 2 state 2 exists solely
+  to name it when it happens.
+- **The Pro gate may widen.** Splitwise's terms reserve the right to change API
+  conditions "at any time for any reason with or without notice." Today's gate
+  is a Pro requirement; nothing prevents a future tightening that Pro does not
+  satisfy. Sections 1–3 keep the app usable in that scenario; Section 4 keeps
+  work from being lost in it. Neither restores the shared ledger.
