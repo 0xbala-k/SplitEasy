@@ -3,15 +3,24 @@ import React, { forwardRef, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   BottomSheetModal,
-  BottomSheetView,
+  BottomSheetScrollView,
   BottomSheetTextInput,
+  BottomSheetFooter,
   type BottomSheetFooterProps,
 } from '@gorhom/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Transaction, SplitwiseInboxItem } from '@/lib/types';
 import { Bucket } from '@/lib/buckets';
 import { BucketChip } from '@/components/BucketChip';
 import { Colors, Radius, Spacing, Shadow } from '@/lib/theme';
 import { todayLocal } from '@/lib/date';
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidDate(value: string): boolean {
+  if (!DATE_ONLY_RE.test(value)) return false;
+  return !isNaN(new Date(value + 'T00:00:00').getTime());
+}
 
 export type DetailSheetMode = 'create' | 'edit' | 'inbox';
 
@@ -51,12 +60,26 @@ function parseMoney(raw: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * 'edit' mode allows a nonzero amount of either sign, since Plaid can report
+ * a negative amount for a refund/credit and the user must still be able to
+ * fix the merchant name or date on that row. 'create' and 'inbox' keep the
+ * strict positive rule: a manual entry or an accepted Splitwise share should
+ * never be zero or negative.
+ */
+function parseAmountForMode(raw: string, mode: DetailSheetMode): number | null {
+  if (mode !== 'edit') return parseMoney(raw);
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n !== 0 ? n : null;
+}
+
 export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDetailSheetProps>(
   ({ mode, transaction, inboxItem, bucket, bucketLocked, openToken, onSubmit, onDelete, onBucketPress }, ref) => {
     const [name, setName] = useState('');
     const [amount, setAmount] = useState('');
     const [share, setShare] = useState('');
     const [date, setDate] = useState('');
+    const insets = useSafeAreaInsets();
 
     // Reseed on every open. The parent bumps openToken rather than relying on
     // mount, because the modal is kept mounted between presentations.
@@ -79,11 +102,15 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
       }
     }, [openToken, mode, transaction, inboxItem]);
 
-    const parsedAmount = parseMoney(amount);
+    const parsedAmount = parseAmountForMode(amount, mode);
     const parsedShare = mode === 'inbox' ? parseMoney(share) : null;
     const valid = useMemo(
-      () => name.trim().length > 0 && parsedAmount !== null && (mode !== 'inbox' || parsedShare !== null),
-      [name, parsedAmount, parsedShare, mode]
+      () =>
+        name.trim().length > 0 &&
+        parsedAmount !== null &&
+        isValidDate(date) &&
+        (mode !== 'inbox' || parsedShare !== null),
+      [name, parsedAmount, parsedShare, date, mode]
     );
 
     // Mirrors FriendPickerSheet: render nothing until the required prop for
@@ -106,8 +133,8 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
     // The CTA lives in footerComponent, never at the end of the body:
     // BottomSheetView breaks flex layout and a CTA in the body scrolls
     // off-screen on smaller devices.
-    const renderFooter = (props: BottomSheetFooterProps) => (
-      <BottomSheetView style={styles.footer}>
+    const renderFooter = (footerProps: BottomSheetFooterProps) => (
+      <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
         <Pressable
           style={[styles.submit, !valid && styles.submitDisabled]}
           onPress={handleSubmit}
@@ -117,17 +144,20 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
         >
           <Text style={styles.submitText}>{SUBMIT_LABEL[mode]}</Text>
         </Pressable>
-      </BottomSheetView>
+      </BottomSheetFooter>
     );
 
     return (
       <BottomSheetModal
         ref={ref}
         snapPoints={[mode === 'inbox' ? '62%' : '54%']}
+        enableDynamicSizing={false}
         enablePanDownToClose
+        keyboardBehavior="interactive"
+        keyboardBlurBehavior="restore"
         footerComponent={renderFooter}
       >
-        <BottomSheetView style={styles.body}>
+        <BottomSheetScrollView style={styles.body}>
           <Text style={styles.label}>Merchant</Text>
           <BottomSheetTextInput
             style={styles.input}
@@ -180,7 +210,7 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
               <Text style={styles.deleteText}>{mode === 'inbox' ? 'Dismiss' : 'Delete'}</Text>
             </Pressable>
           )}
-        </BottomSheetView>
+        </BottomSheetScrollView>
       </BottomSheetModal>
     );
   }

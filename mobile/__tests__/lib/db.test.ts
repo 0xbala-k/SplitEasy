@@ -1185,6 +1185,18 @@ describe('splitwise inbox', () => {
     expect(rows[0].participants).toEqual([{ id: '200', name: 'Alice Ng' }]);
   });
 
+  it('parses edited_fields into a real array, not the raw JSON string', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { expense_id: '555', description: 'Dinner', cost: 60, currency: 'USD', date: '2026-08-20',
+        payer_name: 'Alice Ng', my_share: 30, participants: '[{"id":"200","name":"Alice Ng"}]',
+        group_id: null, state: 'pending', fetched_at: '2026-08-24T00:00:00.000Z',
+        edited_fields: '["description"]' },
+    ]);
+    const rows = await getSplitwiseInbox();
+    expect(Array.isArray(rows[0].edited_fields)).toBe(true);
+    expect(rows[0].edited_fields).toEqual(['description']);
+  });
+
   it('upsert does not resurrect a dismissed row', async () => {
     await initDb();
     mockDb.getFirstAsync.mockResolvedValueOnce({ edited_fields: null });

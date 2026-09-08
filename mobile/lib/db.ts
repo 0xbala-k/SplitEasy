@@ -172,7 +172,7 @@ export async function getNewTransactions(): Promise<Transaction[]> {
     `SELECT * FROM transactions WHERE status = 'new' AND vacation_id IS NULL ORDER BY date DESC`,
     []
   );
-  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
+  return rows.map((r) => ({ ...r, pending: r.pending === 1, edited_fields: parseLocks(r.edited_fields) }));
 }
 
 export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
@@ -182,7 +182,7 @@ export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]
     `SELECT * FROM transactions WHERE id IN (${placeholders})`,
     ids
   );
-  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
+  return rows.map((r) => ({ ...r, pending: r.pending === 1, edited_fields: parseLocks(r.edited_fields) }));
 }
 
 type HistoryRow = Transaction & {
@@ -899,6 +899,12 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
   });
 }
 
+// Retention is uniform across every source, by design: a manual entry or an
+// excluded (soft-deleted) row ages out at 6 months exactly like a Plaid or
+// Splitwise-imported row does. This was weighed during the transaction-editing
+// feature's review and kept as-is — the data-loss concern that feature raised
+// was about the user-triggered "disconnect last bank" path (deleteAllTransactions,
+// below), a separate and already-scoped risk, not this uniform time-based prune.
 export async function pruneOldTransactions(): Promise<void> {
   await (await dbReady()).runAsync(
     `DELETE FROM transactions WHERE created_at < datetime('now', '-6 months')`,
@@ -1103,7 +1109,7 @@ export function importedTransactionId(expenseId: string): string {
 type InboxRow = Omit<SplitwiseInboxItem, 'participants'> & { participants: string };
 
 function mapInboxRow(r: InboxRow): SplitwiseInboxItem {
-  return { ...r, participants: JSON.parse(r.participants) };
+  return { ...r, participants: JSON.parse(r.participants), edited_fields: parseLocks(r.edited_fields) };
 }
 
 export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {

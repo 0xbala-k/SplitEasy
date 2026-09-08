@@ -1308,6 +1308,30 @@ describe('splitwise inbox (web)', () => {
     expect(row!.amount).toBe(90);                        // unlocked, updated
   });
 
+  // The 'description' lock (above) survives acceptance via applyLocks omitting
+  // a SET-clause field on the transactions row. 'my_share' is structurally
+  // different: it has no transactions column of its own — it becomes
+  // split_decisions.amount_each, via a branch in updateImportedExpense (see
+  // INBOX_TO_TX_FIELD's comment in lib/db.web.ts) rather than an omitted field
+  // in a shared writable object. That different code path needs its own proof.
+  test('acceptSplitwiseExpense carries a locked my_share onto split_decisions.amount_each', async () => {
+    await initDb();
+    await upsertInboxItem(inboxItem('e3', { my_share: 30 }));
+    await updateInboxItemFields('e3', { my_share: 35 });
+    const [item] = await getSplitwiseInbox();
+
+    await acceptSplitwiseExpense(item, 'food', null);
+
+    // The payer edits upstream: both my_share and description change, but only
+    // my_share is locked.
+    await updateImportedExpense({ ...item, my_share: 50, description: 'Birthday dinner' });
+
+    const rows = await getHistoryTransactions();
+    const row = rows.find((r) => r.id === importedTransactionId('e3'));
+    expect(row!.split?.amount_each).toBe(35);           // locked my_share survived acceptance + update
+    expect(row!.merchant_name).toBe('Birthday dinner'); // unlocked field DID update
+  });
+
   it('an accepted expense contributes only the user\'s share to spending', async () => {
     await acceptSplitwiseExpense(item(), 'food', null);
     const rows = await getSpendingRows();

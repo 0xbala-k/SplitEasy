@@ -23,8 +23,12 @@ jest.mock('@gorhom/bottom-sheet', () => {
   return {
     ...actual,
     BottomSheetModal,
+    BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
   };
 });
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 import { render, fireEvent } from '@testing-library/react-native';
 import { TransactionDetailSheet } from '@/components/TransactionDetailSheet';
@@ -115,4 +119,36 @@ test('delete is absent in create mode', () => {
     <TransactionDetailSheet mode="create" bucket="other" openToken={1} onSubmit={jest.fn()} />
   );
   expect(queryByText('Delete')).toBeNull();
+});
+
+test('an invalid date disables submit even with a valid merchant and amount', () => {
+  const onSubmit = jest.fn();
+  const { getByLabelText, getByText } = render(
+    <TransactionDetailSheet mode="create" bucket="other" openToken={1} onSubmit={onSubmit} />
+  );
+  fireEvent.changeText(getByLabelText('Merchant'), 'Taco stand');
+  fireEvent.changeText(getByLabelText('Amount'), '12.50');
+
+  for (const bad of ['2026-13-45', 'not-a-date']) {
+    fireEvent.changeText(getByLabelText('Date'), bad);
+    fireEvent.press(getByText('Add'));
+  }
+  expect(onSubmit).not.toHaveBeenCalled();
+
+  fireEvent.changeText(getByLabelText('Date'), '2026-07-01');
+  fireEvent.press(getByText('Add'));
+  expect(onSubmit).toHaveBeenCalled();
+});
+
+test('edit mode allows a negative amount (refund/credit) without any edits', () => {
+  const negativeTx: Transaction = { ...tx, amount: -25 };
+  const onSubmit = jest.fn();
+  const { getByText } = render(
+    <TransactionDetailSheet mode="edit" transaction={negativeTx} bucket="food"
+      openToken={1} onSubmit={onSubmit} onDelete={jest.fn()} />
+  );
+  fireEvent.press(getByText('Save'));
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({ merchant_name: 'RAW NAME', amount: -25, date: '2026-07-01' })
+  );
 });
