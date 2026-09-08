@@ -42,14 +42,28 @@ test('fires onDelete when Delete split is pressed', () => {
   expect(onDelete).toHaveBeenCalledTimes(1);
 });
 
-it('hides the edit action and relabels delete when readOnly', () => {
-  render(<HistoryActionSheet transaction={tx} onEdit={jest.fn()} onDelete={jest.fn()} readOnly />);
-  expect(screen.queryByText('Edit split')).toBeNull();
-  expect(screen.getByText('Remove from SplitEasy')).toBeTruthy();
+test('readOnly mode still hides Edit split and relabels delete', () => {
+  const { queryByText, getByText } = render(
+    <HistoryActionSheet transaction={tx} mode="readOnly"
+      onEdit={jest.fn()} onDelete={jest.fn()} />
+  );
+  expect(queryByText('Edit split')).toBeNull();
+  expect(getByText('Remove from SplitEasy')).toBeTruthy();
 });
 
 it('keeps both actions by default', () => {
   render(<HistoryActionSheet transaction={tx} onEdit={jest.fn()} onDelete={jest.fn()} />);
   expect(screen.getByText('Edit split')).toBeTruthy();
   expect(screen.getByText('Delete split')).toBeTruthy();
+});
+
+test('excluded mode offers Restore and hides Edit split', () => {
+  const onRestore = jest.fn();
+  const { getByText, queryByText } = render(
+    <HistoryActionSheet transaction={tx} mode="excluded"
+      onEdit={jest.fn()} onDelete={jest.fn()} onRestore={onRestore} />
+  );
+  expect(queryByText('Edit split')).toBeNull();
+  fireEvent.press(getByText('Restore'));
+  expect(onRestore).toHaveBeenCalled();
 });
