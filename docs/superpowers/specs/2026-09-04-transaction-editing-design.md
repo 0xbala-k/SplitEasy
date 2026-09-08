@@ -274,8 +274,18 @@ TDD throughout, following the existing suite's layout.
 - Each of the four sync paths gets a test proving a locked field survives an
   upstream write **and** that an unlocked field on the same row still updates.
   The second half is what catches a lock that is too broad.
-- Every new operation goes into `db.parity.test.ts`, which exists to hold the
-  two backends to identical behavior.
+- Every new operation gets a case in **both** `db.test.ts` and
+  `db.web.test.ts`. Note what these can actually prove, because the two suites
+  are not equivalent: `db.test.ts` automocks `expo-sqlite` and asserts on the
+  SQL strings and parameters handed to a stub, so it verifies the statement
+  built, not the resulting row. `db.web.test.ts` runs against `fake-indexeddb`
+  and verifies real stored state. `db.parity.test.ts` only checks that
+  `db.web.ts` exports every name `db.ts` does — it is a surface check, not a
+  behavioral one.
+- This asymmetry is the reason the lock rule lives in a pure helper. It is the
+  one place the behavior can be tested directly and trusted for both backends;
+  the native suite then verifies only that `db.ts` feeds the helper's output
+  into its `SET` clause.
 - A regression test that `deleteAllTransactions()` leaves `source='manual'`
   rows alone.
 - Explicit `'excluded'` cases for the two status enumerations at `db.ts:606`
@@ -289,6 +299,10 @@ TDD throughout, following the existing suite's layout.
    thing that can go wrong here. Covered by the predicate change and a
    regression test.
 2. **Silent divergence between `db.ts` and `db.web.ts`.** The standing hazard in
-   this codebase. Mitigated by the shared pure helper and the parity suite.
+   this codebase, and larger than it first appears: the native suite mocks
+   SQLite and can only assert on generated SQL, so a native behavioral bug that
+   produces well-formed statements is invisible to it. Mitigated by putting the
+   rule in a pure, directly-tested helper and by mirroring every case into
+   `db.web.test.ts`, where it runs against real storage.
 3. **The migration.** Two backends, `user_version` 7 → 8 and `DB_VERSION`
    4 → 5, with the ungated-`ALTER` requirement described above.
