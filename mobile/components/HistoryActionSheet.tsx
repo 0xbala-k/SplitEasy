@@ -10,14 +10,19 @@ interface Props {
   transaction: HistoryItem | null;
   onEdit: () => void;
   onDelete: () => void;
-  // An imported Splitwise expense belongs to whoever paid for it: the app
-  // must never offer to rewrite or delete it upstream.
-  readOnly?: boolean;
+  onRestore?: () => void;
+  // 'readOnly': an imported Splitwise expense belongs to whoever paid for it —
+  // the app must never offer to rewrite or delete it upstream.
+  // 'excluded': a soft-deleted transaction — the only action is Restore.
+  mode?: 'default' | 'readOnly' | 'excluded';
 }
 
 export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
-  ({ transaction, onEdit, onDelete, readOnly }, ref) => {
+  ({ transaction, onEdit, onDelete, onRestore, mode = 'default' }, ref) => {
     if (!transaction) return null;
+
+    const readOnly = mode === 'readOnly';
+    const excluded = mode === 'excluded';
 
     const initial = (transaction.merchant_name ?? '?')[0].toUpperCase();
     const avatarBg = merchantColor(transaction.merchant_name ?? '?');
@@ -25,7 +30,7 @@ export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
     return (
       <BottomSheetModal
         ref={ref}
-        snapPoints={[readOnly ? '30%' : '38%']}
+        snapPoints={[mode === 'default' ? '38%' : '30%']}
         enableDynamicSizing={false}
         enablePanDownToClose
         handleIndicatorStyle={styles.indicator}
@@ -42,33 +47,47 @@ export const HistoryActionSheet = forwardRef<BottomSheetModal, Props>(
             </View>
           </View>
 
-          {!readOnly && (
+          {excluded ? (
             <Pressable
               style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
-              onPress={onEdit}
+              onPress={onRestore}
               accessibilityRole="button"
-              accessibilityLabel={`Edit split for ${transaction.merchant_name}`}
+              accessibilityLabel={`Restore ${transaction.merchant_name}`}
             >
-              <Ionicons name="create-outline" size={20} color={Colors.textPrimary} />
-              <Text style={styles.actionText}>Edit split</Text>
+              <Ionicons name="refresh-outline" size={20} color={Colors.textPrimary} />
+              <Text style={styles.actionText}>Restore</Text>
             </Pressable>
-          )}
+          ) : (
+            <>
+              {!readOnly && (
+                <Pressable
+                  style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
+                  onPress={onEdit}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Edit split for ${transaction.merchant_name}`}
+                >
+                  <Ionicons name="create-outline" size={20} color={Colors.textPrimary} />
+                  <Text style={styles.actionText}>Edit split</Text>
+                </Pressable>
+              )}
 
-          <Pressable
-            style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
-            onPress={onDelete}
-            accessibilityRole="button"
-            accessibilityLabel={
-              readOnly
-                ? `Remove ${transaction.merchant_name} from SplitEasy`
-                : `Delete split for ${transaction.merchant_name}`
-            }
-          >
-            <Ionicons name="trash-outline" size={20} color={Colors.error} />
-            <Text style={[styles.actionText, styles.deleteText]}>
-              {readOnly ? 'Remove from SplitEasy' : 'Delete split'}
-            </Text>
-          </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
+                onPress={onDelete}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  readOnly
+                    ? `Remove ${transaction.merchant_name} from SplitEasy`
+                    : `Delete split for ${transaction.merchant_name}`
+                }
+              >
+                <Ionicons name="trash-outline" size={20} color={Colors.error} />
+                <Text style={[styles.actionText, styles.deleteText]}>
+                  {readOnly ? 'Remove from SplitEasy' : 'Delete split'}
+                </Text>
+              </Pressable>
+            </>
+          )}
         </BottomSheetView>
       </BottomSheetModal>
     );

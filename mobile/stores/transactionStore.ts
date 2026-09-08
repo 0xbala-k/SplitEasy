@@ -24,6 +24,14 @@ import {
   acceptSplitwiseExpense,
   updateImportedExpense,
   deleteImportedExpense,
+  updateTransactionFields,
+  updateInboxItemFields,
+  excludeTransaction as dbExcludeTransaction,
+  restoreTransaction as dbRestoreTransaction,
+  createManualTransaction as dbCreateManualTransaction,
+  TransactionFieldPatch,
+  InboxFieldPatch,
+  ManualTransactionInput,
 } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
 import { Bucket } from '@/lib/buckets';
@@ -57,6 +65,11 @@ interface TransactionState {
   acceptInboxItem: (item: SplitwiseInboxItem, bucket: Bucket) => Promise<void>;
   dismissInboxItem: (expenseId: string) => Promise<void>;
   clearSplitwiseAuthExpired: () => void;
+  editTransaction: (id: string, patch: TransactionFieldPatch) => Promise<void>;
+  editInboxItem: (expenseId: string, patch: InboxFieldPatch) => Promise<void>;
+  excludeTransaction: (id: string) => Promise<void>;
+  restoreTransaction: (id: string) => Promise<void>;
+  addManualTransaction: (input: ManualTransactionInput) => Promise<void>;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -251,5 +264,30 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   dismissInboxItem: async (expenseId) => {
     await dbDismissInboxItem(expenseId);
     set((s) => ({ splitwiseInbox: s.splitwiseInbox.filter((i) => i.expense_id !== expenseId) }));
+  },
+
+  editTransaction: async (id, patch) => {
+    await updateTransactionFields(id, patch);
+    await get().load();
+  },
+
+  editInboxItem: async (expenseId, patch) => {
+    await updateInboxItemFields(expenseId, patch);
+    await get().loadInbox();
+  },
+
+  excludeTransaction: async (id) => {
+    await dbExcludeTransaction(id);
+    set((s) => ({ transactions: s.transactions.filter((t) => t.id !== id) }));
+  },
+
+  restoreTransaction: async (id) => {
+    await dbRestoreTransaction(id);
+    await get().load();
+  },
+
+  addManualTransaction: async (input) => {
+    await dbCreateManualTransaction(input);
+    await get().load();
   },
 }));

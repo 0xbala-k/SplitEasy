@@ -7,6 +7,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
+import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -150,11 +151,18 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
       );
     `);
   }
+  if (version < 8) {
+    // Ungated for the same reason as vacation_id above: edited_fields is not in
+    // the base `version < 1` CREATE TABLE, so a fresh install (version 0) must
+    // receive it here too.
+    await d.execAsync(`ALTER TABLE transactions ADD COLUMN edited_fields TEXT;`);
+    await d.execAsync(`ALTER TABLE splitwise_inbox ADD COLUMN edited_fields TEXT;`);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 7) {
-    await d.execAsync(`PRAGMA user_version = 7;`);
+  if (version < 8) {
+    await d.execAsync(`PRAGMA user_version = 8;`);
   }
   return d;
 }
@@ -164,7 +172,7 @@ export async function getNewTransactions(): Promise<Transaction[]> {
     `SELECT * FROM transactions WHERE status = 'new' AND vacation_id IS NULL ORDER BY date DESC`,
     []
   );
-  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
+  return rows.map((r) => ({ ...r, pending: r.pending === 1, edited_fields: parseLocks(r.edited_fields) }));
 }
 
 export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]> {
@@ -174,7 +182,7 @@ export async function getTransactionsByIds(ids: string[]): Promise<Transaction[]
     `SELECT * FROM transactions WHERE id IN (${placeholders})`,
     ids
   );
-  return rows.map((r) => ({ ...r, pending: r.pending === 1 }));
+  return rows.map((r) => ({ ...r, pending: r.pending === 1, edited_fields: parseLocks(r.edited_fields) }));
 }
 
 type HistoryRow = Transaction & {
@@ -432,17 +440,36 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
     const currency = tx.iso_currency_code ?? 'USD';
     const pending = tx.pending ? 1 : 0;
     const category = tx.personal_finance_category?.detailed ?? null;
-    // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped rows
+    // INSERT OR IGNORE preserves status/vacation_id for already-split/skipped
+    // rows — and, since 'excluded' is just another status, keeps a soft-deleted
+    // row soft-deleted instead of resurrecting it.
     await d.runAsync(
       `INSERT OR IGNORE INTO transactions (id, merchant_name, amount, currency, date, status, pending, created_at, vacation_id, plaid_category)
        VALUES (?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)`,
       [tx.transaction_id, name, tx.amount, currency, tx.date, pending, now, activeVacationId, category]
     );
+    const existing = await d.getFirstAsync<{ edited_fields: string | null }>(
+      `SELECT edited_fields FROM transactions WHERE id = ?`,
+      [tx.transaction_id]
+    );
+    // Only user-editable fields are lockable. pending and plaid_category are
+    // Plaid's alone and are always written.
+    const writable = applyLocks(
+      { merchant_name: name, amount: tx.amount, date: tx.date },
+      existing?.edited_fields
+    );
+    // Column names come from the object literal above, never from user input,
+    // so interpolating them into the SET clause cannot inject.
+    const assignments = [
+      ...Object.keys(writable).map((col) => `${col} = ?`),
+      'pending = ?',
+      'plaid_category = ?',
+    ];
     // UPDATE only if still 'new' (don't overwrite user decisions)
     await d.runAsync(
-      `UPDATE transactions SET merchant_name = ?, amount = ?, date = ?, pending = ?, plaid_category = ?
+      `UPDATE transactions SET ${assignments.join(', ')}
        WHERE id = ? AND status = 'new'`,
-      [name, tx.amount, tx.date, pending, category, tx.transaction_id]
+      [...Object.values(writable), pending, category, tx.transaction_id]
     );
   }
 }
@@ -540,6 +567,77 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   }
 }
 
+/** Fields a user may edit on a transaction row. */
+export interface TransactionFieldPatch {
+  merchant_name?: string;
+  amount?: number;
+  date?: string;
+}
+
+/**
+ * Apply a user's hand edit and lock the fields it touched.
+ *
+ * Gated on status='new': a 'split' row has a live Splitwise expense that this
+ * would silently desync, and an 'excluded' row is soft-deleted. Both are out of
+ * scope by design, and the guard lives in SQL so no caller can forget it.
+ */
+export async function updateTransactionFields(
+  id: string,
+  patch: TransactionFieldPatch
+): Promise<void> {
+  const keys = Object.keys(patch) as (keyof TransactionFieldPatch)[];
+  if (keys.length === 0) return;
+  const d = await dbReady();
+  const row = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM transactions WHERE id = ? AND status = 'new'`,
+    [id]
+  );
+  if (!row) return;
+  const assignments = [...keys.map((col) => `${col} = ?`), 'edited_fields = ?'];
+  await d.runAsync(
+    `UPDATE transactions SET ${assignments.join(', ')} WHERE id = ? AND status = 'new'`,
+    [...keys.map((k) => patch[k] as string | number), addLocks(row.edited_fields, keys), id]
+  );
+}
+
+/**
+ * Soft-delete a transaction.
+ *
+ * Deliberately NOT routed through updateTransactionStatus(), whose
+ * materializeBuckets() would resolve and write a bucket for the row on its way
+ * out — an excluded row must not acquire spending data.
+ *
+ * The row survives so that upsertTransactions' `WHERE status = 'new'` guard
+ * keeps a later Plaid sync from resurrecting it. That is why this feature needs
+ * no tombstone table.
+ */
+export async function excludeTransaction(id: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE transactions SET status = 'excluded' WHERE id = ? AND status = 'new'`,
+    [id]
+  );
+}
+
+export async function restoreTransaction(id: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE transactions SET status = 'new' WHERE id = ? AND status = 'excluded'`,
+    [id]
+  );
+}
+
+/** Excluded rows, shaped like history rows so the History list can render them. */
+export async function getExcludedTransactions(): Promise<HistoryItem[]> {
+  const rows = await (await dbReady()).getAllAsync<HistoryRow>(
+    `SELECT t.*, s.splitwise_expense_id, s.description, s.friend_names, s.amount_each
+     FROM transactions t
+     LEFT JOIN split_decisions s ON s.transaction_id = t.id
+     WHERE t.status = 'excluded'
+     ORDER BY t.date DESC`,
+    []
+  );
+  return groupHistoryRows(rows);
+}
+
 /**
  * Move a transaction to a bucket by hand, and remember the merchant for next
  * time. Forward-only: transactions already committed under the old bucket are
@@ -559,6 +657,40 @@ export async function setTransactionBucket(id: string, bucket: Bucket): Promise<
     [bucket, id]
   );
   await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
+}
+
+export interface ManualTransactionInput {
+  merchant_name: string;
+  amount: number;
+  date: string;          // "YYYY-MM-DD", device-local (see lib/date.ts)
+  currency?: string;
+  bucket?: Bucket | null;
+}
+
+/**
+ * Record spending that never passed through a linked account — cash, or a card
+ * the app does not know about.
+ *
+ * The row is deliberately ordinary: status 'new', not pending, no
+ * plaid_category. That is what lets the entire existing split flow, the
+ * spending tracker and vacation assignment work on it with no special case.
+ *
+ * bucket is left NULL unless the caller supplies one, matching the rule that a
+ * bucket is written when a transaction is committed by a skip or a split.
+ */
+export async function createManualTransaction(input: ManualTransactionInput): Promise<string> {
+  const id = generateId('mn');
+  await (await dbReady()).runAsync(
+    `INSERT INTO transactions
+       (id, merchant_name, amount, currency, date, status, pending, created_at,
+        vacation_id, bucket, bucket_source, plaid_category, source, payer_name, edited_fields)
+     VALUES (?, ?, ?, ?, ?, 'new', 0, ?, NULL, ?, ?, NULL, 'manual', NULL, NULL)`,
+    [
+      id, input.merchant_name, input.amount, input.currency ?? 'USD', input.date,
+      new Date().toISOString(), input.bucket ?? null, input.bucket ? 'manual' : null,
+    ]
+  );
+  return id;
 }
 
 // Rekey a pending transaction's row to the id Plaid assigns once it posts.
@@ -582,8 +714,10 @@ export async function rekeyTransaction(
   const d = await dbReady();
   let result: RekeyResult = 'not_found';
   await d.withTransactionAsync(async () => {
-    const row = await d.getFirstAsync<{ id: string; amount: number; status: TransactionStatus }>(
-      `SELECT id, amount, status FROM transactions WHERE id = ?`,
+    const row = await d.getFirstAsync<{
+      id: string; amount: number; status: TransactionStatus; edited_fields: string | null;
+    }>(
+      `SELECT id, amount, status, edited_fields FROM transactions WHERE id = ?`,
       [oldId]
     );
     if (!row) {
@@ -607,8 +741,8 @@ export async function rekeyTransaction(
           result = 'conflict';
           return;
         }
-        // Otherwise it's the duplicate 'new'/'skipped' row this rekey is meant
-        // to supersede — no expense attached, safe to drop.
+        // Otherwise it's the duplicate 'new'/'skipped'/'excluded' row this
+        // rekey is meant to supersede — no expense attached, safe to drop.
         await deleteTransactionsByPlaidIds([posted.transaction_id]);
       }
     }
@@ -617,10 +751,21 @@ export async function rekeyTransaction(
     const reviewReason: ReviewReason | null = changed && row.status === 'split' ? 'amount_changed' : null;
     const amountChangedFrom = reviewReason ? row.amount : null;
 
+    const writable = applyLocks(
+      { merchant_name: name, amount: posted.amount, date: posted.date },
+      row.edited_fields
+    );
+    // id/pending/review_reason/amount_changed_from are never user-editable.
+    const assignments = [
+      'id = ?',
+      ...Object.keys(writable).map((col) => `${col} = ?`),
+      'pending = 0',
+      'review_reason = ?',
+      'amount_changed_from = ?',
+    ];
     await d.runAsync(
-      `UPDATE transactions SET id = ?, merchant_name = ?, amount = ?, date = ?, pending = 0,
-       review_reason = ?, amount_changed_from = ? WHERE id = ?`,
-      [posted.transaction_id, name, posted.amount, posted.date, reviewReason, amountChangedFrom, oldId]
+      `UPDATE transactions SET ${assignments.join(', ')} WHERE id = ?`,
+      [posted.transaction_id, ...Object.values(writable), reviewReason, amountChangedFrom, oldId]
     );
     await d.runAsync(
       `UPDATE split_decisions SET transaction_id = ? WHERE transaction_id = ?`,
@@ -634,8 +779,8 @@ export async function rekeyTransaction(
 // A pending split transaction Plaid reports as `removed` without a matching
 // `added`/`modified` posting is a reversal: the charge never posted. A
 // 'split' row is kept and flagged so the queue can offer to delete the now-
-// stranded Splitwise expense; a 'new'/'skipped' row has no expense to
-// reconcile, so it's deleted today (mirrors the old unconditional delete).
+// stranded Splitwise expense; a 'new'/'skipped'/'excluded' row has no expense
+// to reconcile, so it's deleted today (mirrors the old unconditional delete).
 // Returns the ids that were kept, for logging/testing.
 export async function markTransactionsReversed(ids: string[]): Promise<string[]> {
   if (ids.length === 0) return [];
@@ -754,6 +899,12 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
   });
 }
 
+// Retention is uniform across every source, by design: a manual entry or an
+// excluded (soft-deleted) row ages out at 6 months exactly like a Plaid or
+// Splitwise-imported row does. This was weighed during the transaction-editing
+// feature's review and kept as-is — the data-loss concern that feature raised
+// was about the user-triggered "disconnect last bank" path (deleteAllTransactions,
+// below), a separate and already-scoped risk, not this uniform time-based prune.
 export async function pruneOldTransactions(): Promise<void> {
   await (await dbReady()).runAsync(
     `DELETE FROM transactions WHERE created_at < datetime('now', '-6 months')`,
@@ -761,18 +912,20 @@ export async function pruneOldTransactions(): Promise<void> {
   );
 }
 
-// Called when the user disconnects their last bank — every remaining row was
-// Plaid data before this branch shipped, but an imported Splitwise row has no
-// other local source of truth: the watermark has already advanced past it, so
-// deleting it here is unrecoverable. Only Plaid-origin rows are cleared:
-// `source IS NULL` (every row written before this branch) or `source <>
-// 'splitwise'`. The `IS NULL` arm is required — a bare `source <> 'splitwise'`
-// would silently match nothing for those legacy rows, since NULL <> 'splitwise'
-// evaluates to NULL, not true, in SQL. Same trap already documented on
-// updateTransactionStatus's bucket_source clear.
+// Called when the user disconnects their last bank. Only Plaid-origin rows are
+// cleared. An imported Splitwise row and a manual row each have no other local
+// source of truth — the Splitwise watermark has already advanced past the
+// former, and the latter was never anywhere but here — so deleting either is
+// unrecoverable.
+//
+// This is an allowlist, not a denylist. A denylist ("everything except
+// splitwise") silently destroys every source added later, which is exactly how
+// manual rows would have been lost. The `IS NULL` arm is required: every row
+// written before the source column existed has NULL, and `source <> 'plaid'`
+// would evaluate to NULL rather than true for those, matching nothing.
 export async function deleteAllTransactions(): Promise<void> {
   const d = await dbReady();
-  const predicate = `source IS NULL OR source <> 'splitwise'`;
+  const predicate = `source IS NULL OR source = 'plaid'`;
   await d.withTransactionAsync(async () => {
     // Decisions deleted first, via a subquery over the still-intact
     // transactions table — deleting transactions first would leave nothing
@@ -956,7 +1109,7 @@ export function importedTransactionId(expenseId: string): string {
 type InboxRow = Omit<SplitwiseInboxItem, 'participants'> & { participants: string };
 
 function mapInboxRow(r: InboxRow): SplitwiseInboxItem {
-  return { ...r, participants: JSON.parse(r.participants) };
+  return { ...r, participants: JSON.parse(r.participants), edited_fields: parseLocks(r.edited_fields) };
 }
 
 export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {
@@ -970,31 +1123,76 @@ export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {
 /**
  * Record (or refresh) an offered expense.
  *
- * `state` is deliberately absent from the DO UPDATE SET list: a dismissed
+ * `state` is deliberately absent from the UPDATE SET list: a dismissed
  * expense that the payer later edits comes back through the poll, and
  * resurrecting it as pending would re-offer something the user already said
  * no to.
  */
 export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
-  await (await dbReady()).runAsync(
-    `INSERT INTO splitwise_inbox
-       (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(expense_id) DO UPDATE SET
-       description = excluded.description,
-       cost = excluded.cost,
-       currency = excluded.currency,
-       date = excluded.date,
-       payer_name = excluded.payer_name,
-       my_share = excluded.my_share,
-       participants = excluded.participants,
-       group_id = excluded.group_id,
-       fetched_at = excluded.fetched_at`,
+  const d = await dbReady();
+  const existing = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM splitwise_inbox WHERE expense_id = ?`,
+    [item.expense_id]
+  );
+  if (!existing) {
+    await d.runAsync(
+      `INSERT INTO splitwise_inbox
+         (expense_id, description, cost, currency, date, payer_name, my_share, participants, group_id, state, fetched_at, edited_fields)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [
+        item.expense_id, item.description, item.cost, item.currency, item.date,
+        item.payer_name, item.my_share, JSON.stringify(item.participants),
+        item.group_id, item.state, item.fetched_at,
+      ]
+    );
+    return;
+  }
+  const writable = applyLocks(
+    {
+      description: item.description, cost: item.cost, currency: item.currency,
+      date: item.date, payer_name: item.payer_name, my_share: item.my_share,
+    },
+    existing.edited_fields
+  );
+  const assignments = [
+    ...Object.keys(writable).map((col) => `${col} = ?`),
+    'participants = ?',
+    'group_id = ?',
+    'fetched_at = ?',
+  ];
+  await d.runAsync(
+    `UPDATE splitwise_inbox SET ${assignments.join(', ')} WHERE expense_id = ?`,
     [
-      item.expense_id, item.description, item.cost, item.currency, item.date,
-      item.payer_name, item.my_share, JSON.stringify(item.participants),
-      item.group_id, item.state, item.fetched_at,
+      ...Object.values(writable), JSON.stringify(item.participants),
+      item.group_id, item.fetched_at, item.expense_id,
     ]
+  );
+}
+
+/** Fields a user may edit on an unaccepted inbox row. */
+export interface InboxFieldPatch {
+  description?: string;
+  cost?: number;
+  date?: string;
+  my_share?: number;
+}
+
+export async function updateInboxItemFields(
+  expenseId: string,
+  patch: InboxFieldPatch
+): Promise<void> {
+  const keys = Object.keys(patch) as (keyof InboxFieldPatch)[];
+  if (keys.length === 0) return;
+  const d = await dbReady();
+  const row = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM splitwise_inbox WHERE expense_id = ?`,
+    [expenseId]
+  );
+  if (!row) return;
+  const assignments = [...keys.map((col) => `${col} = ?`), 'edited_fields = ?'];
+  await d.runAsync(
+    `UPDATE splitwise_inbox SET ${assignments.join(', ')} WHERE expense_id = ?`,
+    [...keys.map((k) => patch[k] as string | number), addLocks(row.edited_fields, keys), expenseId]
   );
 }
 
@@ -1021,6 +1219,29 @@ export async function getLocalExpenseState(
 }
 
 /**
+ * Inbox field name → the name the lock carries after acceptance.
+ *
+ * Three map to real transactions columns. 'my_share' maps to itself because it
+ * has no column of its own — it becomes split_decisions.amount_each, which
+ * updateImportedExpense guards separately. Keeping it in the list is what makes
+ * an edited share survive acceptance; applyLocks ignores it harmlessly when
+ * filtering a write that does not carry that key.
+ */
+const INBOX_TO_TX_FIELD: Record<string, string> = {
+  description: 'merchant_name',
+  cost: 'amount',
+  date: 'date',
+  my_share: 'my_share',
+};
+
+function txLocksFromInbox(raw: string | string[] | null | undefined): string | null {
+  const mapped = parseLocks(raw)
+    .map((f) => INBOX_TO_TX_FIELD[f])
+    .filter((f): f is string => !!f);
+  return serializeLocks(mapped);
+}
+
+/**
  * Materialize an approved expense as a transaction plus its split decision.
  *
  * `amount` is the WHOLE expense cost and `amount_each` is the user's own owed
@@ -1043,14 +1264,20 @@ export async function acceptSplitwiseExpense(
   const finalBucket: Bucket = vacationId ? 'travel' : bucket;
   const finalSource: BucketSource = vacationId ? 'vacation' : 'manual';
 
+  const inboxRow = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM splitwise_inbox WHERE expense_id = ?`,
+    [item.expense_id]
+  );
+  const txLocks = txLocksFromInbox(inboxRow?.edited_fields);
+
   await d.withTransactionAsync(async () => {
     await d.runAsync(
       `INSERT OR REPLACE INTO transactions
          (id, merchant_name, amount, currency, date, status, pending, created_at,
-          vacation_id, bucket, bucket_source, plaid_category, source, payer_name)
-       VALUES (?, ?, ?, ?, ?, 'split', 0, ?, ?, ?, ?, NULL, ?, ?)`,
+          vacation_id, bucket, bucket_source, plaid_category, source, payer_name, edited_fields)
+       VALUES (?, ?, ?, ?, ?, 'split', 0, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       [id, item.description, item.cost, item.currency, item.date, now,
-       vacationId, finalBucket, finalSource, 'splitwise', item.payer_name]
+       vacationId, finalBucket, finalSource, 'splitwise', item.payer_name, txLocks]
     );
     await d.runAsync(
       `INSERT OR REPLACE INTO split_decisions
@@ -1068,28 +1295,57 @@ export async function acceptSplitwiseExpense(
 /**
  * Apply an upstream edit to an already-imported expense.
  *
- * Only the payer's facts are rewritten. bucket, bucket_source, and vacation_id
- * are the user's and are left strictly alone.
+ * Only the payer's facts are rewritten, gated on the row's locked fields.
+ * bucket, bucket_source, and vacation_id are the user's and are left strictly
+ * alone.
  */
 export async function updateImportedExpense(item: SplitwiseInboxItem): Promise<void> {
   const d = await dbReady();
   const id = importedTransactionId(item.expense_id);
+  const row = await d.getFirstAsync<{ edited_fields: string | null }>(
+    `SELECT edited_fields FROM transactions WHERE id = ?`,
+    [id]
+  );
+  const locks = parseLocks(row?.edited_fields);
+  const writable = applyLocks(
+    {
+      merchant_name: item.description, amount: item.cost,
+      currency: item.currency, date: item.date,
+    },
+    row?.edited_fields
+  );
   await d.withTransactionAsync(async () => {
+    // payer_name is the payer's own fact and is never user-editable.
+    const assignments = [
+      ...Object.keys(writable).map((col) => `${col} = ?`),
+      'payer_name = ?',
+    ];
     await d.runAsync(
-      `UPDATE transactions
-         SET merchant_name = ?, amount = ?, currency = ?, date = ?, payer_name = ?
-       WHERE id = ?`,
-      [item.description, item.cost, item.currency, item.date, item.payer_name, id]
+      `UPDATE transactions SET ${assignments.join(', ')} WHERE id = ?`,
+      [...Object.values(writable), item.payer_name, id]
     );
-    await d.runAsync(
-      `UPDATE split_decisions
-         SET amount_each = ?, friend_ids = ?, friend_names = ?
-       WHERE transaction_id = ?`,
-      [item.my_share,
-       JSON.stringify(item.participants.map((p) => p.id)),
-       JSON.stringify(item.participants.map((p) => p.name)),
-       id]
-    );
+    // amount_each carries the user's share. It is locked under the inbox-side
+    // name 'my_share', which has no transactions column of its own.
+    if (locks.includes('my_share')) {
+      await d.runAsync(
+        `UPDATE split_decisions SET friend_ids = ?, friend_names = ? WHERE transaction_id = ?`,
+        [
+          JSON.stringify(item.participants.map((p) => p.id)),
+          JSON.stringify(item.participants.map((p) => p.name)),
+          id,
+        ]
+      );
+    } else {
+      await d.runAsync(
+        `UPDATE split_decisions SET amount_each = ?, friend_ids = ?, friend_names = ? WHERE transaction_id = ?`,
+        [
+          item.my_share,
+          JSON.stringify(item.participants.map((p) => p.id)),
+          JSON.stringify(item.participants.map((p) => p.name)),
+          id,
+        ]
+      );
+    }
   });
 }
 

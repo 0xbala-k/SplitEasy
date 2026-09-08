@@ -6,6 +6,8 @@
 jest.mock('@/lib/receiptScan', () => ({ scanReceipt: jest.fn() }));
 jest.mock('@/lib/db', () => ({
   getHistoryTransactions: jest.fn().mockResolvedValue([]),
+  getExcludedTransactions: jest.fn().mockResolvedValue([]),
+  restoreTransaction: jest.fn().mockResolvedValue(undefined),
   getSplitDecision: jest.fn(),
   getTransactionsByIds: jest.fn(),
   deleteImportedExpense: jest.fn().mockResolvedValue(undefined),
@@ -37,7 +39,13 @@ jest.mock('expo-router', () => ({
 import React from 'react';
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import HistoryScreen from '@/app/(tabs)/history';
-import { getHistoryTransactions, getSplitDecision, deleteImportedExpense } from '@/lib/db';
+import {
+  getHistoryTransactions,
+  getExcludedTransactions,
+  restoreTransaction,
+  getSplitDecision,
+  deleteImportedExpense,
+} from '@/lib/db';
 import { deleteExpense } from '@/lib/splitwise';
 import { showDialog } from '@/lib/dialog';
 import { HistoryItem } from '@/lib/types';
@@ -104,4 +112,44 @@ it('a Plaid split row still offers edit', async () => {
   render(<HistoryScreen />);
   fireEvent.press(await screen.findByLabelText('Edit or delete split for Dinner'));
   expect(await screen.findByLabelText('Edit split for Dinner')).toBeTruthy();
+});
+
+function excludedRow(over: Partial<HistoryItem> = {}): HistoryItem {
+  return {
+    id: 'tx-excl', merchant_name: 'Groceries', amount: 40, currency: 'USD',
+    date: '2026-08-18', status: 'excluded',
+    ...over,
+  };
+}
+
+it('switching to the Excluded filter loads excluded transactions', async () => {
+  (getHistoryTransactions as jest.Mock).mockResolvedValue([imported()]);
+  (getExcludedTransactions as jest.Mock).mockResolvedValue([excludedRow()]);
+  render(<HistoryScreen />);
+  await screen.findByText('Dinner');
+  fireEvent.press(screen.getByText('Excluded'));
+  expect(await screen.findByText('Groceries')).toBeTruthy();
+  expect(getExcludedTransactions).toHaveBeenCalled();
+});
+
+it('shows "No excluded transactions." when the Excluded filter is empty', async () => {
+  (getHistoryTransactions as jest.Mock).mockResolvedValue([imported()]);
+  (getExcludedTransactions as jest.Mock).mockResolvedValue([]);
+  render(<HistoryScreen />);
+  await screen.findByText('Dinner');
+  fireEvent.press(screen.getByText('Excluded'));
+  expect(await screen.findByText('No excluded transactions.')).toBeTruthy();
+});
+
+it('restoring an excluded row calls restoreTransaction and reloads', async () => {
+  (getHistoryTransactions as jest.Mock).mockResolvedValue([]);
+  (getExcludedTransactions as jest.Mock)
+    .mockResolvedValueOnce([excludedRow()])
+    .mockResolvedValueOnce([]);
+  render(<HistoryScreen />);
+  fireEvent.press(await screen.findByText('Excluded'));
+  fireEvent.press(await screen.findByText('Groceries'));
+  fireEvent.press(await screen.findByText('Restore'));
+  await waitFor(() => expect(restoreTransaction).toHaveBeenCalledWith('tx-excl'));
+  await waitFor(() => expect(getExcludedTransactions).toHaveBeenCalledTimes(2));
 });

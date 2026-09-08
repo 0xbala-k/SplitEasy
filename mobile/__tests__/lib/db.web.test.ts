@@ -13,6 +13,9 @@ import {
   getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
   getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
   getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
+  updateTransactionFields, updateInboxItemFields, importedTransactionId,
+  excludeTransaction, restoreTransaction, getExcludedTransactions,
+  createManualTransaction,
 } from '@/lib/db.web';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { toLocalDateString } from '@/lib/date';
@@ -33,6 +36,15 @@ function plaidTx(id: string, over: Partial<PlaidTransaction> = {}): PlaidTransac
   return {
     transaction_id: id, merchant_name: 'Cafe', name: 'CAFE 123', amount: 20,
     iso_currency_code: 'USD', date: '2026-07-01', pending: false, ...over,
+  };
+}
+
+function inboxItem(id: string, over: Partial<SplitwiseInboxItem> = {}): SplitwiseInboxItem {
+  return {
+    expense_id: id, description: 'Dinner', cost: 60, currency: 'USD',
+    date: '2026-07-01', payer_name: 'Sam', my_share: 30,
+    participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+    state: 'pending', fetched_at: '2026-07-01T10:00:00Z', ...over,
   };
 }
 
@@ -144,6 +156,129 @@ describe('db.web (IndexedDB)', () => {
     expect(row.pending).toBe(false);
   });
 
+  test('updateTransactionFields writes the value and records the lock', async () => {
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW', amount: 20 })]);
+
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+
+    const [row] = await getNewTransactions();
+    expect(row.merchant_name).toBe('My Cafe');
+    expect(row.edited_fields).toEqual(['merchant_name']);
+  });
+
+  test('updateTransactionFields unions locks across successive edits', async () => {
+    await upsertTransactions([plaidTx('p1')]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    await updateTransactionFields('p1', { amount: 33 });
+
+    const [row] = await getNewTransactions();
+    expect(row.edited_fields).toEqual(['amount', 'merchant_name']);
+    expect(row.amount).toBe(33);
+  });
+
+  test('updateTransactionFields refuses to touch a row that is not new', async () => {
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW' })]);
+    await updateTransactionStatus('p1', 'split');
+
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+
+    const rows = await getHistoryTransactions();
+    expect(rows[0].merchant_name).toBe('RAW');
+  });
+
+  test('upsertTransactions does not overwrite a locked field but still updates siblings', async () => {
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW NAME', amount: 20, date: '2026-07-01' })]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW NAME 2', amount: 25, date: '2026-07-02' })]);
+
+    const [row] = await getNewTransactions();
+    expect(row.merchant_name).toBe('My Cafe');  // locked, preserved
+    expect(row.amount).toBe(25);                // unlocked, updated
+    expect(row.date).toBe('2026-07-02');        // unlocked, updated
+  });
+
+  test('rekeyTransaction preserves a locked field while moving to the posted id', async () => {
+    await upsertTransactions([plaidTx('pend1', { pending: true, amount: 20 })]);
+    await updateTransactionFields('pend1', { merchant_name: 'My Cafe' });
+
+    const result = await rekeyTransaction('pend1', {
+      transaction_id: 'posted1', merchant_name: 'RAW NAME', name: 'RAW',
+      amount: 22, iso_currency_code: 'USD', date: '2026-07-03',
+      pending: false, pending_transaction_id: 'pend1',
+    });
+
+    expect(result).toBe('changed');
+    const [row] = await getNewTransactions();
+    expect(row.id).toBe('posted1');
+    expect(row.merchant_name).toBe('My Cafe');
+    expect(row.amount).toBe(22);
+  });
+
+  test('excluded rows leave the transactions tab, history and spending', async () => {
+    // excludeTransaction is scoped to status='new' (docs/superpowers/specs/
+    // 2026-09-04-transaction-editing-design.md: "flip status between 'new'
+    // and 'excluded'"); a 'split'/'skipped' row already has its own delete
+    // flow and is out of scope. p2 stays untouched here to prove exclude only
+    // ever removes the row it targets.
+    //
+    // Because a 'new' row was never selected by getHistoryTransactions/
+    // getSpendingRows (both require status IN ('split','skipped')) either
+    // before or after excludeTransaction runs, no single test can show a
+    // "was visible there, now isn't" transition under this status='new'-only
+    // scope. The two assertions below are a regression guard against someone
+    // later adding 'excluded' to those IN(...) filters, not proof that
+    // exclusion removes something from those views — they'd pass unchanged
+    // even if excludeTransaction were a no-op.
+    await initDb();
+    await upsertTransactions([plaidTx('p1'), plaidTx('p2')]);
+
+    await excludeTransaction('p1');
+
+    const remaining = await getNewTransactions();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe('p2');
+    expect(await getHistoryTransactions()).toEqual([]);
+    expect(await getSpendingRows()).toEqual([]);
+  });
+
+  test('an excluded row is listed by getExcludedTransactions and can be restored', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'Cafe' })]);
+    await excludeTransaction('p1');
+
+    const excluded = await getExcludedTransactions();
+    expect(excluded).toHaveLength(1);
+    expect(excluded[0].merchant_name).toBe('Cafe');
+
+    await restoreTransaction('p1');
+    expect(await getExcludedTransactions()).toEqual([]);
+    expect(await getNewTransactions()).toHaveLength(1);
+  });
+
+  test('a plaid re-sync cannot resurrect an excluded row', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1', { amount: 20 })]);
+    await excludeTransaction('p1');
+
+    await upsertTransactions([plaidTx('p1', { amount: 25 })]);
+
+    expect(await getNewTransactions()).toEqual([]);
+    expect(await getExcludedTransactions()).toHaveLength(1);
+  });
+
+  test('an edited row keeps its locks across exclude and restore', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1', { merchant_name: 'RAW' })]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    await excludeTransaction('p1');
+    await restoreTransaction('p1');
+
+    const [row] = await getNewTransactions();
+    expect(row.merchant_name).toBe('My Cafe');
+    expect(row.edited_fields).toEqual(['merchant_name']);
+  });
+
   it('web history reports source plaid for rows written before the inbox shipped', async () => {
     await upsertTransactions([{
       transaction_id: 'tx1', merchant_name: 'Cafe', name: 'Cafe', amount: 20,
@@ -191,6 +326,55 @@ describe('db.web (IndexedDB)', () => {
     await deleteAllTransactions();
     expect(await getNewTransactions()).toHaveLength(0);
     expect(await getSplitDecision('t1')).toBeNull();
+  });
+
+  test('createManualTransaction lands as a normal new row', async () => {
+    await initDb();
+    const id = await createManualTransaction({
+      merchant_name: 'Taco stand', amount: 12.5, date: '2026-07-04',
+    });
+
+    expect(id).toMatch(/^mn_/);
+    const [row] = await getNewTransactions();
+    expect(row.id).toBe(id);
+    expect(row.merchant_name).toBe('Taco stand');
+    expect(row.amount).toBe(12.5);
+    expect(row.currency).toBe('USD');
+    expect(row.status).toBe('new');
+    expect(row.source).toBe('manual');
+    expect(row.pending).toBe(false);
+  });
+
+  test('deleteAllTransactions spares manual and splitwise rows', async () => {
+    await initDb();
+    await upsertTransactions([plaidTx('p1')]);
+    const manualId = await createManualTransaction({
+      merchant_name: 'Cash lunch', amount: 9, date: '2026-07-04',
+    });
+    await upsertInboxItem(inboxItem('e1'));
+    const [item] = await getSplitwiseInbox();
+    await acceptSplitwiseExpense(item, 'food', null);
+
+    await deleteAllTransactions();
+
+    const remaining = await getNewTransactions();
+    expect(remaining.map((r) => r.id)).toEqual([manualId]);
+    const history = await getHistoryTransactions();
+    expect(history.map((h) => h.id)).toEqual([importedTransactionId('e1')]);
+  });
+
+  test('deleteAllTransactions still clears legacy rows with an explicit null source', async () => {
+    await initDb();
+    // Distinct from the "no source field at all" case above: this covers a
+    // row that explicitly stores `source: null` rather than omitting the key,
+    // exercising IndexedDB's `== null` arm from the other side.
+    await seedRaw('transactions', {
+      id: 'legacy', merchant_name: 'Old cash', amount: 3, currency: 'USD',
+      date: '2026-07-04', status: 'new', pending: false,
+      created_at: new Date().toISOString(), source: null,
+    });
+    await deleteAllTransactions();
+    expect(await getNewTransactions()).toEqual([]);
   });
 
   it('prunes transactions older than 6 months', async () => {
@@ -1082,6 +1266,70 @@ describe('splitwise inbox (web)', () => {
     await acceptSplitwiseExpense(item(), 'food', null);
     await deleteImportedExpense('555', false);
     expect(await getLocalExpenseState('555')).toEqual({ imported: false, dismissed: false });
+  });
+
+  test('updateInboxItemFields writes the value and records the lock', async () => {
+    await upsertInboxItem(inboxItem('e1', { description: 'Dinner' }));
+
+    await updateInboxItemFields('e1', { description: 'Birthday dinner', my_share: 25 });
+
+    const [inboxRow] = await getSplitwiseInbox();
+    expect(inboxRow.description).toBe('Birthday dinner');
+    expect(inboxRow.my_share).toBe(25);
+    expect(inboxRow.edited_fields).toEqual(['description', 'my_share']);
+  });
+
+  test('upsertInboxItem does not overwrite a locked field on a re-poll', async () => {
+    await initDb();
+    await upsertInboxItem(inboxItem('e1', { description: 'Dinner', cost: 60 }));
+    await updateInboxItemFields('e1', { description: 'Birthday dinner' });
+
+    await upsertInboxItem(inboxItem('e1', { description: 'Dinner', cost: 80 }));
+
+    const [item] = await getSplitwiseInbox();
+    expect(item.description).toBe('Birthday dinner');  // locked
+    expect(item.cost).toBe(80);                        // unlocked, refreshed
+  });
+
+  test('acceptSplitwiseExpense carries the lock list onto the transaction row', async () => {
+    await initDb();
+    await upsertInboxItem(inboxItem('e2', { description: 'Dinner' }));
+    await updateInboxItemFields('e2', { description: 'Birthday dinner' });
+    const [item] = await getSplitwiseInbox();
+
+    await acceptSplitwiseExpense(item, 'food', null);
+
+    // The payer edits upstream; the poll pushes it through updateImportedExpense.
+    await updateImportedExpense({ ...item, description: 'Dinner', cost: 90 });
+
+    const rows = await getHistoryTransactions();
+    const row = rows.find((r) => r.id === importedTransactionId('e2'));
+    expect(row!.merchant_name).toBe('Birthday dinner');  // lock survived acceptance
+    expect(row!.amount).toBe(90);                        // unlocked, updated
+  });
+
+  // The 'description' lock (above) survives acceptance via applyLocks omitting
+  // a SET-clause field on the transactions row. 'my_share' is structurally
+  // different: it has no transactions column of its own — it becomes
+  // split_decisions.amount_each, via a branch in updateImportedExpense (see
+  // INBOX_TO_TX_FIELD's comment in lib/db.web.ts) rather than an omitted field
+  // in a shared writable object. That different code path needs its own proof.
+  test('acceptSplitwiseExpense carries a locked my_share onto split_decisions.amount_each', async () => {
+    await initDb();
+    await upsertInboxItem(inboxItem('e3', { my_share: 30 }));
+    await updateInboxItemFields('e3', { my_share: 35 });
+    const [item] = await getSplitwiseInbox();
+
+    await acceptSplitwiseExpense(item, 'food', null);
+
+    // The payer edits upstream: both my_share and description change, but only
+    // my_share is locked.
+    await updateImportedExpense({ ...item, my_share: 50, description: 'Birthday dinner' });
+
+    const rows = await getHistoryTransactions();
+    const row = rows.find((r) => r.id === importedTransactionId('e3'));
+    expect(row!.split?.amount_each).toBe(35);           // locked my_share survived acceptance + update
+    expect(row!.merchant_name).toBe('Birthday dinner'); // unlocked field DID update
   });
 
   it('an accepted expense contributes only the user\'s share to spending', async () => {

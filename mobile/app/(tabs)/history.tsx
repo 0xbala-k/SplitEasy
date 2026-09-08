@@ -7,10 +7,12 @@ import { BottomSheetModal } from '@gorhom/bottom-sheet';
 import { showDialog } from '@/lib/dialog';
 import {
   getHistoryTransactions,
+  getExcludedTransactions,
   getSplitDecision,
   getTransactionsByIds,
   removeTransactionFromVacation,
   deleteImportedExpense,
+  restoreTransaction,
 } from '@/lib/db';
 import { HistoryItem, SplitDecision, Transaction } from '@/lib/types';
 import { formatDayLabel } from '@/lib/date';
@@ -48,6 +50,7 @@ function isImported(item: HistoryItem): boolean {
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const [rows, setRows] = useState<HistoryItem[]>([]);
+  const [filter, setFilter] = useState<'all' | 'excluded'>('all');
   const [selected, setSelected] = useState<HistoryItem | null>(null);
   const [editDecision, setEditDecision] = useState<SplitDecision | null>(null);
   const [combineTxs, setCombineTxs] = useState<Transaction[] | null>(null);
@@ -62,8 +65,9 @@ export default function HistoryScreen() {
   const toast = useToast();
 
   const refreshHistory = useCallback(() => {
-    getHistoryTransactions().then(setRows).catch(console.error);
-  }, []);
+    const load = filter === 'excluded' ? getExcludedTransactions() : getHistoryTransactions();
+    load.then(setRows).catch(console.error);
+  }, [filter]);
 
   // History keeps its own list state (unlike Transactions/Spending, which
   // read straight from a store), so the editor needs to be told how to
@@ -91,6 +95,13 @@ export default function HistoryScreen() {
     }, [refreshHistory])
   );
 
+  // useFocusEffect only re-fires on focus, not merely because refreshHistory's
+  // identity changed — so switching filters while already focused needs its
+  // own reload trigger.
+  useEffect(() => {
+    refreshHistory();
+  }, [refreshHistory]);
+
   // Present sheets from an effect (after the modal has mounted), not synchronously
   // in the tap handler — on the first tap the modal ref is still null otherwise.
   useEffect(() => {
@@ -104,7 +115,7 @@ export default function HistoryScreen() {
   }, [pending]);
 
   function handleRowPress(item: HistoryItem) {
-    if (isImported(item)) {
+    if (filter === 'excluded' || isImported(item)) {
       setSelected(item);
       setPending('action');
     } else if (item.status === 'skipped') {
@@ -219,6 +230,18 @@ export default function HistoryScreen() {
     );
   }
 
+  function handleRestore() {
+    if (!selected) return;
+    const item = selected;
+    actionRef.current?.dismiss();
+    restoreTransaction(item.id)
+      .then(() => {
+        toast.show('Restored', 'success');
+        refreshHistory();
+      })
+      .catch(() => toast.show('Failed to restore. Please try again.', 'error'));
+  }
+
   function handlePickerSuccess(_amountEach: number) {
     pickerRef.current?.dismiss();
     toast.show(pickerMode === 'edit' ? 'Split updated' : 'Split added', 'success');
@@ -235,8 +258,27 @@ export default function HistoryScreen() {
         )}
       </View>
 
+      <View style={styles.filterRow}>
+        <Pressable
+          style={[styles.filterChip, filter === 'all' && styles.filterChipActive]}
+          onPress={() => setFilter('all')}
+          accessibilityRole="button"
+          accessibilityState={{ selected: filter === 'all' }}
+        >
+          <Text style={[styles.filterChipText, filter === 'all' && styles.filterChipTextActive]}>All</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.filterChip, filter === 'excluded' && styles.filterChipActive]}
+          onPress={() => setFilter('excluded')}
+          accessibilityRole="button"
+          accessibilityState={{ selected: filter === 'excluded' }}
+        >
+          <Text style={[styles.filterChipText, filter === 'excluded' && styles.filterChipTextActive]}>Excluded</Text>
+        </Pressable>
+      </View>
+
       {rows.length === 0 ? (
-        <EmptyState />
+        <EmptyState excluded={filter === 'excluded'} />
       ) : (
         <FlatList
           data={rows}
@@ -262,16 +304,27 @@ export default function HistoryScreen() {
       <HistoryActionSheet
         ref={actionRef}
         transaction={selected}
-        readOnly={!!selected && isImported(selected)}
+        mode={filter === 'excluded' ? 'excluded' : selected && isImported(selected) ? 'readOnly' : 'default'}
         onEdit={handleEdit}
         onDelete={handleDelete}
+        onRestore={handleRestore}
       />
       <BucketPickerSheet ref={bucketEditor.sheetRef} {...bucketEditor.sheetProps} />
     </View>
   );
 }
 
-function EmptyState() {
+function EmptyState({ excluded }: { excluded: boolean }) {
+  if (excluded) {
+    return (
+      <View style={styles.emptyContainer}>
+        <View style={styles.emptyIcon}>
+          <Ionicons name="archive-outline" size={40} color={Colors.textTertiary} />
+        </View>
+        <Text style={styles.emptyTitle}>No excluded transactions.</Text>
+      </View>
+    );
+  }
   return (
     <View style={styles.emptyContainer}>
       <View style={styles.emptyIcon}>
@@ -375,6 +428,32 @@ const styles = StyleSheet.create({
   },
 
   list: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: 8 },
+
+  filterRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.sm,
+  },
+  filterChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: Radius.xxl,
+    backgroundColor: Colors.surfaceMuted,
+  },
+  filterChipActive: {
+    backgroundColor: Colors.textPrimary,
+  },
+  filterChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  filterChipTextActive: {
+    color: Colors.surface,
+  },
 
   emptyContainer: {
     flex: 1,

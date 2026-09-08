@@ -12,9 +12,13 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
+import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
 
 const DB_NAME = 'spliteasy';
-const DB_VERSION = 4;
+// v5 added `edited_fields` to transaction and inbox records. IndexedDB records
+// are schemaless, so there is no upgrade branch: an older record simply has no
+// such key, which parseLocks() reads as "nothing locked" — the correct default.
+const DB_VERSION = 5;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';
@@ -396,11 +400,11 @@ export async function upsertTransactions(txs: PlaidTransaction[], activeVacation
     } else if (existing.status === 'new') {
       // Mirror the SQL UPDATE: refresh mutable fields, never touch status of
       // already-split/skipped rows.
-      store.put({
-        ...existing,
-        merchant_name: name, amount: p.amount, date: p.date, pending: p.pending,
-        plaid_category: category,
-      });
+      const writable = applyLocks(
+        { merchant_name: name, amount: p.amount, date: p.date },
+        existing.edited_fields
+      );
+      store.put({ ...existing, ...writable, pending: p.pending, plaid_category: category });
     }
   }
   await done(tx);
@@ -474,6 +478,59 @@ export async function updateTransactionStatus(id: string, status: TransactionSta
   await done(tx);
 }
 
+/**
+ * Apply a user's hand edit and lock the fields it touched.
+ *
+ * Gated on status='new': a 'split' row has a live Splitwise expense that this
+ * would silently desync, and an 'excluded' row is soft-deleted. Both are out of
+ * scope by design, and the guard lives here so no caller can forget it.
+ */
+export async function updateTransactionFields(
+  id: string,
+  patch: { merchant_name?: string; amount?: number; date?: string }
+): Promise<void> {
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return;
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+  if (!existing || existing.status !== 'new') return;
+  store.put({ ...existing, ...patch, edited_fields: parseLocks(addLocks(existing.edited_fields, keys)) });
+  await done(tx);
+}
+
+/**
+ * Soft-delete a transaction. Mirrors lib/db.ts's excludeTransaction — see that
+ * function's comment for why this bypasses updateTransactionStatus and needs
+ * no tombstone table.
+ */
+export async function excludeTransaction(id: string): Promise<void> {
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+  if (existing && existing.status === 'new') store.put({ ...existing, status: 'excluded' });
+  await done(tx);
+}
+
+export async function restoreTransaction(id: string): Promise<void> {
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+  if (existing && existing.status === 'excluded') store.put({ ...existing, status: 'new' });
+  await done(tx);
+}
+
+/** Excluded rows, shaped like history rows so the History list can render them. */
+export async function getExcludedTransactions(): Promise<HistoryItem[]> {
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE]);
+  const [all, decisions] = await Promise.all([
+    req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
+    req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
+  ]);
+  const rows = all.filter((t) => t.status === 'excluded').sort(byDateDesc);
+  return groupHistoryRows(rows, decisions);
+}
+
 // Mirrors lib/db.ts's rekeyTransaction — see that function's comment for why
 // this exists. Deletes the old key and re-puts under the new key in both
 // stores, inside one readwrite transaction spanning both so a failure can't
@@ -512,13 +569,16 @@ export async function rekeyTransaction(
   const reviewReason: ReviewReason | null = changed && existing.status === 'split' ? 'amount_changed' : null;
   const amountChangedFrom = reviewReason ? existing.amount : null;
 
+  const writable = applyLocks(
+    { merchant_name: name, amount: posted.amount, date: posted.date },
+    existing.edited_fields
+  );
+
   txStore.delete(oldId);
   txStore.put({
     ...existing,
+    ...writable,
     id: posted.transaction_id,
-    merchant_name: name,
-    amount: posted.amount,
-    date: posted.date,
     pending: false,
     review_reason: reviewReason,
     amount_changed_from: amountChangedFrom,
@@ -645,6 +705,50 @@ export async function setTransactionBucket(id: string, bucket: Bucket): Promise<
   await setMerchantBucket(normalizeMerchant(row.merchant_name), bucket);
 }
 
+export interface ManualTransactionInput {
+  merchant_name: string;
+  amount: number;
+  date: string;          // "YYYY-MM-DD", device-local (see lib/date.ts)
+  currency?: string;
+  bucket?: Bucket | null;
+}
+
+/**
+ * Record spending that never passed through a linked account — cash, or a card
+ * the app does not know about.
+ *
+ * The row is deliberately ordinary: status 'new', not pending, no
+ * plaid_category. That is what lets the entire existing split flow, the
+ * spending tracker and vacation assignment work on it with no special case.
+ *
+ * bucket is left NULL unless the caller supplies one, matching the rule that a
+ * bucket is written when a transaction is committed by a skip or a split.
+ */
+export async function createManualTransaction(input: ManualTransactionInput): Promise<string> {
+  const id = generateId('mn');
+  const bucket = input.bucket ?? null;
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  tx.objectStore(TX_STORE).put({
+    id,
+    merchant_name: input.merchant_name,
+    amount: input.amount,
+    currency: input.currency ?? 'USD',
+    date: input.date,
+    status: 'new',
+    pending: false,
+    created_at: new Date().toISOString(),
+    vacation_id: null,
+    bucket,
+    bucket_source: bucket ? 'manual' : null,
+    plaid_category: null,
+    source: 'manual',
+    payer_name: null,
+    edited_fields: null,
+  } satisfies Transaction);
+  await done(tx);
+  return id;
+}
+
 export async function pruneOldTransactions(): Promise<void> {
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 6);
@@ -661,21 +765,25 @@ export async function pruneOldTransactions(): Promise<void> {
   await done(tx);
 }
 
-// Called when the user disconnects their last bank — every remaining row was
-// Plaid data before this branch shipped, but an imported Splitwise row has no
-// other local source of truth: the watermark has already advanced past it, so
-// deleting it here is unrecoverable. Only Plaid-origin rows (source absent,
-// i.e. legacy, or anything other than 'splitwise') are cleared, along with
-// their paired decision — same iterate-and-match shape as pruneOldTransactions.
+// Called when the user disconnects their last bank. Only Plaid-origin rows are
+// cleared. An imported Splitwise row and a manual row each have no other local
+// source of truth — the Splitwise watermark has already advanced past the
+// former, and the latter was never anywhere but here — so deleting either is
+// unrecoverable.
+//
+// This is an allowlist, not a denylist. A denylist ("everything except
+// splitwise") silently destroys every source added later, which is exactly how
+// manual rows would have been lost. `== null` (not `=== null`) is deliberate:
+// it catches both `null` and the `undefined` that legacy web records carry —
+// the IndexedDB equivalent of SQL's `source IS NULL` arm.
 export async function deleteAllTransactions(): Promise<void> {
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   const store = tx.objectStore(TX_STORE);
   const all = await req(store.getAll() as IDBRequest<Transaction[]>);
-  for (const t of all) {
-    if (t.source !== 'splitwise') {
-      store.delete(t.id);
-      tx.objectStore(DECISION_STORE).delete(t.id);
-    }
+  const doomed = all.filter((t) => t.source == null || t.source === 'plaid');
+  for (const t of doomed) {
+    store.delete(t.id);
+    tx.objectStore(DECISION_STORE).delete(t.id);
   }
   await done(tx);
 }
@@ -864,6 +972,7 @@ export async function getSplitwiseInbox(): Promise<SplitwiseInboxItem[]> {
  * A pre-existing row's `state` is carried forward rather than overwritten:
  * a dismissed expense that the payer later edits comes back through the poll,
  * and resurrecting it as pending would re-offer something the user said no to.
+ * Locked fields are dropped from the refresh the same way, via applyLocks.
  */
 export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
   const tx = (await dbReady()).transaction(INBOX_STORE, 'readwrite');
@@ -871,7 +980,39 @@ export async function upsertInboxItem(item: SplitwiseInboxItem): Promise<void> {
   const existing = await req(
     store.get(item.expense_id) as IDBRequest<SplitwiseInboxItem | undefined>
   );
-  store.put({ ...item, state: existing?.state ?? item.state });
+  if (!existing) {
+    store.put(item);
+    await done(tx);
+    return;
+  }
+  const writable = applyLocks(
+    {
+      description: item.description, cost: item.cost, currency: item.currency,
+      date: item.date, payer_name: item.payer_name, my_share: item.my_share,
+    },
+    existing.edited_fields
+  );
+  store.put({
+    ...existing,
+    ...writable,
+    participants: item.participants,
+    group_id: item.group_id,
+    fetched_at: item.fetched_at,
+  });
+  await done(tx);
+}
+
+export async function updateInboxItemFields(
+  expenseId: string,
+  patch: { description?: string; cost?: number; date?: string; my_share?: number }
+): Promise<void> {
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return;
+  const tx = (await dbReady()).transaction(INBOX_STORE, 'readwrite');
+  const store = tx.objectStore(INBOX_STORE);
+  const existing = await req(store.get(expenseId) as IDBRequest<SplitwiseInboxItem | undefined>);
+  if (!existing) return;
+  store.put({ ...existing, ...patch, edited_fields: parseLocks(addLocks(existing.edited_fields, keys)) });
   await done(tx);
 }
 
@@ -895,6 +1036,30 @@ export async function getLocalExpenseState(
 }
 
 /**
+ * Inbox field name → the name the lock carries after acceptance.
+ *
+ * Three map to real transactions columns. 'my_share' maps to itself because it
+ * has no column of its own — it becomes split_decisions.amount_each, which
+ * updateImportedExpense guards separately. Keeping it in the list is what makes
+ * an edited share survive acceptance; applyLocks ignores it harmlessly when
+ * filtering a write that does not carry that key. Mirrors lib/db.ts.
+ */
+const INBOX_TO_TX_FIELD: Record<string, string> = {
+  description: 'merchant_name',
+  cost: 'amount',
+  date: 'date',
+  my_share: 'my_share',
+};
+
+function txLocksFromInbox(raw: string | string[] | null | undefined): string[] | null {
+  const mapped = parseLocks(raw)
+    .map((f) => INBOX_TO_TX_FIELD[f])
+    .filter((f): f is string => !!f);
+  const serialized = serializeLocks(mapped);
+  return serialized ? parseLocks(serialized) : null;
+}
+
+/**
  * Materialize an approved expense as a transaction plus its split decision.
  * `amount` is the WHOLE cost, `amount_each` the user's own share — the same
  * contract Plaid-sourced splits use. Mirrors lib/db.ts.
@@ -910,6 +1075,10 @@ export async function acceptSplitwiseExpense(
   const finalSource: BucketSource = vacationId ? 'vacation' : 'manual';
 
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE, INBOX_STORE], 'readwrite');
+  const inboxRecord = await req(
+    tx.objectStore(INBOX_STORE).get(item.expense_id) as IDBRequest<SplitwiseInboxItem | undefined>
+  );
+  const txLocks = txLocksFromInbox(inboxRecord?.edited_fields);
   tx.objectStore(TX_STORE).put({
     id,
     merchant_name: item.description,
@@ -927,6 +1096,7 @@ export async function acceptSplitwiseExpense(
     plaid_category: null,
     source: 'splitwise',
     payer_name: item.payer_name,
+    edited_fields: txLocks,
   } satisfies Transaction);
   tx.objectStore(DECISION_STORE).put({
     id: generateId('sd'),
@@ -942,8 +1112,8 @@ export async function acceptSplitwiseExpense(
 }
 
 /**
- * Apply an upstream edit. bucket, bucket_source, and vacation_id are the
- * user's and are left strictly alone.
+ * Apply an upstream edit, gated on the row's locked fields. bucket,
+ * bucket_source, and vacation_id are the user's and are left strictly alone.
  */
 export async function updateImportedExpense(item: SplitwiseInboxItem): Promise<void> {
   const id = importedTransactionId(item.expense_id);
@@ -951,21 +1121,25 @@ export async function updateImportedExpense(item: SplitwiseInboxItem): Promise<v
   const txStore = tx.objectStore(TX_STORE);
   const decStore = tx.objectStore(DECISION_STORE);
   const row = await req(txStore.get(id) as IDBRequest<Transaction | undefined>);
+  const locks = parseLocks(row?.edited_fields);
   if (row) {
-    txStore.put({
-      ...row,
-      merchant_name: item.description,
-      amount: item.cost,
-      currency: item.currency,
-      date: item.date,
-      payer_name: item.payer_name,
-    });
+    const writable = applyLocks(
+      {
+        merchant_name: item.description, amount: item.cost,
+        currency: item.currency, date: item.date,
+      },
+      row.edited_fields
+    );
+    // payer_name is the payer's own fact and is never user-editable.
+    txStore.put({ ...row, ...writable, payer_name: item.payer_name });
   }
   const dec = await req(decStore.get(id) as IDBRequest<SplitDecision | undefined>);
   if (dec) {
+    // amount_each carries the user's share. It is locked under the inbox-side
+    // name 'my_share', which has no transactions column of its own.
     decStore.put({
       ...dec,
-      amount_each: item.my_share,
+      ...(locks.includes('my_share') ? {} : { amount_each: item.my_share }),
       friend_ids: item.participants.map((p) => p.id),
       friend_names: item.participants.map((p) => p.name),
     });
