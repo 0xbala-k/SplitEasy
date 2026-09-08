@@ -158,11 +158,41 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     await d.execAsync(`ALTER TABLE transactions ADD COLUMN edited_fields TEXT;`);
     await d.execAsync(`ALTER TABLE splitwise_inbox ADD COLUMN edited_fields TEXT;`);
   }
+  if (version < 9) {
+    // Ungated for the same reason as vacation_id above: these tables are not in
+    // the base `version < 1` CREATE TABLE, so a fresh install (version 0) must
+    // receive them here too.
+    await d.execAsync(`
+      CREATE TABLE IF NOT EXISTS splitwise_friends (
+        id           TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        avatar_url   TEXT,
+        cached_at    TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS splitwise_groups (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        member_ids   TEXT NOT NULL,
+        member_names TEXT NOT NULL,
+        cached_at    TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pending_splitwise_ops (
+        id             TEXT PRIMARY KEY,
+        op_type        TEXT NOT NULL,
+        transaction_id TEXT,
+        expense_id     TEXT,
+        payload        TEXT NOT NULL,
+        attempts       INTEGER NOT NULL DEFAULT 0,
+        last_error     TEXT,
+        created_at     TEXT NOT NULL
+      );
+    `);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 8) {
-    await d.execAsync(`PRAGMA user_version = 8;`);
+  if (version < 9) {
+    await d.execAsync(`PRAGMA user_version = 9;`);
   }
   return d;
 }
