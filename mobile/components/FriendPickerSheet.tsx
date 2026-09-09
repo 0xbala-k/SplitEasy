@@ -542,6 +542,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         onSuccess(ownerOwedShare);
       } catch (err) {
         if (err instanceof SplitwiseAuthError) {
+          useAuthStore.getState().reportAuthFailure();
           toast.show('Splitwise session expired. Please sign in again.', 'error');
         } else {
           toast.show('Failed to add expense. Please try again.', 'error');

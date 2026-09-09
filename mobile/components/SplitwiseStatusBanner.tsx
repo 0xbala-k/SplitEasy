@@ -1,6 +1,7 @@
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
 import { useState } from 'react';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '@/stores/authStore';
 import { signInWithSplitwise } from '@/lib/splitwiseAuth';
 import { flushQueue } from '@/lib/splitwiseQueue';
@@ -21,6 +22,7 @@ export function SplitwiseStatusBanner() {
   const lastReconnectAt = useAuthStore((s) => s.lastReconnectAt);
   const signIn = useAuthStore((s) => s.signIn);
   const [busy, setBusy] = useState(false);
+  const topInset = useSafeAreaInsets().top;
 
   if (tokenValid) return null;
 
@@ -44,7 +46,7 @@ export function SplitwiseStatusBanner() {
   }
 
   return (
-    <View style={styles.root} testID="splitwise-status-banner">
+    <View style={[styles.root, { paddingTop: topInset + Spacing.md }]} testID="splitwise-status-banner">
       <Text style={styles.title}>
         {likelyPro ? "Reconnecting didn't help" : "Splitwise isn't responding"}
       </Text>

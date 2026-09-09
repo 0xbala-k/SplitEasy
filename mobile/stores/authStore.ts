@@ -49,12 +49,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const user_id = await AsyncStorage.getItem('splitwise_user_id');
     const display_name = await AsyncStorage.getItem('splitwise_display_name');
     const avatar_url = await AsyncStorage.getItem('splitwise_avatar_url');
+    const lastReconnectAt = await AsyncStorage.getItem('splitwise_last_reconnect_at');
     set({
       hasSession: !!user_id,
       tokenValid: !!token,
       user_id,
       display_name,
       avatar_url,
+      lastReconnectAt,
       isHydrated: true,
     });
   },
@@ -65,10 +67,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const priorUserId = await AsyncStorage.getItem('splitwise_user_id');
     const res = await exchangeSplitwiseCode(code, redirect_uri);
     await setSecure(KEYS.SPLITWISE_ACCESS_TOKEN, res.access_token);
+    const lastReconnectAt = new Date().toISOString();
     await AsyncStorage.multiSet([
       ['splitwise_user_id', res.user_id],
       ['splitwise_display_name', res.display_name],
       ['splitwise_avatar_url', res.avatar_url ?? ''],
+      ['splitwise_last_reconnect_at', lastReconnectAt],
     ]);
     // Same account reconnecting: keep the watermark so the inbox resumes where
     // it left off instead of re-pulling every expense. A different account must
@@ -79,7 +83,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       hasSession: true,
       tokenValid: true,
-      lastReconnectAt: new Date().toISOString(),
+      lastReconnectAt,
       user_id: res.user_id,
       display_name: res.display_name,
       avatar_url: res.avatar_url,
@@ -92,6 +96,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       'splitwise_user_id',
       'splitwise_display_name',
       'splitwise_avatar_url',
+      'splitwise_last_reconnect_at',
       SPLITWISE_WATERMARK_KEY,
     ]);
     set({

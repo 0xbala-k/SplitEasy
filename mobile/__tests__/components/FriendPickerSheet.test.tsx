@@ -69,6 +69,11 @@ const mockScanReceipt = receiptScan.scanReceipt as jest.Mock;
 const mockEnqueueOp = db.enqueueOp as jest.Mock;
 const mockFlushQueue = flushQueue as jest.Mock;
 const mockCommitCombined = jest.fn();
+// useAuthStore is mocked as a bare hook (jest.fn()); the outer catch's
+// SplitwiseAuthError branch calls the real store's static `.getState()`
+// accessor, so the mock needs one too — backed by a small mutable object so
+// a test can assert reportAuthFailure actually flipped tokenValid.
+let mockAuthState: { user_id: string | null; tokenValid: boolean };
 
 // The create path (Task 14) no longer calls createExpense synchronously — it
 // enqueues a `create` op whose JSON-serialized payload carries the params
@@ -119,7 +124,12 @@ beforeEach(() => {
     friends: [{ id: '2', display_name: 'Sam', avatar_url: null }],
     isLoading: false,
   });
-  (useAuthStore as jest.Mock).mockImplementation((sel) => sel({ user_id: '1' }));
+  mockAuthState = { user_id: '1', tokenValid: true };
+  (useAuthStore as jest.Mock).mockImplementation((sel) => sel(mockAuthState));
+  (useAuthStore as unknown as { getState: jest.Mock }).getState = jest.fn(() => ({
+    ...mockAuthState,
+    reportAuthFailure: () => { mockAuthState.tokenValid = false; },
+  }));
   mockCommitCombined.mockReset().mockResolvedValue(undefined);
   (useTransactionStore as jest.Mock).mockImplementation((sel) =>
     sel({ markSplit: jest.fn(), commitCombinedSplit: mockCommitCombined })
@@ -169,6 +179,17 @@ test('the CTA is reusable after a successful save (submitting is reset)', async 
   // renderer — remounts the footer subtree with a fresh instance.
   fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
   await waitFor(() => expect(mockUpdateExpense).toHaveBeenCalledTimes(2));
+});
+
+test('an edit-path Splitwise auth failure reports to authStore', async () => {
+  mockUpdateExpense.mockRejectedValue(new splitwise.SplitwiseAuthError());
+  renderEdit();
+  await waitFor(() => expect(mockGetExpense).toHaveBeenCalled());
+
+  fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+  await waitFor(() => expect(mockUpdateExpense).toHaveBeenCalledTimes(1));
+  expect(useAuthStore.getState().tokenValid).toBe(false);
 });
 
 test('re-presenting (openToken change) re-runs the pre-fill', async () => {

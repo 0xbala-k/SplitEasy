@@ -298,6 +298,15 @@ test('deleteSplit leaves local state untouched if the Splitwise delete fails', a
   expect(mockUpdateStatus).not.toHaveBeenCalled();
 });
 
+test('deleteSplit reports an auth failure to authStore and still rejects', async () => {
+  useAuthStore.setState({ tokenValid: true });
+  mockDeleteExpense.mockRejectedValue(new SplitwiseAuthError());
+  await expect(
+    useTransactionStore.getState().deleteSplit('tx1', 'exp99')
+  ).rejects.toBeInstanceOf(SplitwiseAuthError);
+  expect(useAuthStore.getState().tokenValid).toBe(false);
+});
+
 test('deleteCombinedSplit deletes the expense once, then reverts members atomically', async () => {
   await useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared');
 
@@ -312,6 +321,15 @@ test('deleteCombinedSplit makes no local change when the Splitwise delete fails'
     useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared')
   ).rejects.toThrow();
   expect(mockRevertCombined).not.toHaveBeenCalled();
+});
+
+test('deleteCombinedSplit reports an auth failure to authStore and still rejects', async () => {
+  useAuthStore.setState({ tokenValid: true });
+  mockDeleteExpense.mockRejectedValue(new SplitwiseAuthError());
+  await expect(
+    useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared')
+  ).rejects.toBeInstanceOf(SplitwiseAuthError);
+  expect(useAuthStore.getState().tokenValid).toBe(false);
 });
 
 test('commitCombinedSplit persists rows atomically then drops members from the list', async () => {

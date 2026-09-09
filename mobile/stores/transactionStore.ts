@@ -158,7 +158,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
 
   deleteSplit: async (transactionId, splitwiseExpenseId) => {
     // Splitwise first: if it fails we make no local change, so the two stay in sync.
-    await deleteExpense(splitwiseExpenseId);
+    try {
+      await deleteExpense(splitwiseExpenseId);
+    } catch (err) {
+      if (err instanceof SplitwiseAuthError) {
+        useAuthStore.getState().reportAuthFailure();
+      }
+      throw err;
+    }
     await deleteSplitDecision(transactionId);
     await updateTransactionStatus(transactionId, 'new');
     await get().load();
@@ -167,7 +174,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   deleteCombinedSplit: async (transactionIds, splitwiseExpenseId) => {
     // Delete the shared Splitwise expense once, then revert every member locally
     // in a single transaction so a failure can't leave the group half-reverted.
-    await deleteExpense(splitwiseExpenseId);
+    try {
+      await deleteExpense(splitwiseExpenseId);
+    } catch (err) {
+      if (err instanceof SplitwiseAuthError) {
+        useAuthStore.getState().reportAuthFailure();
+      }
+      throw err;
+    }
     await revertCombinedSplit(transactionIds);
     await get().load();
   },

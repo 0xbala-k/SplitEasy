@@ -151,6 +151,28 @@ describe('authStore session vs token validity', () => {
     expect(useAuthStore.getState().lastReconnectAt).not.toBeNull();
   });
 
+  it('signIn writes lastReconnectAt to AsyncStorage so it survives an app restart', async () => {
+    mockExchange.mockResolvedValue({
+      access_token: 'tok2', user_id: 'u1', display_name: 'Bala', avatar_url: null,
+    });
+
+    await useAuthStore.getState().signIn('code', 'redirect');
+    const setAt = useAuthStore.getState().lastReconnectAt;
+    expect(setAt).not.toBeNull();
+
+    // Simulate an app restart: a fresh in-memory store, then hydrate() from
+    // whatever AsyncStorage/SecureStore still have on disk.
+    useAuthStore.setState({
+      user_id: null, display_name: null, avatar_url: null,
+      hasSession: false, tokenValid: false, lastReconnectAt: null, isHydrated: false,
+    });
+    mockGetItem.mockResolvedValue('tok2');
+
+    await useAuthStore.getState().hydrate();
+
+    expect(useAuthStore.getState().lastReconnectAt).toBe(setAt);
+  });
+
   it('signIn clears the watermark when a different user signs in', async () => {
     await AsyncStorage.setItem('splitwise_user_id', 'u1');
     await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-09-01T00:00:00.000Z');
