@@ -378,6 +378,35 @@ export async function clearReview(transactionIds: string[]): Promise<void> {
   );
 }
 
+/**
+ * Undo an amount_changed review by restoring the pre-posting amount.
+ *
+ * Locks `amount` against upstream writes: without the lock the next Plaid
+ * `modified` sync writes the posted amount straight back and the row returns
+ * to the review queue, which makes the whole action look broken.
+ *
+ * Guarded on review_reason = 'amount_changed'. A reversed row has a NULL
+ * amount_changed_from, so reverting it would blank the amount entirely.
+ */
+export async function revertReviewedAmount(transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const d = await dbReady();
+  for (const id of transactionIds) {
+    const row = await d.getFirstAsync<{ amount_changed_from: number | null; edited_fields: string | null }>(
+      `SELECT amount_changed_from, edited_fields FROM transactions
+       WHERE id = ? AND review_reason = 'amount_changed' AND amount_changed_from IS NOT NULL`,
+      [id]
+    );
+    if (!row || row.amount_changed_from === null) continue;
+    await d.runAsync(
+      `UPDATE transactions
+       SET amount = ?, review_reason = NULL, amount_changed_from = NULL, edited_fields = ?
+       WHERE id = ?`,
+      [row.amount_changed_from, addLocks(row.edited_fields, ['amount']), id]
+    );
+  }
+}
+
 export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
   const rows = await (await dbReady()).getAllAsync<Omit<Transaction, 'pending'> & { pending: number }>(
     `SELECT * FROM transactions WHERE status = 'new' AND vacation_id = ? ORDER BY date DESC`,

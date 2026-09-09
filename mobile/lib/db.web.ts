@@ -296,6 +296,31 @@ export async function clearReview(transactionIds: string[]): Promise<void> {
   await done(tx);
 }
 
+/**
+ * Undo an amount_changed review by restoring the pre-posting amount.
+ * Mirrors lib/db.ts's revertReviewedAmount, including the amount lock and the
+ * review_reason = 'amount_changed' guard — see that function for the why.
+ */
+export async function revertReviewedAmount(transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  for (const id of transactionIds) {
+    const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+    if (!existing) continue;
+    if (existing.review_reason !== 'amount_changed') continue;
+    if (existing.amount_changed_from == null) continue;
+    store.put({
+      ...existing,
+      amount: existing.amount_changed_from,
+      review_reason: null,
+      amount_changed_from: null,
+      edited_fields: parseLocks(addLocks(existing.edited_fields, ['amount'])),
+    });
+  }
+  await done(tx);
+}
+
 export async function getVacationPendingTransactions(vacationId: string): Promise<Transaction[]> {
   const all = await req((await dbReady()).transaction(TX_STORE).objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>);
   return all.filter((t) => t.status === 'new' && t.vacation_id === vacationId).sort(byDateDesc);

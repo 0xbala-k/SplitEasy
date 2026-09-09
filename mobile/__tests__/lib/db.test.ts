@@ -36,6 +36,7 @@ import {
   markTransactionsReversed,
   getReviewTransactions,
   clearReview,
+  revertReviewedAmount,
   getMerchantBuckets,
   setMerchantBucket,
   setTransactionBucket,
@@ -1401,5 +1402,38 @@ describe('updateTransactionFields / updateInboxItemFields', () => {
       sql.includes('UPDATE split_decisions SET')
     );
     expect(decisionUpdate[0]).not.toContain('amount_each = ?');
+  });
+});
+
+describe('revertReviewedAmount', () => {
+  beforeEach(async () => {
+    await initDb();
+    // initDb's own PRAGMA user_version lookup uses getFirstAsync too; clear it
+    // so assertions below only see calls made by revertReviewedAmount itself.
+    mockDb.getFirstAsync.mockClear();
+  });
+
+  test('restores the previous amount and adds the amount lock', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({ amount_changed_from: 42.1, edited_fields: null });
+
+    await revertReviewedAmount(['p1']);
+
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SET amount = ?, review_reason = NULL'),
+      [42.1, JSON.stringify(['amount']), 'p1']
+    );
+  });
+
+  test('writes nothing when the guarded SELECT matches no row', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce(null);
+
+    await revertReviewedAmount(['p1']);
+
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
+  });
+
+  test('writes nothing for an empty id list', async () => {
+    await revertReviewedAmount([]);
+    expect(mockDb.getFirstAsync).not.toHaveBeenCalled();
   });
 });

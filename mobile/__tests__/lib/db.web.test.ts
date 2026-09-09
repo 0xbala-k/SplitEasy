@@ -9,7 +9,7 @@ import {
   createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
   removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
-  rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview,
+  rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview, revertReviewedAmount,
   getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
   getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
   getLocalExpenseState, acceptSplitwiseExpense, updateImportedExpense, deleteImportedExpense,
@@ -1403,5 +1403,84 @@ describe('splitwise inbox (web)', () => {
     const history = await getHistoryTransactions();
     expect(history.map((h) => h.id)).toEqual(['sw:555']);
     expect(history[0].split?.amount_each).toBe(30);
+  });
+});
+
+describe('revertReviewedAmount', () => {
+  beforeEach(() => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests(); // drop the handle onto the previous factory
+  });
+
+  // Builds a split row that Plaid re-posted at a higher amount, which is the
+  // exact state rekeyTransaction leaves behind for an amount_changed review.
+  async function amountChangedRow() {
+    await upsertTransactions([plaidTx('p1', { amount: 42.1 })]);
+    await insertSplitDecision({
+      id: 'd1', transaction_id: 'p1', splitwise_expense_id: 'e1',
+      friend_ids: ['f1'], friend_names: ['Alice'], amount_each: 21.05,
+      created_at: '2026-07-01T00:00:00.000Z',
+    });
+    await updateTransactionStatus('p1', 'split');
+    await rekeyTransaction('p1', plaidTx('p1', { amount: 47.85 }));
+  }
+
+  test('restores the previous amount and clears both review columns', async () => {
+    await amountChangedRow();
+
+    await revertReviewedAmount(['p1']);
+
+    const [row] = await getTransactionsByIds(['p1']);
+    expect(row.amount).toBe(42.1);
+    expect(row.review_reason).toBeNull();
+    expect(row.amount_changed_from).toBeNull();
+  });
+
+  test('locks amount so a later Plaid sync cannot re-raise it', async () => {
+    await amountChangedRow();
+
+    await revertReviewedAmount(['p1']);
+
+    const [row] = await getTransactionsByIds(['p1']);
+    expect(row.edited_fields).toEqual(['amount']);
+  });
+
+  test('leaves a reversed row untouched', async () => {
+    await upsertTransactions([plaidTx('p1', { amount: 20 })]);
+    await insertSplitDecision({
+      id: 'd1', transaction_id: 'p1', splitwise_expense_id: 'e1',
+      friend_ids: ['f1'], friend_names: ['Alice'], amount_each: 10,
+      created_at: '2026-07-01T00:00:00.000Z',
+    });
+    await updateTransactionStatus('p1', 'split');
+    await markTransactionsReversed(['p1']);
+
+    await revertReviewedAmount(['p1']);
+
+    const [row] = await getTransactionsByIds(['p1']);
+    expect(row.review_reason).toBe('reversed');
+    expect(row.amount).toBe(20);
+  });
+
+  test('is a no-op for an empty list and for unknown ids', async () => {
+    await expect(revertReviewedAmount([])).resolves.toBeUndefined();
+    await expect(revertReviewedAmount(['nope'])).resolves.toBeUndefined();
+  });
+
+  test('unions the amount lock with locks the user already had', async () => {
+    await upsertTransactions([plaidTx('p1', { amount: 42.1 })]);
+    await updateTransactionFields('p1', { merchant_name: 'My Cafe' });
+    await insertSplitDecision({
+      id: 'd1', transaction_id: 'p1', splitwise_expense_id: 'e1',
+      friend_ids: ['f1'], friend_names: ['Alice'], amount_each: 21.05,
+      created_at: '2026-07-01T00:00:00.000Z',
+    });
+    await updateTransactionStatus('p1', 'split');
+    await rekeyTransaction('p1', plaidTx('p1', { amount: 47.85 }));
+
+    await revertReviewedAmount(['p1']);
+
+    const [row] = await getTransactionsByIds(['p1']);
+    expect(row.edited_fields).toEqual(['amount', 'merchant_name']);
   });
 });
