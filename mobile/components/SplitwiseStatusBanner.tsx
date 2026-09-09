@@ -3,6 +3,7 @@ import Constants from 'expo-constants';
 import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { signInWithSplitwise } from '@/lib/splitwiseAuth';
+import { flushQueue } from '@/lib/splitwiseQueue';
 import { Colors, Radius, Spacing } from '@/lib/theme';
 
 const CLIENT_ID: string = Constants.expoConfig?.extra?.splitwiseClientId ?? '';
@@ -31,7 +32,10 @@ export function SplitwiseStatusBanner() {
       const result = await signInWithSplitwise(CLIENT_ID);
       // null on web (the page is navigating away to the OAuth redirect) and on
       // native cancel. app/oauth/callback.tsx completes the web case.
-      if (result) await signIn(result.code, result.redirectUri);
+      if (result) {
+        await signIn(result.code, result.redirectUri);
+        void flushQueue();
+      }
     } catch (e) {
       console.error('Splitwise reconnect failed', e);
     } finally {

@@ -1,11 +1,13 @@
 import { Tabs } from 'expo-router';
 import { useEffect } from 'react';
+import { AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useFriendStore } from '@/stores/friendStore';
 import { useVacationStore } from '@/stores/vacationStore';
 import { pruneOldTransactions } from '@/lib/db';
+import { flushQueue } from '@/lib/splitwiseQueue';
 import { Colors } from '@/lib/theme';
 import { SplitwiseStatusBanner } from '@/components/SplitwiseStatusBanner';
 
@@ -19,6 +21,16 @@ export default function TabsLayout() {
     loadFriends();
     reconcileVacations();
     pruneOldTransactions().catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    // Flush on mount, then whenever the app comes back to the foreground —
+    // the moment connectivity is most likely to have returned.
+    void flushQueue();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void flushQueue();
+    });
+    return () => sub.remove();
   }, []);
 
   return (
