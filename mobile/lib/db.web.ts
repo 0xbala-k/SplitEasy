@@ -259,6 +259,7 @@ function groupReviewRows(rows: Transaction[], decisions: SplitDecision[]): Revie
         date: t.date,
         reason: (t.review_reason as ReviewReason) ?? 'amount_changed',
         split: { friend_names: d?.friend_names ?? [], amount_each: d?.amount_each ?? 0 },
+        splitwise_expense_id: d?.splitwise_expense_id ?? null,
         expense_id: d?.splitwise_expense_id ?? t.id,
         transaction_ids: [t.id],
       };

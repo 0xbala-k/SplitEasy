@@ -341,6 +341,7 @@ function groupReviewRows(rows: ReviewRow[]): ReviewItem[] {
           friend_names: r.friend_names ? JSON.parse(r.friend_names) : [],
           amount_each: r.amount_each ?? 0,
         },
+        splitwise_expense_id: r.splitwise_expense_id,
         expense_id: r.splitwise_expense_id ?? r.id,
         transaction_ids: [r.id],
       };

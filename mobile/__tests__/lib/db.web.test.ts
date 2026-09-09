@@ -700,6 +700,45 @@ describe('getReviewTransactions / clearReview (IndexedDB)', () => {
     expect(row.review_reason ?? null).toBeNull();
     expect(row.amount_changed_from ?? null).toBeNull();
   });
+
+  test('a split whose push is still queued reports a null splitwise_expense_id', async () => {
+    await upsertTransactions([plaidTx('p1', { amount: 20 })]);
+    await insertSplitDecision({
+      id: 'd1',
+      transaction_id: 'p1',
+      splitwise_expense_id: null,
+      friend_ids: ['f1'],
+      friend_names: ['Alice'],
+      amount_each: 10,
+      created_at: '2026-07-01T00:00:00.000Z',
+    });
+    await updateTransactionStatus('p1', 'split');
+    await markTransactionsReversed(['p1']);
+
+    const [item] = await getReviewTransactions();
+    expect(item.splitwise_expense_id).toBeNull();
+    // The grouping key still falls back to the transaction id so combined rows collapse.
+    expect(item.expense_id).toBe('p1');
+  });
+
+  test('a pushed split reports its Splitwise expense id in both fields', async () => {
+    await upsertTransactions([plaidTx('p1', { amount: 20 })]);
+    await insertSplitDecision({
+      id: 'd1',
+      transaction_id: 'p1',
+      splitwise_expense_id: 'e99',
+      friend_ids: ['f1'],
+      friend_names: ['Alice'],
+      amount_each: 10,
+      created_at: '2026-07-01T00:00:00.000Z',
+    });
+    await updateTransactionStatus('p1', 'split');
+    await markTransactionsReversed(['p1']);
+
+    const [item] = await getReviewTransactions();
+    expect(item.splitwise_expense_id).toBe('e99');
+    expect(item.expense_id).toBe('e99');
+  });
 });
 
 describe('vacation CRUD (IndexedDB)', () => {
