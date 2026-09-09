@@ -113,6 +113,20 @@ describe('opening the database', () => {
     await expect(getNewTransactions()).resolves.toEqual([]);
     spy.mockRestore();
   });
+
+  it('opens at version 6 with the cache and queue stores', async () => {
+    await initDb();
+    const d = await new Promise<IDBDatabase>((res, rej) => {
+      const open = indexedDB.open('spliteasy');
+      open.onsuccess = () => res(open.result);
+      open.onerror = () => rej(open.error);
+    });
+    expect(d.version).toBe(6);
+    expect(d.objectStoreNames.contains('splitwise_friends')).toBe(true);
+    expect(d.objectStoreNames.contains('splitwise_groups')).toBe(true);
+    expect(d.objectStoreNames.contains('pending_ops')).toBe(true);
+    d.close();
+  });
 });
 
 describe('db.web (IndexedDB)', () => {

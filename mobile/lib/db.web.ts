@@ -4,7 +4,7 @@
 // cross-origin isolation, which breaks Plaid Link popups (see design spec).
 import {
   Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult,
-  SplitwiseInboxItem,
+  SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup, PendingOp,
 } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
@@ -13,17 +13,21 @@ import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
 import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
+import { collapseOps } from '@/lib/splitwiseQueue';
 
 const DB_NAME = 'spliteasy';
-// v5 added `edited_fields` to transaction and inbox records. IndexedDB records
-// are schemaless, so there is no upgrade branch: an older record simply has no
-// such key, which parseLocks() reads as "nothing locked" — the correct default.
-const DB_VERSION = 5;
+// v6 added the splitwise_friends / splitwise_groups caches and the pending_ops
+// queue. IndexedDB records are schemaless, so existing records need no upgrade
+// branch — only the new stores are created.
+const DB_VERSION = 6;
 const TX_STORE = 'transactions';
 const DECISION_STORE = 'split_decisions';
 const VACATION_STORE = 'vacations';
 const MERCHANT_STORE = 'merchant_buckets';
 const INBOX_STORE = 'splitwise_inbox';
+const FRIEND_STORE = 'splitwise_friends';
+const GROUP_STORE = 'splitwise_groups';
+const PENDING_OPS_STORE = 'pending_ops';
 
 let _db: IDBDatabase | null = null;
 let _opening: Promise<IDBDatabase> | null = null;
@@ -105,6 +109,15 @@ function openDatabase(): Promise<IDBDatabase> {
         // Keyed by the Splitwise expense id, mirroring the SQLite
         // splitwise_inbox PRIMARY KEY.
         d.createObjectStore(INBOX_STORE, { keyPath: 'expense_id' });
+      }
+      if (!d.objectStoreNames.contains(FRIEND_STORE)) {
+        d.createObjectStore(FRIEND_STORE, { keyPath: 'id' });
+      }
+      if (!d.objectStoreNames.contains(GROUP_STORE)) {
+        d.createObjectStore(GROUP_STORE, { keyPath: 'id' });
+      }
+      if (!d.objectStoreNames.contains(PENDING_OPS_STORE)) {
+        d.createObjectStore(PENDING_OPS_STORE, { keyPath: 'id' });
       }
     };
     // A version bump can't proceed while another tab holds an older-version
@@ -1167,5 +1180,90 @@ export async function deleteImportedExpense(expenseId: string, tombstone: boolea
       state: 'dismissed', fetched_at: new Date().toISOString(),
     } satisfies SplitwiseInboxItem);
   }
+  await done(tx);
+}
+
+export async function getCachedFriends(): Promise<SplitwiseFriend[]> {
+  const all = await req(
+    (await dbReady()).transaction(FRIEND_STORE).objectStore(FRIEND_STORE)
+      .getAll() as IDBRequest<(SplitwiseFriend & { cached_at: string })[]>
+  );
+  return all
+    .map(({ id, display_name, avatar_url }) => ({ id, display_name, avatar_url: avatar_url ?? null }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+}
+
+// Wholesale replace, not merge: a friend removed on Splitwise must disappear
+// locally. Safe because nothing holds a foreign key to this table — split
+// history denormalizes friend_names for exactly this reason.
+export async function replaceCachedFriends(friends: SplitwiseFriend[]): Promise<void> {
+  const tx = (await dbReady()).transaction(FRIEND_STORE, 'readwrite');
+  const store = tx.objectStore(FRIEND_STORE);
+  const cached_at = new Date().toISOString();
+  store.clear();
+  for (const f of friends) store.put({ ...f, avatar_url: f.avatar_url ?? null, cached_at });
+  await done(tx);
+}
+
+export async function getCachedGroups(): Promise<SplitwiseGroup[]> {
+  const all = await req(
+    (await dbReady()).transaction(GROUP_STORE).objectStore(GROUP_STORE)
+      .getAll() as IDBRequest<(SplitwiseGroup & { cached_at: string })[]>
+  );
+  return all
+    .map(({ id, name, member_ids, member_names }) => ({ id, name, member_ids, member_names }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Wholesale replace, same rationale as replaceCachedFriends above.
+export async function replaceCachedGroups(groups: SplitwiseGroup[]): Promise<void> {
+  const tx = (await dbReady()).transaction(GROUP_STORE, 'readwrite');
+  const store = tx.objectStore(GROUP_STORE);
+  const cached_at = new Date().toISOString();
+  store.clear();
+  for (const g of groups) store.put({ ...g, cached_at });
+  await done(tx);
+}
+
+export async function getPendingOps(): Promise<PendingOp[]> {
+  const all = await req(
+    (await dbReady()).transaction(PENDING_OPS_STORE).objectStore(PENDING_OPS_STORE)
+      .getAll() as IDBRequest<PendingOp[]>
+  );
+  return all.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+}
+
+export async function enqueueOp(op: PendingOp): Promise<void> {
+  const current = await getPendingOps();
+  const next = collapseOps(current, op);
+  const tx = (await dbReady()).transaction(PENDING_OPS_STORE, 'readwrite');
+  const store = tx.objectStore(PENDING_OPS_STORE);
+  store.clear();
+  for (const o of next) store.put(o);
+  await done(tx);
+}
+
+export async function dequeueOp(id: string): Promise<void> {
+  const tx = (await dbReady()).transaction(PENDING_OPS_STORE, 'readwrite');
+  tx.objectStore(PENDING_OPS_STORE).delete(id);
+  await done(tx);
+}
+
+export async function recordOpFailure(id: string, error: string): Promise<void> {
+  const tx = (await dbReady()).transaction(PENDING_OPS_STORE, 'readwrite');
+  const store = tx.objectStore(PENDING_OPS_STORE);
+  const existing = await req(store.get(id) as IDBRequest<PendingOp | undefined>);
+  if (existing) store.put({ ...existing, attempts: existing.attempts + 1, last_error: error });
+  await done(tx);
+}
+
+// Fills in the Splitwise expense id after a create lands — either the normal
+// success path, or a retry that adopted a matching expense instead of
+// creating a duplicate (see splitwiseQueue.findMatchingExpense).
+export async function backfillExpenseId(transactionId: string, expenseId: string): Promise<void> {
+  const tx = (await dbReady()).transaction(DECISION_STORE, 'readwrite');
+  const store = tx.objectStore(DECISION_STORE);
+  const existing = await req(store.get(transactionId) as IDBRequest<SplitDecision | undefined>);
+  if (existing) store.put({ ...existing, splitwise_expense_id: expenseId });
   await done(tx);
 }

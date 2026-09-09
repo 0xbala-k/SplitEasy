@@ -1,12 +1,15 @@
 import { Tabs } from 'expo-router';
 import { useEffect } from 'react';
+import { AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useFriendStore } from '@/stores/friendStore';
 import { useVacationStore } from '@/stores/vacationStore';
 import { pruneOldTransactions } from '@/lib/db';
+import { flushQueue } from '@/lib/splitwiseQueue';
 import { Colors } from '@/lib/theme';
+import { SplitwiseStatusBanner } from '@/components/SplitwiseStatusBanner';
 
 export default function TabsLayout() {
   const count = useTransactionStore((s) => s.transactions.length);
@@ -20,72 +23,85 @@ export default function TabsLayout() {
     pruneOldTransactions().catch(console.error);
   }, []);
 
+  useEffect(() => {
+    // Flush on mount, then whenever the app comes back to the foreground —
+    // the moment connectivity is most likely to have returned.
+    void flushQueue();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void flushQueue();
+    });
+    return () => sub.remove();
+  }, []);
+
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: Colors.tabActive,
-        tabBarInactiveTintColor: Colors.tabInactive,
-        tabBarStyle: {
-          backgroundColor: Colors.surface,
-          borderTopColor: '#E2E8F0',
-          borderTopWidth: 1,
-          paddingTop: 6,
-          // Account for the home-indicator inset so labels aren't rendered
-          // inside the 34pt home-indicator strip on iPhone X and later.
-          paddingBottom: insets.bottom + 4,
-          height: 60 + insets.bottom,
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '600',
-          marginTop: 2,
-        },
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Transactions',
-          tabBarBadge: count > 0 ? count : undefined,
-          tabBarBadgeStyle: {
-            backgroundColor: Colors.primary,
-            fontSize: 10,
-            minWidth: 18,
-            height: 18,
+    <>
+      <SplitwiseStatusBanner />
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: Colors.tabActive,
+          tabBarInactiveTintColor: Colors.tabInactive,
+          tabBarStyle: {
+            backgroundColor: Colors.surface,
+            borderTopColor: '#E2E8F0',
+            borderTopWidth: 1,
+            paddingTop: 6,
+            // Account for the home-indicator inset so labels aren't rendered
+            // inside the 34pt home-indicator strip on iPhone X and later.
+            paddingBottom: insets.bottom + 4,
+            height: 60 + insets.bottom,
           },
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="receipt-outline" size={size} color={color} />
-          ),
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '600',
+            marginTop: 2,
+          },
         }}
-      />
-      <Tabs.Screen
-        name="history"
-        options={{
-          title: 'History',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="time-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="spending"
-        options={{
-          title: 'Spending',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="pie-chart-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: 'Settings',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person-circle-outline" size={size} color={color} />
-          ),
-        }}
-      />
-    </Tabs>
+      >
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: 'Transactions',
+            tabBarBadge: count > 0 ? count : undefined,
+            tabBarBadgeStyle: {
+              backgroundColor: Colors.primary,
+              fontSize: 10,
+              minWidth: 18,
+              height: 18,
+            },
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="receipt-outline" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="history"
+          options={{
+            title: 'History',
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="time-outline" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="spending"
+          options={{
+            title: 'Spending',
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="pie-chart-outline" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="settings"
+          options={{
+            title: 'Settings',
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="person-circle-outline" size={size} color={color} />
+            ),
+          }}
+        />
+      </Tabs>
+    </>
   );
 }

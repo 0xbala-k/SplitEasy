@@ -217,7 +217,10 @@ export default function HistoryScreen() {
                   toast.show('Could not load this split. Please try again.', 'error');
                   return;
                 }
-                await deleteSplit(item.id, decision.splitwise_expense_id);
+                // Non-null: the write path is still remote-first, so every persisted
+                // SplitDecision has a real expense id until Task 14 makes it local-first
+                // (queued creates), at which point this needs a real guard.
+                await deleteSplit(item.id, decision.splitwise_expense_id!);
               }
               toast.show('Split deleted', 'success');
               refreshHistory();

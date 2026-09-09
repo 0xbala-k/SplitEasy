@@ -72,7 +72,7 @@ beforeEach(() => {
     getTokensAndCursors: mockGetTokensAndCursors,
     saveCursor: mockSaveCursor,
   });
-  useTransactionStore.setState({ transactions: [], isLoading: false, splitwiseInbox: [], splitwiseAuthExpired: false });
+  useTransactionStore.setState({ transactions: [], isLoading: false, splitwiseInbox: [] });
   mockGetSplitwiseInbox.mockResolvedValue([]);
   mockSecureGet.mockResolvedValue('access-token');
   mockGetNew.mockResolvedValue([]);
@@ -298,6 +298,15 @@ test('deleteSplit leaves local state untouched if the Splitwise delete fails', a
   expect(mockUpdateStatus).not.toHaveBeenCalled();
 });
 
+test('deleteSplit reports an auth failure to authStore and still rejects', async () => {
+  useAuthStore.setState({ tokenValid: true });
+  mockDeleteExpense.mockRejectedValue(new SplitwiseAuthError());
+  await expect(
+    useTransactionStore.getState().deleteSplit('tx1', 'exp99')
+  ).rejects.toBeInstanceOf(SplitwiseAuthError);
+  expect(useAuthStore.getState().tokenValid).toBe(false);
+});
+
 test('deleteCombinedSplit deletes the expense once, then reverts members atomically', async () => {
   await useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared');
 
@@ -312,6 +321,15 @@ test('deleteCombinedSplit makes no local change when the Splitwise delete fails'
     useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared')
   ).rejects.toThrow();
   expect(mockRevertCombined).not.toHaveBeenCalled();
+});
+
+test('deleteCombinedSplit reports an auth failure to authStore and still rejects', async () => {
+  useAuthStore.setState({ tokenValid: true });
+  mockDeleteExpense.mockRejectedValue(new SplitwiseAuthError());
+  await expect(
+    useTransactionStore.getState().deleteCombinedSplit(['tx1', 'tx2'], 'expShared')
+  ).rejects.toBeInstanceOf(SplitwiseAuthError);
+  expect(useAuthStore.getState().tokenValid).toBe(false);
 });
 
 test('commitCombinedSplit persists rows atomically then drops members from the list', async () => {
@@ -380,7 +398,7 @@ test('setBucket reloads even when a later id throws', async () => {
 describe('syncSplitwiseInbox', () => {
   beforeEach(() => {
     AsyncStorage.clear();
-    useAuthStore.setState({ user_id: '100', isAuthenticated: true });
+    useAuthStore.setState({ user_id: '100', isAuthenticated: true, tokenValid: true });
   });
 
   function expense(over = {}) {
@@ -425,18 +443,26 @@ describe('syncSplitwiseInbox', () => {
     expect(await AsyncStorage.getItem(SPLITWISE_WATERMARK_KEY)).toBe('2026-08-01T00:00:00.000Z');
   });
 
-  it('raises the expired flag on a 401 so the screen can toast', async () => {
+  it('reports the auth failure to authStore on a 401', async () => {
     await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
     (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
     await useTransactionStore.getState().syncSplitwiseInbox();
-    expect(useTransactionStore.getState().splitwiseAuthExpired).toBe(true);
+    expect(useAuthStore.getState().tokenValid).toBe(false);
   });
 
   it('stays silent for a non-auth failure', async () => {
     await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
     (getExpensesUpdatedAfter as jest.Mock).mockRejectedValue(new Error('SPLITWISE_ERROR'));
     await useTransactionStore.getState().syncSplitwiseInbox();
-    expect(useTransactionStore.getState().splitwiseAuthExpired).toBe(false);
+    expect(useAuthStore.getState().tokenValid).toBe(true);
+  });
+
+  it('reports auth success after a clean pass so the banner clears', async () => {
+    useAuthStore.setState({ tokenValid: false });
+    await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, '2026-08-01T00:00:00.000Z');
+    (getExpensesUpdatedAfter as jest.Mock).mockResolvedValue([]);
+    await useTransactionStore.getState().syncSplitwiseInbox();
+    expect(useAuthStore.getState().tokenValid).toBe(true);
   });
 
   it('does nothing when the user is not signed in to Splitwise', async () => {

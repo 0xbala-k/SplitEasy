@@ -8,7 +8,7 @@ import { usePlaidStore, PlaidAccount } from '@/stores/plaidStore';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 
 export default function SettingsScreen() {
-  const { display_name, avatar_url, signOut } = useAuthStore();
+  const { display_name, avatar_url, signOut, tokenValid } = useAuthStore();
   const { accounts, isLinked, disconnect } = usePlaidStore();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -16,7 +16,7 @@ export default function SettingsScreen() {
   function confirmSignOut() {
     showDialog(
       'Sign Out',
-      'This will remove all local data from this device. Your Splitwise data is safe.',
+      'This signs you out of Splitwise on this device. Your transactions, splits and vacations stay on this device.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -80,9 +80,15 @@ export default function SettingsScreen() {
           <Text style={styles.profileName} numberOfLines={1}>{display_name ?? 'Unknown'}</Text>
           <Text style={styles.profileSub}>Splitwise account</Text>
         </View>
-        <View style={styles.splitwiseBadge}>
-          <Ionicons name="checkmark-circle" size={16} color={Colors.success} />
-          <Text style={styles.splitwiseBadgeText}>Connected</Text>
+        <View style={[styles.splitwiseBadge, !tokenValid && styles.splitwiseBadgeWarn]}>
+          <Ionicons
+            name={tokenValid ? 'checkmark-circle' : 'alert-circle'}
+            size={14}
+            color={tokenValid ? Colors.success : '#92400E'}
+          />
+          <Text style={[styles.splitwiseBadgeText, !tokenValid && styles.splitwiseBadgeTextWarn]}>
+            {tokenValid ? 'Connected' : 'Needs attention'}
+          </Text>
         </View>
       </View>
 
@@ -245,6 +251,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.success,
   },
+  splitwiseBadgeWarn: { backgroundColor: '#FEF3C7' },
+  splitwiseBadgeTextWarn: { color: '#92400E' },
 
   sectionLabel: {
     fontSize: 12,

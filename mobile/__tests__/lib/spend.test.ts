@@ -91,6 +91,17 @@ describe('myShareCentsByTransaction', () => {
     expect(shares.get('a')).toBe(500);
     expect(shares.get('b')).toBe(400);
   });
+
+  it('counts amount_each, not the full amount, for a queued local-first split with no expense id yet', () => {
+    // Task 14: split creation is local-first — status flips to 'split'
+    // immediately, but splitwise_expense_id stays null until the queued push
+    // backfills it. The Spending tab must show the owed share, not the full
+    // transaction amount, while it's queued.
+    const shares = myShareCentsByTransaction([
+      row({ id: 'a', amount: 60, status: 'split', splitwise_expense_id: null, amount_each: 20 }),
+    ]);
+    expect(shares.get('a')).toBe(2000);
+  });
 });
 
 describe('monthKeyOf', () => {

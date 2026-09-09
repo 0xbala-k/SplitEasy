@@ -95,12 +95,33 @@ export interface Transaction {
 export interface SplitDecision {
   id: string;                    // locally generated UUID
   transaction_id: string;
-  splitwise_expense_id: string;  // idempotency key
+  /**
+   * Splitwise's expense id, and the idempotency key for pushes.
+   *
+   * Null while the split is committed locally but not yet accepted by
+   * Splitwise (see pending_splitwise_ops). Every consumer must handle null —
+   * grouping keys fall back to transaction_id.
+   */
+  splitwise_expense_id: string | null;
   friend_ids: string[];          // stored as JSON in DB; parsed on read
   friend_names: string[];        // same order as friend_ids; for offline display
   amount_each: number;
   created_at: string;
   description?: string;          // custom title; falls back to merchant_name for display
+}
+
+export type PendingOpType = 'create' | 'update' | 'delete';
+
+export interface PendingOp {
+  id: string;
+  op_type: PendingOpType;
+  transaction_id: string | null;
+  expense_id: string | null;
+  /** JSON-serialized ExpenseParams. */
+  payload: string;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
 }
 
 export interface TransactionWithSplit extends Transaction {

@@ -1,6 +1,6 @@
 // mobile/lib/db.ts
 import * as SQLite from 'expo-sqlite';
-import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem } from '@/lib/types';
+import { Transaction, PlaidTransaction, SplitDecision, TransactionStatus, HistoryItem, ReviewItem, ReviewReason, RekeyResult, SplitwiseInboxItem, SplitwiseFriend, SplitwiseGroup, PendingOp } from '@/lib/types';
 import { Vacation, CreateVacationInput, VacationStatus } from '@/lib/types';
 import { generateId } from '@/lib/id';
 import { todayLocal } from '@/lib/date';
@@ -8,6 +8,7 @@ import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
 import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
+import { collapseOps } from '@/lib/splitwiseQueue';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -158,11 +159,41 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     await d.execAsync(`ALTER TABLE transactions ADD COLUMN edited_fields TEXT;`);
     await d.execAsync(`ALTER TABLE splitwise_inbox ADD COLUMN edited_fields TEXT;`);
   }
+  if (version < 9) {
+    // Ungated for the same reason as vacation_id above: these tables are not in
+    // the base `version < 1` CREATE TABLE, so a fresh install (version 0) must
+    // receive them here too.
+    await d.execAsync(`
+      CREATE TABLE IF NOT EXISTS splitwise_friends (
+        id           TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        avatar_url   TEXT,
+        cached_at    TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS splitwise_groups (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        member_ids   TEXT NOT NULL,
+        member_names TEXT NOT NULL,
+        cached_at    TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pending_splitwise_ops (
+        id             TEXT PRIMARY KEY,
+        op_type        TEXT NOT NULL,
+        transaction_id TEXT,
+        expense_id     TEXT,
+        payload        TEXT NOT NULL,
+        attempts       INTEGER NOT NULL DEFAULT 0,
+        last_error     TEXT,
+        created_at     TEXT NOT NULL
+      );
+    `);
+  }
   // Only stamp when a migration actually ran, to avoid a file-header write on
   // every cold start. Keep the literal in sync with the highest block above:
   // when adding a `version < N` block, bump this to N.
-  if (version < 8) {
-    await d.execAsync(`PRAGMA user_version = 8;`);
+  if (version < 9) {
+    await d.execAsync(`PRAGMA user_version = 9;`);
   }
   return d;
 }
@@ -1373,4 +1404,101 @@ export async function deleteImportedExpense(expenseId: string, tombstone: boolea
       );
     }
   });
+}
+
+export async function getCachedFriends(): Promise<SplitwiseFriend[]> {
+  const rows = await (await dbReady()).getAllAsync<{
+    id: string; display_name: string; avatar_url: string | null;
+  }>(`SELECT id, display_name, avatar_url FROM splitwise_friends ORDER BY display_name`, []);
+  return rows.map((r) => ({ ...r, avatar_url: r.avatar_url ?? null }));
+}
+
+// Wholesale replace, not merge: a friend removed on Splitwise must disappear
+// locally. Safe because nothing holds a foreign key to this table — split
+// history denormalizes friend_names for exactly this reason.
+export async function replaceCachedFriends(friends: SplitwiseFriend[]): Promise<void> {
+  const d = await dbReady();
+  const cachedAt = new Date().toISOString();
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM splitwise_friends`, []);
+    for (const f of friends) {
+      await d.runAsync(
+        `INSERT INTO splitwise_friends (id, display_name, avatar_url, cached_at) VALUES (?, ?, ?, ?)`,
+        [f.id, f.display_name, f.avatar_url, cachedAt]
+      );
+    }
+  });
+}
+
+export async function getCachedGroups(): Promise<SplitwiseGroup[]> {
+  const rows = await (await dbReady()).getAllAsync<{
+    id: string; name: string; member_ids: string; member_names: string;
+  }>(`SELECT id, name, member_ids, member_names FROM splitwise_groups ORDER BY name`, []);
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    member_ids: JSON.parse(r.member_ids),
+    member_names: JSON.parse(r.member_names),
+  }));
+}
+
+// Wholesale replace, same rationale as replaceCachedFriends above.
+export async function replaceCachedGroups(groups: SplitwiseGroup[]): Promise<void> {
+  const d = await dbReady();
+  const cachedAt = new Date().toISOString();
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM splitwise_groups`, []);
+    for (const g of groups) {
+      await d.runAsync(
+        `INSERT INTO splitwise_groups (id, name, member_ids, member_names, cached_at) VALUES (?, ?, ?, ?, ?)`,
+        [g.id, g.name, JSON.stringify(g.member_ids), JSON.stringify(g.member_names), cachedAt]
+      );
+    }
+  });
+}
+
+export async function getPendingOps(): Promise<PendingOp[]> {
+  return (await dbReady()).getAllAsync<PendingOp>(
+    `SELECT * FROM pending_splitwise_ops ORDER BY created_at ASC`, []
+  );
+}
+
+// Collapses before writing: the queue's invariant is at most one pending op per
+// transaction, so an edit folds into an unsent create instead of chasing it.
+export async function enqueueOp(op: PendingOp): Promise<void> {
+  const d = await dbReady();
+  const current = await getPendingOps();
+  const next = collapseOps(current, op);
+  await d.withTransactionAsync(async () => {
+    await d.runAsync(`DELETE FROM pending_splitwise_ops`, []);
+    for (const o of next) {
+      await d.runAsync(
+        `INSERT INTO pending_splitwise_ops
+           (id, op_type, transaction_id, expense_id, payload, attempts, last_error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [o.id, o.op_type, o.transaction_id, o.expense_id, o.payload, o.attempts, o.last_error, o.created_at]
+      );
+    }
+  });
+}
+
+export async function dequeueOp(id: string): Promise<void> {
+  await (await dbReady()).runAsync(`DELETE FROM pending_splitwise_ops WHERE id = ?`, [id]);
+}
+
+export async function recordOpFailure(id: string, error: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE pending_splitwise_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?`,
+    [error, id]
+  );
+}
+
+// Fills in the Splitwise expense id after a create lands — either the normal
+// success path, or a retry that adopted a matching expense instead of
+// creating a duplicate (see splitwiseQueue.findMatchingExpense).
+export async function backfillExpenseId(transactionId: string, expenseId: string): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE split_decisions SET splitwise_expense_id = ? WHERE transaction_id = ?`,
+    [expenseId, transactionId]
+  );
 }

@@ -59,13 +59,30 @@ export function myShareCentsByTransaction(rows: SpendRow[]): Map<string, number>
   const expenses = new Map<string, SpendRow[]>();
 
   for (const r of rows) {
-    if (r.status === 'skipped' || !r.splitwise_expense_id) {
+    if (r.status === 'skipped') {
       out.set(r.id, Math.round(r.amount * 100));
       continue;
     }
-    const members = expenses.get(r.splitwise_expense_id) ?? [];
+    // A local-first split gets status 'split' immediately, but
+    // splitwise_expense_id stays null until the queued push backfills it.
+    // Group those under the row's own id so they still show amount_each
+    // (the correct owed share) instead of the full transaction amount.
+    //
+    // Known limitation: if such a queued split is actually part of a
+    // COMBINED expense (multiple transactions sharing one Splitwise
+    // expense), each member row has its own distinct id and the same null
+    // splitwise_expense_id, so this groups each member alone instead of
+    // pro-rating them together — each shows its full owner-owed amount_each
+    // rather than its pro-rated slice, until the queue flushes and backfills
+    // the shared splitwise_expense_id (at which point they group correctly).
+    // This is a real but temporary imprecision, strictly better than the
+    // full-raw-amount overcount it replaces, and self-corrects once the push
+    // succeeds. Real pro-rating here would need a schema change (a stable
+    // combine-group id that survives before backfill) — out of scope.
+    const key = r.splitwise_expense_id ?? r.id;
+    const members = expenses.get(key) ?? [];
     members.push(r);
-    expenses.set(r.splitwise_expense_id, members);
+    expenses.set(key, members);
   }
 
   for (const members of expenses.values()) {

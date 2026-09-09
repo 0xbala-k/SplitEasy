@@ -79,7 +79,7 @@ interface ExpenseParams {
 
 // Builds the Splitwise indexed user body shared by create_expense and update_expense.
 // Returns the body plus the owner's owed share in cents (the "amount each" surfaced to the UI).
-function buildExpenseBody(params: ExpenseParams): { body: Record<string, string>; ownerOwedCents: number } {
+export function buildExpenseBody(params: ExpenseParams): { body: Record<string, string>; ownerOwedCents: number } {
   let ownerOwedCents: number;
 
   const body: Record<string, string> = {

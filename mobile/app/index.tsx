@@ -7,7 +7,7 @@ import { usePlaidStore } from '@/stores/plaidStore';
 
 export default function Index() {
   const router = useRouter();
-  const { isAuthenticated, isHydrated: authHydrated } = useAuthStore();
+  const { hasSession, isHydrated: authHydrated } = useAuthStore();
   const { isLinked, isHydrated: plaidHydrated } = usePlaidStore();
   const didNavigate = useRef(false);
 
@@ -21,14 +21,18 @@ export default function Index() {
     if (!ready || didNavigate.current) return;
     didNavigate.current = true;
 
-    const path = !isAuthenticated
+    // Routes on hasSession, NOT on token validity. A dead token (expired, or a
+    // lapsed Splitwise Pro subscription) must still open the app — the local
+    // database holds every transaction, split and vacation, and bouncing to the
+    // welcome screen makes that data unreachable.
+    const path = !hasSession
       ? '/(auth)/'
       : !isLinked
         ? '/(auth)/bank-connect'
         : '/(tabs)/';
 
     router.replace(path);
-  }, [ready, isAuthenticated, isLinked, router]);
+  }, [ready, hasSession, isLinked, router]);
 
   const statusLabel = !authHydrated
     ? 'Restoring session…'

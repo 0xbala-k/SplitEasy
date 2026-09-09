@@ -53,7 +53,6 @@ export default function NewTransactionsScreen() {
     transactions, isLoading, review, load, refresh, skip, loadReview, resolveReview,
     deleteSplit, deleteCombinedSplit, merchantBuckets, setBucket,
     splitwiseInbox, loadInbox, acceptInboxItem, dismissInboxItem,
-    splitwiseAuthExpired, clearSplitwiseAuthExpired,
     editTransaction, editInboxItem, excludeTransaction, addManualTransaction,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
@@ -90,14 +89,6 @@ export default function NewTransactionsScreen() {
     const unsub = NetInfo.addEventListener((state) => setIsConnected(!!state.isConnected));
     return unsub;
   }, []);
-
-  // The poll swallows its own errors so it can't fail the Plaid refresh; this
-  // is the one place a dead Splitwise session becomes visible.
-  useEffect(() => {
-    if (!splitwiseAuthExpired) return;
-    toast.show('Splitwise session expired. Please sign in again.', 'error');
-    clearSplitwiseAuthExpired();
-  }, [splitwiseAuthExpired, clearSplitwiseAuthExpired, toast]);
 
   // Present from an effect, after the sheet has rendered with a target —
   // TransactionDetailSheet returns null in 'edit'/'inbox' mode until it has

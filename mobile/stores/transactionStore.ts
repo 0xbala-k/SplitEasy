@@ -47,9 +47,6 @@ interface TransactionState {
   review: ReviewItem[];
   merchantBuckets: Record<string, Bucket>;
   splitwiseInbox: SplitwiseInboxItem[];
-  // Raised when the poll hits a 401. The Transactions screen reads it, toasts
-  // once, and clears it — the store never shows UI itself.
-  splitwiseAuthExpired: boolean;
   load: () => Promise<void>;
   refresh: () => Promise<void>;
   skip: (id: string) => Promise<void>;
@@ -64,7 +61,6 @@ interface TransactionState {
   syncSplitwiseInbox: () => Promise<void>;
   acceptInboxItem: (item: SplitwiseInboxItem, bucket: Bucket) => Promise<void>;
   dismissInboxItem: (expenseId: string) => Promise<void>;
-  clearSplitwiseAuthExpired: () => void;
   editTransaction: (id: string, patch: TransactionFieldPatch) => Promise<void>;
   editInboxItem: (expenseId: string, patch: InboxFieldPatch) => Promise<void>;
   excludeTransaction: (id: string) => Promise<void>;
@@ -78,7 +74,6 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   review: [],
   merchantBuckets: {},
   splitwiseInbox: [],
-  splitwiseAuthExpired: false,
 
   load: async () => {
     set({ isLoading: true });
@@ -163,7 +158,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
 
   deleteSplit: async (transactionId, splitwiseExpenseId) => {
     // Splitwise first: if it fails we make no local change, so the two stay in sync.
-    await deleteExpense(splitwiseExpenseId);
+    try {
+      await deleteExpense(splitwiseExpenseId);
+    } catch (err) {
+      if (err instanceof SplitwiseAuthError) {
+        useAuthStore.getState().reportAuthFailure();
+      }
+      throw err;
+    }
     await deleteSplitDecision(transactionId);
     await updateTransactionStatus(transactionId, 'new');
     await get().load();
@@ -172,7 +174,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   deleteCombinedSplit: async (transactionIds, splitwiseExpenseId) => {
     // Delete the shared Splitwise expense once, then revert every member locally
     // in a single transaction so a failure can't leave the group half-reverted.
-    await deleteExpense(splitwiseExpenseId);
+    try {
+      await deleteExpense(splitwiseExpenseId);
+    } catch (err) {
+      if (err instanceof SplitwiseAuthError) {
+        useAuthStore.getState().reportAuthFailure();
+      }
+      throw err;
+    }
     await revertCombinedSplit(transactionIds);
     await get().load();
   },
@@ -239,15 +248,15 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
       }
       await AsyncStorage.setItem(SPLITWISE_WATERMARK_KEY, startedAt);
       await get().loadInbox();
+      useAuthStore.getState().reportAuthSuccess();
     } catch (err) {
-      // The screen owns the toast, so the store only raises a flag. Any other
-      // error is intentionally silent: a Splitwise outage should not nag a
-      // user who was only pulling to refresh their Plaid transactions.
-      if (err instanceof SplitwiseAuthError) set({ splitwiseAuthExpired: true });
+      // Any other error is intentionally quiet: a Splitwise outage should not
+      // nag a user who was only pulling to refresh their Plaid transactions.
+      if (err instanceof SplitwiseAuthError) {
+        useAuthStore.getState().reportAuthFailure();
+      }
     }
   },
-
-  clearSplitwiseAuthExpired: () => set({ splitwiseAuthExpired: false }),
 
   acceptInboxItem: async (item, bucket) => {
     const active = useVacationStore.getState().activeVacation;
