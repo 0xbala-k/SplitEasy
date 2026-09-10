@@ -31,13 +31,20 @@ jest.mock('@/components/EditDatesSheet', () => ({
 let lastGroupPickerProps: {
   groups: unknown; selectedGroupId: unknown; onSelect: (group: unknown) => void;
 } | null = null;
+// Wired to the ref via useImperativeHandle so the failure-path test can
+// assert the sheet was NOT dismissed on a rejected write.
+const mockGroupDismiss = jest.fn();
 jest.mock('@/components/GroupPickerSheet', () => ({
-  GroupPickerSheet: require('react').forwardRef((props: typeof lastGroupPickerProps, _ref: unknown) => {
+  GroupPickerSheet: require('react').forwardRef((props: typeof lastGroupPickerProps, ref: unknown) => {
     lastGroupPickerProps = props;
+    require('react').useImperativeHandle(ref, () => ({ present: jest.fn(), dismiss: mockGroupDismiss }));
     return null;
   }),
 }));
-jest.mock('@/components/ToastProvider', () => ({ useToast: () => ({ show: jest.fn() }) }));
+// A single shared spy (rather than a fresh jest.fn() per render) so a test
+// can assert on toast calls that happen after the initial render.
+const mockToastShow = jest.fn();
+jest.mock('@/components/ToastProvider', () => ({ useToast: () => ({ show: mockToastShow }) }));
 jest.mock('@/lib/db', () => ({
   getVacationPendingTransactions: jest.fn().mockResolvedValue([]),
   getVacationHistory: jest.fn(),
@@ -158,6 +165,25 @@ test('picking a group persists it', async () => {
   });
 
   await waitFor(() => expect(updateGroup).toHaveBeenCalledWith('v1', group));
+});
+
+test('a rejected group update shows an error toast and leaves the sheet open', async () => {
+  const group = { id: 'g1', name: 'Roommates', member_ids: ['1', '2'], member_names: ['Alice', 'Bob'] };
+  useGroupStore.setState({ groups: [group] });
+  const updateGroup = jest.fn().mockRejectedValue(new Error('network'));
+  (useVacationStore as unknown as { setState: (patch: Record<string, unknown>) => void }).setState({ updateGroup });
+  const { findByLabelText } = renderVacation({ splitwise_group_id: null, splitwise_group_name: null });
+
+  fireEvent.press(await findByLabelText('Add Splitwise group'));
+  await waitFor(() => expect(lastGroupPickerProps).not.toBeNull());
+  await act(async () => {
+    lastGroupPickerProps!.onSelect(group);
+  });
+
+  await waitFor(() =>
+    expect(mockToastShow).toHaveBeenCalledWith('Could not update the group. Please try again.', 'error')
+  );
+  expect(mockGroupDismiss).not.toHaveBeenCalled();
 });
 
 test('a linked trip shows the group name and can change it', async () => {

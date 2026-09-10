@@ -42,6 +42,11 @@ export default function VacationDetailScreen() {
   const loadGroups = useGroupStore((s) => s.load);
 
   const vacation = vacations.find((v) => v.id === id) ?? null;
+  // Same rule as canEditDates below — an ended trip's splits are history, and
+  // a going-forward-only link can no longer do anything for it. Computed here
+  // (rather than after the early-return guard) so the loadGroups effect,
+  // which must stay an unconditional hook call, can depend on it.
+  const canEditGroup = vacation ? vacation.status !== 'ended' : false;
 
   const [pending, setPending] = useState<Transaction[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -51,7 +56,6 @@ export default function VacationDetailScreen() {
   const [pickerToken, setPickerToken] = useState(0);
   const [addToken, setAddToken] = useState(0);
   const [datesToken, setDatesToken] = useState(0);
-  const [groupToken, setGroupToken] = useState(0);
   const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add' | 'dates' | 'group'>(null);
   const pickerRef = useRef<BottomSheetModal>(null);
   const addRef = useRef<BottomSheetModal>(null);
@@ -72,8 +76,9 @@ export default function VacationDetailScreen() {
   );
 
   useEffect(() => {
+    if (!canEditGroup) return;
     void loadGroups();
-  }, [loadGroups]);
+  }, [loadGroups, canEditGroup]);
 
   // Present sheets from an effect (after the modal has mounted), not synchronously
   // in the tap handler — on the first tap the modal ref is still null otherwise.
@@ -221,9 +226,9 @@ export default function VacationDetailScreen() {
   };
 
   const handleSelectGroup = async (group: SplitwiseGroup | null) => {
-    groupRef.current?.dismiss();
     try {
       await updateGroup(vacation.id, group);
+      groupRef.current?.dismiss();
       toast.show(group ? `Linked to ${group.name}` : 'Group removed', 'success');
     } catch {
       toast.show('Could not update the group. Please try again.', 'error');
@@ -235,9 +240,6 @@ export default function VacationDetailScreen() {
   // An ended trip's dates are history — editing them would only invite a
   // reconcile that can no longer act on them.
   const canEditDates = vacation.status !== 'ended';
-  // Same rule as canEditDates — an ended trip's splits are history, and a
-  // going-forward-only link can no longer do anything for it.
-  const canEditGroup = vacation.status !== 'ended';
   const statusLabel = vacation.status === 'active' ? 'Active' : vacation.status === 'draft' ? 'Draft' : 'Ended';
   const mixedCurrency = new Set(pending.map((t) => t.currency)).size > 1;
 
@@ -291,7 +293,7 @@ export default function VacationDetailScreen() {
         {canEditGroup ? (
           <Pressable
             style={styles.groupChip}
-            onPress={() => { setGroupToken((t) => t + 1); setPendingPresent('group'); }}
+            onPress={() => setPendingPresent('group')}
             accessibilityRole="button"
             accessibilityLabel={vacation.splitwise_group_name ? 'Change Splitwise group' : 'Add Splitwise group'}
           >

@@ -63,7 +63,7 @@ export const GroupPickerSheet = forwardRef<BottomSheetModal, Props>(
             return (
               <Pressable
                 style={[styles.row, isSelected && styles.rowSelected]}
-                onPress={() => onSelect(isSelected ? null : item)}
+                onPress={() => onSelect(item)}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: isSelected }}
                 accessibilityLabel={item.name}

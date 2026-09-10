@@ -52,6 +52,18 @@ test('picking a group reports the whole group, not just its id', () => {
   expect(onSelect).toHaveBeenCalledWith(groups[1]);
 });
 
+test('tapping the already-selected row reports that group, never null', () => {
+  const onSelect = jest.fn();
+  const { getByText } = render(
+    <GroupPickerSheet groups={groups} selectedGroupId="g1" onSelect={onSelect} />
+  );
+
+  fireEvent.press(getByText('Roommates'));
+
+  expect(onSelect).toHaveBeenCalledWith(groups[0]);
+  expect(onSelect).not.toHaveBeenCalledWith(null);
+});
+
 test('picking None reports null', () => {
   const onSelect = jest.fn();
   const { getByText } = render(
