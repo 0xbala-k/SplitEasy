@@ -1098,6 +1098,33 @@ export async function updateVacationDates(
 }
 
 /**
+ * Link or unlink a vacation's Splitwise group. Pass null to unlink.
+ *
+ * The three group columns are one fact and are always written together —
+ * a vacation with an id but no member ids would silently stop pre-selecting
+ * the right people in the split picker.
+ *
+ * Unlike updateVacationDates this needs no conflict check and no reconcile:
+ * a group cannot change a vacation's status.
+ */
+export async function updateVacationGroup(
+  id: string,
+  group: SplitwiseGroup | null
+): Promise<void> {
+  await (await dbReady()).runAsync(
+    `UPDATE vacations
+     SET splitwise_group_id = ?, splitwise_group_name = ?, splitwise_group_member_ids = ?
+     WHERE id = ?`,
+    [
+      group?.id ?? null,
+      group?.name ?? null,
+      group ? JSON.stringify(group.member_ids) : null,
+      id,
+    ]
+  );
+}
+
+/**
  * Every committed, bucketed transaction, joined to its split decision and its
  * vacation. `bucket IS NOT NULL` is what excludes both uncommitted
  * transactions and everything that predates the spending tracker.

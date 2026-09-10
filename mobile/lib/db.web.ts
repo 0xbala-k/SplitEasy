@@ -905,6 +905,29 @@ export async function updateVacationDates(
 }
 
 /**
+ * Link or unlink a vacation's Splitwise group. Mirrors lib/db.ts's
+ * updateVacationGroup — see it for why all three fields move together.
+ * Member ids stay a real array here, as createVacation already stores them.
+ */
+export async function updateVacationGroup(
+  id: string,
+  group: SplitwiseGroup | null
+): Promise<void> {
+  const tx = (await dbReady()).transaction(VACATION_STORE, 'readwrite');
+  const store = tx.objectStore(VACATION_STORE);
+  const existing = await req(store.get(id) as IDBRequest<Vacation | undefined>);
+  if (existing) {
+    store.put({
+      ...existing,
+      splitwise_group_id: group?.id ?? null,
+      splitwise_group_name: group?.name ?? null,
+      splitwise_group_member_ids: group?.member_ids ?? null,
+    });
+  }
+  await done(tx);
+}
+
+/**
  * Every committed, bucketed transaction, joined to its split decision and its
  * vacation. `bucket` truthy is what excludes both uncommitted transactions
  * and everything that predates the spending tracker — mirrors lib/db.ts's
