@@ -242,10 +242,14 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
     if (!expenseId) throw new Error('SPLIT_NOT_PUSHED');
 
     if (item.reason === 'reversed') {
-      if (item.transaction_ids.length > 1) {
-        await get().deleteCombinedSplit(item.transaction_ids, expenseId);
+      // Revert every member of the expense (not just the flagged ones), so no
+      // sibling that posted normally is left pointing at a deleted expense —
+      // then delete only the flagged rows outright. A sibling that posted
+      // normally reverts to 'new' instead of being deleted.
+      if (item.member_transaction_ids.length > 1) {
+        await get().deleteCombinedSplit(item.member_transaction_ids, expenseId);
       } else {
-        await get().deleteSplit(item.transaction_ids[0], expenseId);
+        await get().deleteSplit(item.member_transaction_ids[0], expenseId);
       }
       await deleteTransactionsByPlaidIds(item.transaction_ids);
       await get().load();
@@ -254,30 +258,38 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
     }
 
     const decision = await getSplitDecision(item.transaction_ids[0]);
-    const friendIds = decision?.friend_ids ?? [];
+    // An absent decision has no friends to preserve — pushing forward would
+    // rewrite the expense as owner-only, silently removing every participant.
+    if (!decision) throw new Error('SPLIT_DECISION_MISSING');
+    const friendIds = decision.friend_ids;
     let friendShares: Record<string, number> | undefined;
+    let groupId: string | undefined;
     try {
-      const shares = await getExpense(expenseId);
+      const { shares, groupId: fetchedGroupId } = await getExpense(expenseId);
       friendShares = scaleFriendShares(
         shares,
         friendIds,
         item.amount_changed_from ?? 0,
         item.amount
       );
+      groupId = fetchedGroupId ?? undefined;
     } catch {
-      // Network or auth failure reading the current shares: fall back to an
-      // equal split of the new total. The user can still correct it via Edit.
+      // Network or auth failure reading the current shares/group: fall back to
+      // an equal split of the new total with no group. The user can still
+      // correct either via Edit.
       friendShares = undefined;
+      groupId = undefined;
     }
 
     try {
       await updateExpense(expenseId, {
         amount: item.amount,
-        description: decision?.description || item.merchant_name,
+        description: decision.description || item.merchant_name,
         currency: item.currency,
         currentUserId: useAuthStore.getState().user_id!,
         friendIds,
         friendShares,
+        groupId,
       });
     } catch (err) {
       if (err instanceof SplitwiseAuthError) useAuthStore.getState().reportAuthFailure();

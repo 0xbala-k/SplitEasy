@@ -145,7 +145,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           // this assertion can be unsound for a split that hasn't pushed yet.
           // A real guard (block editing, or reroute into the queue) belongs
           // to whichever task closes that gap, not this one.
-          const shares = await getExpense(editDecision.splitwise_expense_id!);
+          const { shares } = await getExpense(editDecision.splitwise_expense_id!);
           if (ignored) return;
           const amounts: Record<string, number> = {};
           editDecision.friend_ids.forEach((fid) => {
