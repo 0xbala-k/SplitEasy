@@ -28,6 +28,7 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn() }),
   useFocusEffect: (cb: () => void) => require('react').useEffect(cb, []),
 }));
+jest.mock('@/lib/dialog', () => ({ showDialog: jest.fn() }));
 
 import React from 'react';
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
@@ -35,6 +36,7 @@ import TransactionsScreen from '@/app/(tabs)/index';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useVacationStore } from '@/stores/vacationStore';
 import { getSplitDecision } from '@/lib/db';
+import { showDialog } from '@/lib/dialog';
 import { ReviewItem } from '@/lib/types';
 import { ToastProvider } from '@/components/ToastProvider';
 
@@ -43,9 +45,18 @@ function reviewItem(over: Partial<ReviewItem> = {}): ReviewItem {
     id: 'p1', merchant_name: 'Trader Joe\'s', amount: 47.85, amount_changed_from: 42.1,
     currency: 'USD', date: '2026-07-01', reason: 'amount_changed',
     split: { friend_names: ['Alice'], amount_each: 23.93 },
-    splitwise_expense_id: 'e1', expense_id: 'e1', transaction_ids: ['p1'],
+    splitwise_expense_id: 'e1', expense_id: 'e1',
+    transaction_ids: ['p1'], member_transaction_ids: ['p1'],
     ...over,
   };
+}
+
+// Confirms whatever dialog is showing by pressing its destructive button —
+// mirrors the pattern used for history.tsx's identical "Delete split?" /
+// "Remove from SplitEasy?" confirms.
+function confirmDialog() {
+  const buttons = (showDialog as jest.Mock).mock.calls.at(-1)![2];
+  buttons.find((b: { style?: string }) => b.style === 'destructive').onPress();
 }
 
 beforeEach(() => {
@@ -134,7 +145,7 @@ test('tapping a reversed review row opens the action sheet with delete/keep opti
   expect(await screen.findByText('Keep the split')).toBeTruthy();
 });
 
-test('accepting a reversed review calls acceptReview', async () => {
+test('tapping Delete expense on a reversed row confirms before deleting, and does not call acceptReview until confirmed', async () => {
   const acceptReview = jest.fn().mockResolvedValue(undefined);
   useTransactionStore.setState({
     review: [reviewItem({ reason: 'reversed', amount_changed_from: null })],
@@ -144,6 +155,26 @@ test('accepting a reversed review calls acceptReview', async () => {
 
   fireEvent.press(await screen.findByLabelText('Review reversed charge for Trader Joe\'s'));
   fireEvent.press(await screen.findByText('Delete expense'));
+
+  expect(showDialog).toHaveBeenCalledWith(
+    'Charge reversed',
+    expect.stringContaining('never posted'),
+    expect.any(Array)
+  );
+  expect(acceptReview).not.toHaveBeenCalled();
+});
+
+test('confirming the reversed-charge dialog calls acceptReview', async () => {
+  const acceptReview = jest.fn().mockResolvedValue(undefined);
+  useTransactionStore.setState({
+    review: [reviewItem({ reason: 'reversed', amount_changed_from: null })],
+    acceptReview,
+  });
+  render(<TransactionsScreen />);
+
+  fireEvent.press(await screen.findByLabelText('Review reversed charge for Trader Joe\'s'));
+  fireEvent.press(await screen.findByText('Delete expense'));
+  confirmDialog();
 
   await waitFor(() => expect(acceptReview).toHaveBeenCalledWith(
     expect.objectContaining({ id: 'p1', reason: 'reversed' })
@@ -179,4 +210,25 @@ test('choosing Edit split dismisses the sheet and opens the split editor', async
   fireEvent.press(await screen.findByText('Edit split'));
 
   await waitFor(() => expect(getSplitDecision).toHaveBeenCalledWith('p1'));
+});
+
+test('choosing Edit split on a not-yet-pushed split shows a toast instead of opening the editor', async () => {
+  jest.useFakeTimers();
+  try {
+    useTransactionStore.setState({
+      review: [reviewItem({ splitwise_expense_id: null, expense_id: 'p1' })],
+    });
+    render(<ToastProvider><TransactionsScreen /></ToastProvider>);
+
+    fireEvent.press(await screen.findByLabelText('Review amount change for Trader Joe\'s'));
+    fireEvent.press(await screen.findByText('Edit split'));
+
+    expect(await screen.findByText(
+      "That split hasn't reached Splitwise yet. Try again in a moment."
+    )).toBeTruthy();
+    expect(getSplitDecision).not.toHaveBeenCalled();
+  } finally {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  }
 });

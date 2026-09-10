@@ -13,6 +13,7 @@ import { ReauthBanner } from '@/components/ReauthBanner';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
+import { showDialog } from '@/lib/dialog';
 import {
   getSplitDecision, getTransactionsByIds, removeTransactionFromVacation,
   TransactionFieldPatch, InboxFieldPatch,
@@ -341,10 +342,7 @@ export default function NewTransactionsScreen() {
     setReviewPendingPresent(true);
   }
 
-  async function handleReviewAccept() {
-    const item = reviewTarget;
-    if (!item) return;
-    reviewSheetRef.current?.dismiss();
+  async function runReviewAccept(item: ReviewItem) {
     try {
       await acceptReview(item);
       toast.show(
@@ -358,7 +356,40 @@ export default function NewTransactionsScreen() {
           : 'Could not update Splitwise. Please try again.',
         'error'
       );
+    } finally {
+      setReviewTarget(null);
     }
+  }
+
+  async function handleReviewAccept() {
+    const item = reviewTarget;
+    if (!item) return;
+    reviewSheetRef.current?.dismiss();
+
+    // Deleting the Splitwise expense is destructive and has no undo — confirm
+    // first, same as history.tsx's "Delete split?" / "Remove from
+    // SplitEasy?" dialogs for the identical operation. amount_changed stays a
+    // single tap: it's not destructive.
+    if (item.reason === 'reversed') {
+      const label = item.member_transaction_ids.length > 1
+        ? `${item.member_transaction_ids.length} transactions`
+        : item.merchant_name;
+      showDialog(
+        'Charge reversed',
+        `The pending charge for ${label} never posted. This removes the Splitwise expense and clears it from your review queue.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete expense',
+            style: 'destructive',
+            onPress: () => void runReviewAccept(item),
+          },
+        ]
+      );
+      return;
+    }
+
+    await runReviewAccept(item);
   }
 
   async function handleReviewReject() {
@@ -370,6 +401,8 @@ export default function NewTransactionsScreen() {
       toast.show(item.reason === 'reversed' ? 'Split kept' : 'Amount restored', 'success');
     } catch {
       toast.show('Could not update. Please try again.', 'error');
+    } finally {
+      setReviewTarget(null);
     }
   }
 
@@ -377,6 +410,14 @@ export default function NewTransactionsScreen() {
     const item = reviewTarget;
     if (!item) return;
     reviewSheetRef.current?.dismiss();
+    setReviewTarget(null);
+    if (!item.splitwise_expense_id) {
+      // Same guard acceptReview enforces (SPLIT_NOT_PUSHED): opening the
+      // editor here would call getExpense(undefined) instead of showing a
+      // useful message.
+      toast.show("That split hasn't reached Splitwise yet. Try again in a moment.", 'error');
+      return;
+    }
     void openReviewEdit(item);
   }
 
