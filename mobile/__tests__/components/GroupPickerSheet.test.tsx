@@ -34,7 +34,7 @@ const groups: SplitwiseGroup[] = [
 
 test('lists every group plus a None row', () => {
   const { getByText } = render(
-    <GroupPickerSheet groups={groups} selectedGroupId={null} openToken={1} onSelect={jest.fn()} />
+    <GroupPickerSheet groups={groups} selectedGroupId={null} onSelect={jest.fn()} />
   );
   expect(getByText('Roommates')).toBeTruthy();
   expect(getByText('Japan 2026')).toBeTruthy();
@@ -44,7 +44,7 @@ test('lists every group plus a None row', () => {
 test('picking a group reports the whole group, not just its id', () => {
   const onSelect = jest.fn();
   const { getByText } = render(
-    <GroupPickerSheet groups={groups} selectedGroupId={null} openToken={1} onSelect={onSelect} />
+    <GroupPickerSheet groups={groups} selectedGroupId={null} onSelect={onSelect} />
   );
 
   fireEvent.press(getByText('Japan 2026'));
@@ -55,7 +55,7 @@ test('picking a group reports the whole group, not just its id', () => {
 test('picking None reports null', () => {
   const onSelect = jest.fn();
   const { getByText } = render(
-    <GroupPickerSheet groups={groups} selectedGroupId="g1" openToken={1} onSelect={onSelect} />
+    <GroupPickerSheet groups={groups} selectedGroupId="g1" onSelect={onSelect} />
   );
 
   fireEvent.press(getByText('None'));
@@ -65,7 +65,7 @@ test('picking None reports null', () => {
 
 test('marks the current selection as checked', () => {
   const { getByLabelText } = render(
-    <GroupPickerSheet groups={groups} selectedGroupId="g1" openToken={1} onSelect={jest.fn()} />
+    <GroupPickerSheet groups={groups} selectedGroupId="g1" onSelect={jest.fn()} />
   );
   expect(getByLabelText('Roommates').props.accessibilityState.checked).toBe(true);
   expect(getByLabelText('Japan 2026').props.accessibilityState.checked).toBe(false);
@@ -73,14 +73,14 @@ test('marks the current selection as checked', () => {
 
 test('says that existing expenses are not moved', () => {
   const { getByText } = render(
-    <GroupPickerSheet groups={groups} selectedGroupId={null} openToken={1} onSelect={jest.fn()} />
+    <GroupPickerSheet groups={groups} selectedGroupId={null} onSelect={jest.fn()} />
   );
   expect(getByText(/Splits already created stay where they are/)).toBeTruthy();
 });
 
 test('renders an empty state when there are no groups', () => {
   const { getByText } = render(
-    <GroupPickerSheet groups={[]} selectedGroupId={null} openToken={1} onSelect={jest.fn()} />
+    <GroupPickerSheet groups={[]} selectedGroupId={null} onSelect={jest.fn()} />
   );
   expect(getByText('No Splitwise groups found.')).toBeTruthy();
 });

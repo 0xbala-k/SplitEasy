@@ -12,12 +12,14 @@ import {
 } from '@/lib/db';
 import { VacationConflictError } from '@/lib/vacationErrors';
 import { useVacationStore } from '@/stores/vacationStore';
+import { useGroupStore } from '@/stores/groupStore';
 import { TransactionRow } from '@/components/TransactionRow';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { AddToVacationSheet } from '@/components/AddToVacationSheet';
 import { useToast } from '@/components/ToastProvider';
 import { EditDatesSheet } from '@/components/EditDatesSheet';
-import { HistoryItem, Transaction } from '@/lib/types';
+import { GroupPickerSheet } from '@/components/GroupPickerSheet';
+import { HistoryItem, SplitwiseGroup, Transaction } from '@/lib/types';
 import { formatDayLabel, formatDayLabelWithYear } from '@/lib/date';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
@@ -34,7 +36,10 @@ export default function VacationDetailScreen() {
   const endVacation = useVacationStore((s) => s.endVacation);
   const deleteVacation = useVacationStore((s) => s.deleteVacation);
   const updateDates = useVacationStore((s) => s.updateDates);
+  const updateGroup = useVacationStore((s) => s.updateGroup);
   const activeVacation = useVacationStore((s) => s.activeVacation);
+  const groups = useGroupStore((s) => s.groups);
+  const loadGroups = useGroupStore((s) => s.load);
 
   const vacation = vacations.find((v) => v.id === id) ?? null;
 
@@ -46,10 +51,12 @@ export default function VacationDetailScreen() {
   const [pickerToken, setPickerToken] = useState(0);
   const [addToken, setAddToken] = useState(0);
   const [datesToken, setDatesToken] = useState(0);
-  const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add' | 'dates'>(null);
+  const [groupToken, setGroupToken] = useState(0);
+  const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add' | 'dates' | 'group'>(null);
   const pickerRef = useRef<BottomSheetModal>(null);
   const addRef = useRef<BottomSheetModal>(null);
   const datesRef = useRef<BottomSheetModal>(null);
+  const groupRef = useRef<BottomSheetModal>(null);
 
   const refresh = useCallback(() => {
     if (!id) return;
@@ -64,6 +71,10 @@ export default function VacationDetailScreen() {
     }, [loadVacations, refresh])
   );
 
+  useEffect(() => {
+    void loadGroups();
+  }, [loadGroups]);
+
   // Present sheets from an effect (after the modal has mounted), not synchronously
   // in the tap handler — on the first tap the modal ref is still null otherwise.
   useEffect(() => {
@@ -75,6 +86,9 @@ export default function VacationDetailScreen() {
       setPendingPresent(null);
     } else if (pendingPresent === 'dates') {
       datesRef.current?.present();
+      setPendingPresent(null);
+    } else if (pendingPresent === 'group') {
+      groupRef.current?.present();
       setPendingPresent(null);
     }
   }, [pendingPresent]);
@@ -206,11 +220,24 @@ export default function VacationDetailScreen() {
     }
   };
 
+  const handleSelectGroup = async (group: SplitwiseGroup | null) => {
+    groupRef.current?.dismiss();
+    try {
+      await updateGroup(vacation.id, group);
+      toast.show(group ? `Linked to ${group.name}` : 'Group removed', 'success');
+    } catch {
+      toast.show('Could not update the group. Please try again.', 'error');
+    }
+  };
+
   const canStart = vacation.status === 'draft' && !activeVacation;
   const canEnd = vacation.status === 'active';
   // An ended trip's dates are history — editing them would only invite a
   // reconcile that can no longer act on them.
   const canEditDates = vacation.status !== 'ended';
+  // Same rule as canEditDates — an ended trip's splits are history, and a
+  // going-forward-only link can no longer do anything for it.
+  const canEditGroup = vacation.status !== 'ended';
   const statusLabel = vacation.status === 'active' ? 'Active' : vacation.status === 'draft' ? 'Draft' : 'Ended';
   const mixedCurrency = new Set(pending.map((t) => t.currency)).size > 1;
 
@@ -261,11 +288,25 @@ export default function VacationDetailScreen() {
             </Text>
           )
         )}
-        {vacation.splitwise_group_name && (
-          <View style={styles.groupChip}>
+        {canEditGroup ? (
+          <Pressable
+            style={styles.groupChip}
+            onPress={() => { setGroupToken((t) => t + 1); setPendingPresent('group'); }}
+            accessibilityRole="button"
+            accessibilityLabel={vacation.splitwise_group_name ? 'Change Splitwise group' : 'Add Splitwise group'}
+          >
             <Ionicons name="people-outline" size={12} color={Colors.primary} />
-            <Text style={styles.groupChipText} numberOfLines={1}>{vacation.splitwise_group_name}</Text>
-          </View>
+            <Text style={styles.groupChipText} numberOfLines={1}>
+              {vacation.splitwise_group_name ?? 'Add Splitwise group'}
+            </Text>
+          </Pressable>
+        ) : (
+          vacation.splitwise_group_name && (
+            <View style={styles.groupChip}>
+              <Ionicons name="people-outline" size={12} color={Colors.primary} />
+              <Text style={styles.groupChipText} numberOfLines={1}>{vacation.splitwise_group_name}</Text>
+            </View>
+          )
         )}
       </View>
 
@@ -376,6 +417,12 @@ export default function VacationDetailScreen() {
         endDate={vacation.end_date}
         openToken={datesToken}
         onSave={handleSaveDates}
+      />
+      <GroupPickerSheet
+        ref={groupRef}
+        groups={groups}
+        selectedGroupId={vacation.splitwise_group_id}
+        onSelect={handleSelectGroup}
       />
     </View>
   );

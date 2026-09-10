@@ -9,8 +9,6 @@ import { Colors, Radius, Spacing } from '@/lib/theme';
 interface Props {
   groups: SplitwiseGroup[];
   selectedGroupId: string | null;
-  /** Bumped by the host on every present, so the list scrolls from the top. */
-  openToken: number;
   onSelect: (group: SplitwiseGroup | null) => void;
 }
 
