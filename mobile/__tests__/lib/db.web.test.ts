@@ -324,6 +324,18 @@ describe('db.web (IndexedDB)', () => {
     expect(await getSplitDecision('t1')).toBeNull();
   });
 
+  it('deleteSplitDecision clears the amount lock but keeps a merchant_name lock (Important 3)', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionFields('t1', { amount: 20, merchant_name: 'My Cafe' });
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1'));
+
+    await deleteSplitDecision('t1');
+
+    const [row] = await getTransactionsByIds(['t1']);
+    expect(row.edited_fields).toEqual(['merchant_name']);
+  });
+
   it('cascades decision deletes when transactions are deleted', async () => {
     await upsertTransactions([plaidTx('t1')]);
     await insertSplitDecision(decision('t1'));
@@ -438,6 +450,19 @@ describe('db.web (IndexedDB)', () => {
     expect(await getSplitDecision('t1')).toBeNull();
     expect(await getSplitDecision('t2')).toBeNull();
     expect((await getNewTransactions()).map((t) => t.id).sort()).toEqual(['t1', 't2']);
+  });
+
+  it('revertCombinedSplit clears the amount lock on every member but keeps other locks (Important 3)', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 10 }), plaidTx('t2', { amount: 20 })]);
+    await updateTransactionFields('t1', { amount: 10, merchant_name: 'My Cafe' });
+    await updateTransactionFields('t2', { amount: 20 });
+    await persistCombinedSplit([decision('t1'), decision('t2')]);
+
+    await revertCombinedSplit(['t1', 't2']);
+
+    const [t1, t2] = await getTransactionsByIds(['t1', 't2']);
+    expect(t1.edited_fields).toEqual(['merchant_name']);
+    expect(t2.edited_fields).toEqual([]);
   });
 
   it('getTransactionsByIds returns matching rows and skips missing ids', async () => {
@@ -580,6 +605,21 @@ describe('rekeyTransaction (IndexedDB)', () => {
     // The duplicate is gone from the Transactions list, not left behind.
     expect(await getNewTransactions()).toEqual([]);
   });
+
+  it('a locked amount is not re-raised into review on a same-id rekey (Important 3)', async () => {
+    await upsertTransactions([plaidTx('t1', { amount: 20 })]);
+    await updateTransactionFields('t1', { amount: 20 }); // locks amount while still 'new'
+    await updateTransactionStatus('t1', 'split');
+    await insertSplitDecision(decision('t1'));
+
+    const result = await rekeyTransaction('t1', plaidTx('t1', { amount: 25 }));
+
+    expect(result).toBe('changed');
+    const [row] = await getTransactionsByIds(['t1']);
+    expect(row.amount).toBe(20); // locked — the posted amount is not written
+    expect(row.review_reason ?? null).toBeNull();
+    expect(row.amount_changed_from ?? null).toBeNull();
+  });
 });
 
 describe('markTransactionsReversed (IndexedDB)', () => {
@@ -637,7 +677,7 @@ describe('getReviewTransactions / clearReview (IndexedDB)', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       id: 'new1', reason: 'amount_changed', amount: 25, amount_changed_from: 20,
-      expense_id: 'exp1', transaction_ids: ['new1'],
+      expense_id: 'exp1', transaction_ids: ['new1'], member_transaction_ids: ['new1'],
     });
     expect(items[0].split.friend_names).toEqual(['Ana']);
   });
@@ -657,6 +697,27 @@ describe('getReviewTransactions / clearReview (IndexedDB)', () => {
     expect(items[0].amount).toBe(25);
     expect(items[0].amount_changed_from).toBe(20);
     expect(items[0].transaction_ids.slice().sort()).toEqual(['new1', 'new2']);
+    expect(items[0].member_transaction_ids.slice().sort()).toEqual(['new1', 'new2']);
+  });
+
+  it('a combined split with one changed and one unchanged member sums the true expense total (Critical 1)', async () => {
+    // t1 posts at 15 (changed from 12, flagged); t2 never changes and stays
+    // at 20 — the widened filter still pulls it in as an unflagged sibling.
+    await upsertTransactions([plaidTx('t1', { amount: 12 }), plaidTx('t2', { amount: 20 })]);
+    await persistCombinedSplit([
+      decision('t1', { splitwise_expense_id: 'expShared' }),
+      decision('t2', { splitwise_expense_id: 'expShared' }),
+    ]);
+    await rekeyTransaction('t1', plaidTx('new1', { amount: 15 }));
+
+    const items = await getReviewTransactions();
+
+    expect(items).toHaveLength(1);
+    // True total: 15 + 20 = 35, not the flagged-only 15.
+    expect(items[0].amount).toBe(35);
+    expect(items[0].amount_changed_from).toBe(32);
+    expect(items[0].transaction_ids).toEqual(['new1']);
+    expect(items[0].member_transaction_ids.slice().sort()).toEqual(['new1', 't2']);
   });
 
   it('a combined group with any reversed member reads as reversed', async () => {

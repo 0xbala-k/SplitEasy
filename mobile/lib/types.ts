@@ -216,7 +216,15 @@ export interface ReviewItem {
    * is never null and never safe to send to Splitwise.
    */
   expense_id: string;
-  transaction_ids: string[];   // 1 entry for single, N for combined
+  transaction_ids: string[];   // 1 entry for single, N for combined — flagged members only
+  /**
+   * Every transaction sharing this Splitwise expense, flagged or not.
+   *
+   * `amount` is summed across all of these, so the total pushed to Splitwise
+   * is the expense's real total. `transaction_ids` stays flagged-only — those
+   * are the rows whose review is being resolved.
+   */
+  member_transaction_ids: string[];
 }
 
 export type VacationStatus = 'draft' | 'active' | 'ended';

@@ -10,7 +10,7 @@ function item(over: Partial<ReviewItem> = {}): ReviewItem {
     id: 'p1', merchant_name: 'Trader Joe\'s', amount: 47.85, amount_changed_from: 42.1,
     currency: 'USD', date: '2026-07-01', reason: 'amount_changed',
     split: { friend_names: ['Alice'], amount_each: 23.93 },
-    splitwise_expense_id: 'e1', expense_id: 'e1', transaction_ids: ['p1'],
+    splitwise_expense_id: 'e1', expense_id: 'e1', transaction_ids: ['p1'], member_transaction_ids: ['p1'],
     ...over,
   };
 }

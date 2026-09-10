@@ -299,6 +299,16 @@ test('deleteSplitDecision deletes by transaction_id', async () => {
   );
 });
 
+test('deleteSplitDecision clears the amount lock but keeps a merchant_name lock (Important 3)', async () => {
+  await initDb();
+  mockDb.getFirstAsync.mockResolvedValueOnce({ edited_fields: '["amount","merchant_name"]' });
+  await deleteSplitDecision('tx1');
+  expect(mockDb.runAsync).toHaveBeenCalledWith(
+    expect.stringContaining('UPDATE transactions SET edited_fields'),
+    ['["merchant_name"]', 'tx1']
+  );
+});
+
 test('initDb migrates a v1 install by adding both pending and description columns', async () => {
   mockDb.getFirstAsync.mockResolvedValueOnce({ user_version: 1 });
   await initDb();
@@ -642,6 +652,21 @@ describe('rekeyTransaction', () => {
     expect(result).toBe('unchanged');
     expect(mockDb.getFirstAsync).toHaveBeenCalledTimes(1);
   });
+
+  test('a locked amount is not re-raised into review on a same-id rekey (Important 3)', async () => {
+    mockDb.getFirstAsync.mockResolvedValueOnce({
+      id: 'old1', amount: 10, status: 'split', edited_fields: '["amount"]',
+    });
+    const result = await rekeyTransaction('old1', posted({ transaction_id: 'old1', amount: 12.5 }));
+    // The bank amount is still reported as "changed" for the caller's own
+    // bookkeeping, but no review is raised — and applyLocks drops `amount`
+    // from the write entirely, since it's locked.
+    expect(result).toBe('changed');
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE transactions SET id'),
+      ['old1', 'Cafe', '2026-08-01', null, null, 'old1']
+    );
+  });
 });
 
 describe('markTransactionsReversed', () => {
@@ -704,9 +729,17 @@ describe('getReviewTransactions', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       id: 'tx1', reason: 'amount_changed', amount: 12.5, amount_changed_from: 10,
-      expense_id: 'exp1', transaction_ids: ['tx1'],
+      expense_id: 'exp1', transaction_ids: ['tx1'], member_transaction_ids: ['tx1'],
     });
     expect(items[0].split.friend_names).toEqual(['Sam']);
+  });
+
+  test('widens the query so an unflagged sibling of a flagged expense is pulled in too', async () => {
+    mockDb.getAllAsync.mockResolvedValueOnce([]);
+    await getReviewTransactions();
+    const [sql] = mockDb.getAllAsync.mock.calls[0];
+    expect(sql).toContain('review_reason IS NOT NULL');
+    expect(sql).toContain('splitwise_expense_id IN');
   });
 
   test('groups combined-split members sharing an expense id, summing both amounts', async () => {
@@ -723,6 +756,28 @@ describe('getReviewTransactions', () => {
     expect(items[0].amount).toBe(20);
     expect(items[0].amount_changed_from).toBe(15);
     expect(items[0].transaction_ids.slice().sort()).toEqual(['tx1', 'tx2']);
+    expect(items[0].member_transaction_ids.slice().sort()).toEqual(['tx1', 'tx2']);
+  });
+
+  test('a combined split with one changed and one unchanged member sums the true expense total (Critical 1)', async () => {
+    // $10 posts at $12 (flagged); the $20 sibling posts unchanged and is
+    // never flagged, but the widened query still returns it.
+    mockDb.getAllAsync.mockResolvedValueOnce([
+      { id: 'tx1', merchant_name: 'Coffee', amount: 12, currency: 'USD', date: '2026-08-02', status: 'split', pending: 0, created_at: 'x',
+        review_reason: 'amount_changed', amount_changed_from: 10,
+        splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 15 },
+      { id: 'tx2', merchant_name: 'Groceries', amount: 20, currency: 'USD', date: '2026-08-01', status: 'split', pending: 0, created_at: 'x',
+        review_reason: null, amount_changed_from: null,
+        splitwise_expense_id: 'expShared', description: 'Trip', friend_names: '["Sam"]', amount_each: 15 },
+    ]);
+    const items = await getReviewTransactions();
+    expect(items).toHaveLength(1);
+    // True total: 12 + 20 = 32, not the flagged-only 12.
+    expect(items[0].amount).toBe(32);
+    expect(items[0].amount_changed_from).toBe(30);
+    // transaction_ids stays flagged-only; member_transaction_ids carries both.
+    expect(items[0].transaction_ids).toEqual(['tx1']);
+    expect(items[0].member_transaction_ids.slice().sort()).toEqual(['tx1', 'tx2']);
   });
 
   test('a combined group with any reversed member reads as reversed', async () => {
@@ -1435,5 +1490,14 @@ describe('revertReviewedAmount', () => {
   test('writes nothing for an empty id list', async () => {
     await revertReviewedAmount([]);
     expect(mockDb.getFirstAsync).not.toHaveBeenCalled();
+  });
+
+  test('wraps a combined revert in one transaction, so it cannot end up half-reverted', async () => {
+    mockDb.getFirstAsync
+      .mockResolvedValueOnce({ amount_changed_from: 10, edited_fields: null })
+      .mockResolvedValueOnce({ amount_changed_from: 20, edited_fields: null });
+    await revertReviewedAmount(['p1', 'p2']);
+    expect(mockDb.withTransactionAsync).toHaveBeenCalledTimes(1);
+    expect(mockDb.runAsync).toHaveBeenCalledTimes(2);
   });
 });
