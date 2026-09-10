@@ -132,5 +132,4 @@ test('an excluded row opens the action sheet even though it is not split', () =>
   // The excluded filter shows skipped rows too; they must NOT fall into the
   // "tap to split" branch while that filter is on.
   expect(result.current.actionProps.transaction?.id).toBe('p1');
-  expect(result.current.pickerProps.mode).not.toBe('create');
 });

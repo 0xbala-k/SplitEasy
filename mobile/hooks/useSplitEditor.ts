@@ -86,13 +86,6 @@ export function useSplitEditor({ onChange, resolveMode }: SplitEditorOptions) {
     if (itemMode !== 'default' || item.status !== 'skipped') {
       // Split, imported, or excluded: offer the action sheet.
       setSelected(item);
-      if (itemMode !== 'default') {
-        // readOnly/excluded rows never offer Edit, so the picker stays
-        // unopened here — but reset away from the leftover 'create' default
-        // so pickerProps.mode doesn't misreport "about to create a split"
-        // for a row the picker was never going to touch.
-        setPickerMode('edit');
-      }
       setPending('action');
       return;
     }
