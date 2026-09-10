@@ -627,3 +627,142 @@ test('reconciliation auto-enables and charges the receipt total when it exceeds 
   await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalledTimes(1));
   expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ amount: 39 }));
 });
+
+// --- Shares split mode -----------------------------------------------------
+//
+// Two friends (Alice, Bob) alongside Sam's usual single-friend fixture, so
+// weighted splits across three-plus participants can be exercised. Tests
+// that only need one friend just leave Bob unselected, matching how the
+// existing suite leaves Sam unselected in single-friend tests elsewhere.
+describe('shares split mode', () => {
+  beforeEach(() => {
+    (useFriendStore as jest.Mock).mockReturnValue({
+      friends: [
+        { id: 'f1', display_name: 'Alice', avatar_url: null },
+        { id: 'f2', display_name: 'Bob', avatar_url: null },
+      ],
+      isLoading: false,
+    });
+  });
+
+  test('the Shares segment appears once friends are selected', () => {
+    render(<FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={jest.fn()} />);
+    expect(screen.queryByText('Shares')).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('Alice'));
+    expect(screen.getByText('Shares')).toBeTruthy();
+  });
+
+  test('Receipt is still hidden for a combined split, Shares is not', () => {
+    const members: Transaction[] = [
+      { ...tx, id: 'p1', amount: 60 },
+      { ...tx, id: 'p2', amount: 40 },
+    ];
+    render(
+      <FriendPickerSheet transaction={null} combineTransactions={members} openToken={1} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+
+    expect(screen.getByText('Shares')).toBeTruthy();
+    expect(screen.queryByText('Receipt')).toBeNull();
+  });
+
+  test('switching to Shares seeds every participant at one share', () => {
+    render(
+      <FriendPickerSheet transaction={{ ...tx, amount: 90, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByLabelText('Bob'));
+    fireEvent.press(screen.getByText('Shares'));
+
+    // Three people, one share each, $90 -> $30.00 each.
+    expect(screen.getByText('$30.00')).toBeTruthy();
+    expect(screen.getByLabelText("Alice's share count").props.value).toBe('1');
+  });
+
+  test('increasing a share count moves the money', async () => {
+    render(
+      <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByText('Shares'));
+    // Owner 1, Alice 1 -> bump Alice to 4: $100 across 1:4 -> $20 / $80.
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+
+    expect(await screen.findByText(/\$80\.00/)).toBeTruthy();
+  });
+
+  test('the submitted friendShares match the computed split', async () => {
+    render(
+      <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByLabelText('Bob'));
+    fireEvent.press(screen.getByText('Shares'));
+    // Owner 4, Alice 1, Bob 5 - bump the owner to 4 and Bob to 5.
+    fireEvent.press(screen.getByLabelText('Increase your share count'));
+    fireEvent.press(screen.getByLabelText('Increase your share count'));
+    fireEvent.press(screen.getByLabelText('Increase your share count'));
+    for (let i = 0; i < 4; i++) fireEvent.press(screen.getByLabelText("Increase Bob's share count"));
+
+    fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+    await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalled());
+    expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ friendShares: { f1: 10, f2: 50 } }));
+  });
+
+  test('a zero share count owes nothing', async () => {
+    render(
+      <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByText('Shares'));
+    fireEvent.press(screen.getByLabelText("Decrease Alice's share count")); // 1 -> 0
+
+    fireEvent.press(screen.getByLabelText('Add split to Splitwise'));
+
+    await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalled());
+    expect(lastEnqueuedPayload()).toEqual(expect.objectContaining({ friendShares: { f1: 0 } }));
+  });
+
+  test('a share count cannot go below zero', () => {
+    render(<FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={jest.fn()} />);
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByText('Shares'));
+    fireEvent.press(screen.getByLabelText("Decrease Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Decrease Alice's share count"));
+
+    expect(screen.getByLabelText("Alice's share count").props.value).toBe('0');
+  });
+
+  test('the CTA is blocked while every share is zero', () => {
+    render(<FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={jest.fn()} />);
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByText('Shares'));
+    fireEvent.press(screen.getByLabelText('Decrease your share count'));
+    fireEvent.press(screen.getByLabelText("Decrease Alice's share count"));
+
+    expect(screen.getByLabelText('Add split to Splitwise').props.accessibilityState.disabled).toBe(true);
+  });
+
+  test('share counts do not leak into the next sheet session', () => {
+    const { rerender } = render(
+      <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByText('Shares'));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+
+    rerender(
+      <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={2} onSuccess={jest.fn()} />
+    );
+    fireEvent.press(screen.getByLabelText('Alice'));
+    fireEvent.press(screen.getByText('Shares'));
+
+    // If shareCounts had leaked, Alice would still be at 2 shares from the
+    // previous session instead of freshly reseeded at 1.
+    expect(screen.getByLabelText("Alice's share count").props.value).toBe('1');
+  });
+});

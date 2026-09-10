@@ -26,13 +26,14 @@ import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 import { OWNER_FALLBACK_ID, ReceiptItem, computeReceiptShares, toFriendShares } from '@/lib/receipt';
+import { computeShareSplit, toShareFriendAmounts } from '@/lib/shares';
 import { scanReceipt } from '@/lib/receiptScan';
 import { generateId } from '@/lib/id';
 import { ReceiptCapture } from '@/components/ReceiptCapture';
 import { ReceiptItemRow, ReceiptParticipant } from '@/components/ReceiptItemRow';
 import { ReceiptSummary } from '@/components/ReceiptSummary';
 
-type SplitMode = 'equal' | 'custom' | 'receipt';
+type SplitMode = 'equal' | 'custom' | 'shares' | 'receipt';
 type ReceiptStage = 'capture' | 'assign';
 const STEP = 0.5;
 
@@ -84,6 +85,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [submitting, setSubmitting] = useState(false);
     const [splitMode, setSplitMode] = useState<SplitMode>('equal');
     const [customAmounts, setCustomAmounts] = useState<Record<string, number>>({});
+    const [shareCounts, setShareCounts] = useState<Record<string, number>>({});
     const [receiptStage, setReceiptStage] = useState<ReceiptStage>('capture');
     const [scanning, setScanning] = useState(false);
     const [items, setItems] = useState<ReceiptItem[]>([]);
@@ -124,6 +126,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       setTipCents(0);
       setUseReceiptTotal(false);
       autoToggledRef.current = false;
+      setShareCounts({});
     }
 
     useEffect(() => {
@@ -131,6 +134,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         // Reset so an edit session's pre-fill never leaks into a later create.
         setSelected(new Set());
         setCustomAmounts({});
+        setShareCounts({});
         setSplitMode('equal');
         return;
       }
@@ -219,6 +223,15 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       () => computeReceiptShares({ ownerId, friendIds: friendIdsOrdered, items, taxCents, tipCents }),
       [ownerId, friendIdsOrdered, items, taxCents, tipCents]
     );
+    const shareCents = useMemo(
+      () => computeShareSplit({
+        totalCents: Math.round(totalAmount * 100),
+        ownerId,
+        friendIds: friendIdsOrdered,
+        counts: shareCounts,
+      }),
+      [totalAmount, ownerId, friendIdsOrdered, shareCounts]
+    );
     // The bank-charged amount, independent of `effectiveTotal` below (which
     // itself depends on `useReceiptTotal`) — this is what ReceiptSummary
     // reconciles the receipt total against.
@@ -269,7 +282,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const equalShareCents = selected.size > 0 ? Math.floor(totalCents / n) : 0;
 
     const friendTotalCents =
-      splitMode === 'receipt'
+      splitMode === 'shares'
+        ? friendIdsOrdered.reduce((s, id) => s + (shareCents[id] ?? 0), 0)
+        : splitMode === 'receipt'
         ? friendIdsOrdered.reduce((s, id) => s + (receipt.totalPerParticipantCents[id] ?? 0), 0)
         : splitMode === 'custom'
         ? selectedFriends.reduce(
@@ -283,8 +298,14 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const receiptBlocked =
       splitMode === 'receipt' &&
       (receiptStage === 'capture' || scanning || items.length === 0 || receipt.unassignedItemIds.length > 0);
+    // Every count at zero apportions nothing; submitting would create a
+    // $0-to-everyone expense.
+    const sharesBlocked =
+      splitMode === 'shares' &&
+      [ownerId, ...friendIdsOrdered].every((id) => (shareCounts[id] ?? 1) <= 0);
     const ctaDisabled =
-      selected.size === 0 || submitting || isOverBudget || title.trim() === '' || receiptBlocked;
+      selected.size === 0 || submitting || isOverBudget || title.trim() === '' ||
+      receiptBlocked || sharesBlocked;
 
     // The footer is rendered by the sheet as a component type, so whenever
     // `renderFooter`'s identity changes the whole footer subtree remounts.
@@ -347,6 +368,26 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       });
       setCustomAmounts(amounts);
       setSplitMode('custom');
+    }
+
+    // Seeds every participant at one share, so the mode opens as an equal
+    // split and is adjusted from there.
+    function switchToShares() {
+      const counts: Record<string, number> = { [ownerId]: 1 };
+      selectedFriends.forEach((f) => { counts[f.id] = 1; });
+      setShareCounts(counts);
+      setSplitMode('shares');
+    }
+
+    function adjustShareCount(id: string, delta: number) {
+      setShareCounts((prev) => ({
+        ...prev,
+        [id]: Math.max(0, (prev[id] ?? 1) + delta),
+      }));
+    }
+
+    function commitShareCount(id: string, value: number) {
+      setShareCounts((prev) => ({ ...prev, [id]: Math.max(0, Math.floor(value)) }));
     }
 
     function switchToReceipt() {
@@ -446,6 +487,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       const shares =
         splitMode === 'receipt'
           ? { friendShares: toFriendShares(receipt, ownerId) }
+          : splitMode === 'shares'
+          ? { friendShares: toShareFriendAmounts(shareCents, ownerId) }
           : splitMode === 'custom'
           ? { friendShares: customAmounts }
           : {};
@@ -605,6 +648,16 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                 Custom
               </Text>
             </Pressable>
+            <Pressable
+              style={[styles.segBtn, splitMode === 'shares' && styles.segBtnActive]}
+              onPress={switchToShares}
+              accessibilityRole="button"
+              accessibilityState={{ selected: splitMode === 'shares' }}
+            >
+              <Text style={[styles.segText, splitMode === 'shares' && styles.segTextActive]}>
+                Shares
+              </Text>
+            </Pressable>
             {/* Unavailable for combined-transaction splits — a receipt is one physical purchase. */}
             {!isCombine && (
               <Pressable
@@ -684,6 +737,38 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
             <Text style={styles.sectionLabel}>Custom amounts</Text>
           </>
+        ) : splitMode === 'shares' ? (
+          <>
+            <View style={styles.ownerCard}>
+              <View style={styles.ownerCardInfo}>
+                <Text style={styles.ownerLabel}>Your share</Text>
+                <Text style={styles.ownerHint}>
+                  ${((shareCents[ownerId] ?? 0) / 100).toFixed(2)}
+                </Text>
+              </View>
+              <View style={styles.stepper}>
+                <Pressable
+                  style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+                  onPress={() => adjustShareCount(ownerId, -1)}
+                  accessibilityLabel="Decrease your share count"
+                >
+                  <Ionicons name="remove" size={18} color={Colors.textPrimary} />
+                </Pressable>
+                <Text style={styles.shareCount} accessibilityLabel="Your share count">
+                  {shareCounts[ownerId] ?? 1}
+                </Text>
+                <Pressable
+                  style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+                  onPress={() => adjustShareCount(ownerId, 1)}
+                  accessibilityLabel="Increase your share count"
+                >
+                  <Ionicons name="add" size={18} color={Colors.textPrimary} />
+                </Pressable>
+              </View>
+            </View>
+
+            <Text style={styles.sectionLabel}>Shares</Text>
+          </>
         ) : (
           <>
             {receiptStage === 'capture' ? (
@@ -748,7 +833,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       ) : null;
 
     const data: (SplitwiseFriend | ReceiptItem)[] =
-      splitMode === 'equal' ? filtered : splitMode === 'custom' ? selectedFriends : items;
+      splitMode === 'equal' ? filtered
+        : splitMode === 'custom' || splitMode === 'shares' ? selectedFriends
+        : items;
 
     // Per-person breakdown strip pinned to the bottom of the list content
     // (the FlatList's own footer prop — unrelated to, and safe alongside,
@@ -804,6 +891,19 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
                   onDecrease={() => adjustAmount(friend.id, -STEP)}
                   onIncrease={() => adjustAmount(friend.id, STEP)}
                   onCommit={(v) => commitAmount(friend.id, v)}
+                />
+              );
+            }
+            if (splitMode === 'shares') {
+              const friend = item as SplitwiseFriend;
+              return (
+                <ShareRow
+                  friend={friend}
+                  count={shareCounts[friend.id] ?? 1}
+                  amountCents={shareCents[friend.id] ?? 0}
+                  onDecrease={() => adjustShareCount(friend.id, -1)}
+                  onIncrease={() => adjustShareCount(friend.id, 1)}
+                  onCommit={(v) => commitShareCount(friend.id, v)}
                 />
               );
             }
@@ -938,6 +1038,81 @@ function CustomRow({
   );
 }
 
+function ShareRow({
+  friend, count, amountCents, onDecrease, onIncrease, onCommit,
+}: {
+  friend: SplitwiseFriend;
+  count: number;
+  amountCents: number;
+  onDecrease: () => void;
+  onIncrease: () => void;
+  onCommit: (value: number) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [text, setText] = useState(String(count));
+
+  useEffect(() => {
+    if (!focused) setText(String(count));
+  }, [count, focused]);
+
+  function handleBlur() {
+    setFocused(false);
+    const parsed = parseInt(text, 10);
+    if (!isNaN(parsed) && parsed >= 0) {
+      onCommit(parsed);
+      setText(String(parsed));
+    } else {
+      setText(String(count));
+    }
+  }
+
+  const initial = friend.display_name[0].toUpperCase();
+  const avatarColor = merchantColor(friend.display_name);
+
+  return (
+    <View style={styles.customRow}>
+      <View style={[styles.avatar, { backgroundColor: avatarColor + '18' }]}>
+        <Text style={[styles.avatarText, { color: avatarColor }]}>{initial}</Text>
+      </View>
+      {/* minWidth: 0 lets a long name truncate instead of pushing the stepper
+          off the row on web, where a flex item's default min-width is its
+          content size, not 0. */}
+      <View style={styles.shareInfo}>
+        <Text style={styles.customName} numberOfLines={1}>{friend.display_name}</Text>
+        <Text style={styles.shareAmount}>
+          {count} {count === 1 ? 'share' : 'shares'} · ${(amountCents / 100).toFixed(2)}
+        </Text>
+      </View>
+      <View style={styles.stepper}>
+        <Pressable
+          style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+          onPress={onDecrease}
+          accessibilityLabel={`Decrease ${friend.display_name}'s share count`}
+        >
+          <Ionicons name="remove" size={18} color={Colors.textPrimary} />
+        </Pressable>
+        <BottomSheetTextInput
+          style={styles.shareInput}
+          value={text}
+          onChangeText={setText}
+          onFocus={() => setFocused(true)}
+          onBlur={handleBlur}
+          keyboardType="number-pad"
+          selectTextOnFocus
+          accessibilityLabel={`${friend.display_name}'s share count`}
+        />
+        <Pressable
+          style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+          onPress={onIncrease}
+          accessibilityLabel={`Increase ${friend.display_name}'s share count`}
+        >
+          <Ionicons name="add" size={18} color={Colors.textPrimary} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   indicator: { backgroundColor: Colors.border, width: 36 },
   sheetBg: { backgroundColor: Colors.surface },
@@ -986,7 +1161,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   segBtnActive: { backgroundColor: Colors.surface, ...Shadow.sm },
-  segText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
+  segText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
   segTextActive: { color: Colors.textPrimary },
 
   splitPreview: {
@@ -1011,6 +1186,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   ownerCardError: { backgroundColor: Colors.errorLight },
+  ownerCardInfo: { flex: 1, minWidth: 0 },
   ownerLabel: { fontSize: 14, fontWeight: '600', color: Colors.primary },
   ownerLabelError: { color: Colors.error },
   ownerHint: { fontSize: 11, color: Colors.error, marginTop: 2 },
@@ -1021,6 +1197,10 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   ownerAmountError: { color: Colors.error },
+  shareCount: {
+    minWidth: 34, textAlign: 'center',
+    fontSize: 15, fontWeight: '700', color: Colors.textPrimary,
+  },
 
   searchRow: {
     flexDirection: 'row',
@@ -1127,6 +1307,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   stepDollar: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' },
+  shareInfo: { flex: 1, minWidth: 0, marginRight: Spacing.sm },
+  shareAmount: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  shareInput: {
+    minWidth: 34, textAlign: 'center',
+    fontSize: 15, fontWeight: '700', color: Colors.textPrimary,
+  },
   stepInput: {
     fontSize: 15,
     fontWeight: '700',
