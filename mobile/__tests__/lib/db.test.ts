@@ -31,6 +31,7 @@ import {
   removeTransactionFromVacation,
   reconcileVacationStatuses,
   updateVacationDates,
+  updateVacationGroup,
   resetDbForTests,
   rekeyTransaction,
   markTransactionsReversed,
@@ -1499,5 +1500,31 @@ describe('revertReviewedAmount', () => {
     await revertReviewedAmount(['p1', 'p2']);
     expect(mockDb.withTransactionAsync).toHaveBeenCalledTimes(1);
     expect(mockDb.runAsync).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('updateVacationGroup', () => {
+  beforeEach(async () => {
+    await initDb();
+  });
+
+  test('writes id, name, and JSON member ids together', async () => {
+    await updateVacationGroup('v1', {
+      id: 'g1', name: 'Roommates', member_ids: ['1', '2'], member_names: ['Alice', 'Bob'],
+    });
+
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SET splitwise_group_id = ?'),
+      ['g1', 'Roommates', JSON.stringify(['1', '2']), 'v1']
+    );
+  });
+
+  test('null writes three nulls', async () => {
+    await updateVacationGroup('v1', null);
+
+    expect(mockDb.runAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SET splitwise_group_id = ?'),
+      [null, null, null, 'v1']
+    );
   });
 });

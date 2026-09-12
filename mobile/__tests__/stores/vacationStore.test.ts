@@ -10,6 +10,7 @@ const mockStart = db.startVacation as jest.Mock;
 const mockEnd = db.endVacation as jest.Mock;
 const mockDelete = db.deleteVacation as jest.Mock;
 const mockUpdateDates = db.updateVacationDates as jest.Mock;
+const mockUpdateGroup = db.updateVacationGroup as jest.Mock;
 const mockReconcile = db.reconcileVacationStatuses as jest.Mock;
 
 function vac(over: Partial<Vacation> = {}): Vacation {
@@ -29,6 +30,7 @@ beforeEach(() => {
   mockEnd.mockResolvedValue(undefined);
   mockDelete.mockResolvedValue(undefined);
   mockUpdateDates.mockResolvedValue(undefined);
+  mockUpdateGroup.mockResolvedValue(undefined);
   mockReconcile.mockResolvedValue(undefined);
 });
 
@@ -105,4 +107,29 @@ test('updateDates propagates an overlap conflict without reconciling', async () 
   mockUpdateDates.mockRejectedValue(new Error('overlap'));
   await expect(useVacationStore.getState().updateDates('v1', '2030-01-01', '2030-01-10')).rejects.toThrow();
   expect(mockReconcile).not.toHaveBeenCalled();
+});
+
+describe('updateGroup', () => {
+  const roommates = {
+    id: 'g1', name: 'Roommates', member_ids: ['1', '2'], member_names: ['Alice', 'Bob'],
+  };
+
+  test('writes the group and reloads', async () => {
+    await useVacationStore.getState().updateGroup('v1', roommates);
+
+    expect(mockUpdateGroup).toHaveBeenCalledWith('v1', roommates);
+    expect(mockGetVacations).toHaveBeenCalled();
+  });
+
+  test('passes null through to unlink', async () => {
+    await useVacationStore.getState().updateGroup('v1', null);
+
+    expect(mockUpdateGroup).toHaveBeenCalledWith('v1', null);
+  });
+
+  test('does not reconcile — a group cannot change a status', async () => {
+    await useVacationStore.getState().updateGroup('v1', roommates);
+
+    expect(mockReconcile).not.toHaveBeenCalled();
+  });
 });

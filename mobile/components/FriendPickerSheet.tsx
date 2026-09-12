@@ -19,10 +19,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
+import { useGroupStore } from '@/stores/groupStore';
 import { getSplitDecision, upsertSplitDecision, enqueueOp } from '@/lib/db';
 import { updateExpense, getExpense, buildExpenseBody, SplitwiseAuthError } from '@/lib/splitwise';
 import { flushQueue } from '@/lib/splitwiseQueue';
-import { SplitwiseFriend, Transaction, SplitDecision } from '@/lib/types';
+import { SplitwiseFriend, SplitwiseGroup, Transaction, SplitDecision } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 import { OWNER_FALLBACK_ID, ReceiptItem, computeReceiptShares, toFriendShares } from '@/lib/receipt';
@@ -59,6 +60,8 @@ interface Props {
 export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
   ({ transaction, combineTransactions, mode = 'create', editDecision, openToken, onSuccess, groupId, groupMemberIds }, ref) => {
     const { friends, isLoading } = useFriendStore();
+    const { groups } = useGroupStore();
+    const loadGroups = useGroupStore((s) => s.load);
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
     const commitCombinedSplit = useTransactionStore((s) => s.commitCombinedSplit);
@@ -80,6 +83,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [title, setTitle] = useState('');
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [friendTab, setFriendTab] = useState<'friends' | 'groups'>('friends');
+    const [pickedGroup, setPickedGroup] = useState<SplitwiseGroup | null>(null);
     const [query, setQuery] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [splitMode, setSplitMode] = useState<SplitMode>('equal');
@@ -91,6 +96,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [tipCents, setTipCents] = useState(0);
     const [useReceiptTotal, setUseReceiptTotal] = useState(false);
     const autoToggledRef = useRef(false);
+    // Latches so the Groups tab's lazy load (see showGroupsTab below) fires at
+    // most once per open, even if the user flips between Friends and Groups
+    // repeatedly — the store is cache-first, so a refetch on every tap would
+    // be wasted network, not a correctness issue, but it's still pointless.
+    const groupsLoadedRef = useRef(false);
     const toast = useToast();
 
     // Receipt-mode state is never loaded from a persisted edit decision (see
@@ -124,6 +134,9 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       setTipCents(0);
       setUseReceiptTotal(false);
       autoToggledRef.current = false;
+      setFriendTab('friends');
+      setPickedGroup(null);
+      groupsLoadedRef.current = false;
     }
 
     useEffect(() => {
@@ -145,8 +158,18 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           // this assertion can be unsound for a split that hasn't pushed yet.
           // A real guard (block editing, or reroute into the queue) belongs
           // to whichever task closes that gap, not this one.
-          const { shares } = await getExpense(editDecision.splitwise_expense_id!);
+          const { shares, groupId: expenseGroupId } = await getExpense(editDecision.splitwise_expense_id!);
           if (ignored) return;
+          // Carry the expense's own group forward: the save path rebuilds the
+          // whole body, so a group we don't re-send is a group the expense loses.
+          if (expenseGroupId) {
+            setPickedGroup(
+              useGroupStore.getState().groups.find((g) => g.id === expenseGroupId)
+                // The group may not be in the cache yet; a name-less stand-in
+                // still carries the id through the save.
+                ?? { id: expenseGroupId, name: 'Group', member_ids: [], member_names: [] }
+            );
+          }
           const amounts: Record<string, number> = {};
           editDecision.friend_ids.forEach((fid) => {
             amounts[fid] = shares[fid] ?? 0;
@@ -193,6 +216,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       return [...base].sort((a, b) => Number(memberSet.has(b.id)) - Number(memberSet.has(a.id)));
     }, [friends, query, groupMemberIds]);
 
+    const filteredGroups = useMemo(() => {
+      const q = query.trim().toLowerCase();
+      return q ? groups.filter((g) => g.name.toLowerCase().includes(q)) : groups;
+    }, [groups, query]);
+
     const selectedFriends = useMemo(
       () => friends.filter((f) => selected.has(f.id)),
       [friends, selected]
@@ -206,6 +234,22 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         return next;
       });
     }, []);
+
+    // Picking a group ticks everyone in it who is also a friend (Splitwise can
+    // return group members the user has no friendship with), records the group
+    // so group_id rides along on the expense, and returns to the Friends tab
+    // where the per-person shares are visible.
+    const pickGroup = useCallback((group: SplitwiseGroup) => {
+      const friendIds = new Set(friends.map((f) => f.id));
+      setSelected(new Set(group.member_ids.filter((id) => friendIds.has(id))));
+      setPickedGroup(group);
+      setFriendTab('friends');
+      setQuery('');
+    }, [friends]);
+
+    // Clearing the chip drops group_id only — the selection stays, since the
+    // people are usually still the point.
+    const clearGroup = useCallback(() => setPickedGroup(null), []);
 
     // Receipt math (Task 6). These must run unconditionally, alongside the
     // CTA-state hooks below, before the bail-out further down.
@@ -339,6 +383,21 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     // which unmounts the whole tree (blank screen) on tapping Split.
     if (members.length === 0) return null;
 
+    // Groups are loaded lazily, on first switch to the Groups tab, not on
+    // mount — the picker is mounted unconditionally by several screens
+    // (Transactions, History, vacation detail) whether or not it's ever
+    // opened, let alone switched to Groups. The vacation detail screen also
+    // loads groups itself, gated on `canEditGroup`; a mount-time load here
+    // would bypass that gate and double-fetch. The store is cache-first, so
+    // the cached list (if any) still renders instantly on this first switch.
+    function showGroupsTab() {
+      setFriendTab('groups');
+      if (!groupsLoadedRef.current) {
+        groupsLoadedRef.current = true;
+        void loadGroups();
+      }
+    }
+
     function switchToCustom() {
       const baseShareCents = Math.floor(totalCents / n);
       const amounts: Record<string, number> = {};
@@ -450,6 +509,8 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           ? { friendShares: customAmounts }
           : {};
       try {
+        // A group picked here wins over the vacation's linked group.
+        const effectiveGroupId = pickedGroup?.id ?? groupId;
         if (mode === 'edit' && editDecision) {
           // Non-null: Task 14 made the *create* path local-first, so a
           // SplitDecision can now genuinely have a null splitwise_expense_id
@@ -464,7 +525,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             currency,
             currentUserId: user_id!,
             friendIds,
-            groupId,
+            groupId: effectiveGroupId,
             ...shares,
           });
           for (const t of members) {
@@ -502,7 +563,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         const createdAt = new Date().toISOString();
         const params = {
           amount: effectiveTotal, description: desc, currency,
-          currentUserId: user_id!, friendIds, groupId, ...shares,
+          currentUserId: user_id!, friendIds, groupId: effectiveGroupId, ...shares,
         };
 
         // amount_each must be the owner's actual owed share (not a naive
@@ -623,6 +684,42 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
 
         {splitMode === 'equal' ? (
           <>
+            <View style={styles.tabRow}>
+              <Pressable
+                style={[styles.tabBtn, friendTab === 'friends' && styles.tabBtnActive]}
+                onPress={() => setFriendTab('friends')}
+                accessibilityRole="button"
+                accessibilityState={{ selected: friendTab === 'friends' }}
+              >
+                <Text style={[styles.tabText, friendTab === 'friends' && styles.tabTextActive]}>Friends</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.tabBtn, friendTab === 'groups' && styles.tabBtnActive]}
+                onPress={showGroupsTab}
+                accessibilityRole="button"
+                accessibilityState={{ selected: friendTab === 'groups' }}
+              >
+                <Text style={[styles.tabText, friendTab === 'groups' && styles.tabTextActive]}>Groups</Text>
+              </Pressable>
+            </View>
+
+            {pickedGroup && (
+              <View style={styles.groupChipRow}>
+                <View style={styles.groupChip}>
+                  <Ionicons name="people-outline" size={13} color={Colors.primary} />
+                  <Text style={styles.groupChipText} numberOfLines={1}>{pickedGroup.name}</Text>
+                  <Pressable
+                    onPress={clearGroup}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove group ${pickedGroup.name}`}
+                  >
+                    <Ionicons name="close" size={14} color={Colors.primary} />
+                  </Pressable>
+                </View>
+              </View>
+            )}
+
             {/* Equal split preview */}
             {selected.size > 0 && (
               <View style={styles.splitPreview}>
@@ -660,8 +757,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
             </View>
 
             <Text style={styles.sectionLabel}>
-              {query !== '' && filtered.length === 0
+              {query !== '' && (friendTab === 'friends' ? filtered : filteredGroups).length === 0
                 ? `No results for "${query}"`
+                : friendTab === 'groups'
+                ? 'Pick a group to split with'
                 : 'Select friends to split with'}
             </Text>
           </>
@@ -730,7 +829,12 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       splitMode === 'equal' ? (
         isLoading ? (
           <ActivityIndicator color={Colors.primary} style={styles.spinner} />
-        ) : friends.length === 0 ? (
+        ) : friendTab === 'groups' && groups.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="people-outline" size={32} color={Colors.textTertiary} />
+            <Text style={styles.emptyText}>No Splitwise groups found.</Text>
+          </View>
+        ) : friendTab === 'friends' && friends.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="people-outline" size={32} color={Colors.textTertiary} />
             <Text style={styles.emptyText}>No Splitwise friends found.</Text>
@@ -747,8 +851,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         ) : null
       ) : null;
 
-    const data: (SplitwiseFriend | ReceiptItem)[] =
-      splitMode === 'equal' ? filtered : splitMode === 'custom' ? selectedFriends : items;
+    const data: (SplitwiseFriend | SplitwiseGroup | ReceiptItem)[] =
+      splitMode === 'equal'
+        ? friendTab === 'groups' ? filteredGroups : filtered
+        : splitMode === 'custom' ? selectedFriends : items;
 
     // Per-person breakdown strip pinned to the bottom of the list content
     // (the FlatList's own footer prop — unrelated to, and safe alongside,
@@ -792,6 +898,10 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
           ListFooterComponent={receiptListFooter}
           renderItem={({ item }) => {
             if (splitMode === 'equal') {
+              if (friendTab === 'groups') {
+                const group = item as SplitwiseGroup;
+                return <GroupRow group={group} isSelected={pickedGroup?.id === group.id} onPick={pickGroup} />;
+              }
               const friend = item as SplitwiseFriend;
               return <EqualRow friend={friend} isSelected={selected.has(friend.id)} onToggle={toggle} />;
             }
@@ -858,6 +968,45 @@ const EqualRow = memo(function EqualRow({
       <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
         {isSelected && <Ionicons name="checkmark" size={13} color={Colors.textInverse} />}
       </View>
+    </Pressable>
+  );
+});
+
+const GroupRow = memo(function GroupRow({
+  group,
+  isSelected,
+  onPick,
+}: {
+  group: SplitwiseGroup;
+  isSelected: boolean;
+  onPick: (group: SplitwiseGroup) => void;
+}) {
+  const avatarColor = merchantColor(group.name);
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.friendRow,
+        isSelected && styles.friendRowSelected,
+        pressed && !isSelected && styles.friendRowPressed,
+      ]}
+      onPress={() => onPick(group)}
+      accessibilityRole="button"
+      accessibilityLabel={group.name}
+    >
+      <View style={[styles.avatar, { backgroundColor: avatarColor + '18' }]}>
+        <Ionicons name="people" size={18} color={avatarColor} />
+      </View>
+      {/* minWidth: 0 lets a long group name truncate instead of pushing the
+          member count off the row on web. */}
+      <View style={styles.groupRowInfo}>
+        <Text style={[styles.friendName, isSelected && styles.friendNameSelected]} numberOfLines={1}>
+          {group.name}
+        </Text>
+        <Text style={styles.groupRowMembers} numberOfLines={1}>
+          {group.member_ids.length} {group.member_ids.length === 1 ? 'person' : 'people'}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
     </Pressable>
   );
 });
@@ -988,6 +1137,27 @@ const styles = StyleSheet.create({
   segBtnActive: { backgroundColor: Colors.surface, ...Shadow.sm },
   segText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
   segTextActive: { color: Colors.textPrimary },
+
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: Radius.md,
+    padding: 3,
+    marginBottom: Spacing.sm,
+  },
+  tabBtn: { flex: 1, paddingVertical: 7, borderRadius: Radius.sm, alignItems: 'center' },
+  tabBtnActive: { backgroundColor: Colors.surface, ...Shadow.sm },
+  tabText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  tabTextActive: { color: Colors.textPrimary },
+  groupChipRow: { flexDirection: 'row', marginBottom: Spacing.sm },
+  groupChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.primaryMuted, borderRadius: Radius.full,
+    paddingHorizontal: 10, paddingVertical: 5, flexShrink: 1, maxWidth: '100%',
+  },
+  groupChipText: { fontSize: 12, fontWeight: '600', color: Colors.primary, flexShrink: 1, minWidth: 0 },
+  groupRowInfo: { flex: 1, minWidth: 0, marginRight: Spacing.sm },
+  groupRowMembers: { fontSize: 12, color: Colors.textTertiary, marginTop: 1 },
 
   splitPreview: {
     flexDirection: 'row',

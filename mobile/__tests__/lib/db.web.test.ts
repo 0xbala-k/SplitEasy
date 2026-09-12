@@ -8,7 +8,7 @@ import {
   persistCombinedSplit, revertCombinedSplit,
   createVacation, getVacations, getVacation, getActiveVacation, startVacation, endVacation, deleteVacation,
   getVacationPendingTransactions, getVacationHistory, assignTransactionsToVacation,
-  removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, resetDbForTests,
+  removeTransactionFromVacation, reconcileVacationStatuses, updateVacationDates, updateVacationGroup, resetDbForTests,
   rekeyTransaction, markTransactionsReversed, getReviewTransactions, clearReview, revertReviewedAmount,
   getMerchantBuckets, setMerchantBucket, setTransactionBucket, getSpendingRows,
   getSplitwiseInbox, upsertInboxItem, dismissInboxItem,
@@ -1543,5 +1543,74 @@ describe('revertReviewedAmount', () => {
 
     const [row] = await getTransactionsByIds(['p1']);
     expect(row.edited_fields).toEqual(['amount', 'merchant_name']);
+  });
+});
+
+describe('updateVacationGroup', () => {
+  beforeEach(async () => {
+    (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory(); // fresh DB per test
+    resetDbForTests();
+    await initDb();
+  });
+
+  const roommates = {
+    id: 'g1', name: 'Roommates',
+    member_ids: ['1', '2', '3'], member_names: ['Me', 'Alice', 'Bob'],
+  };
+
+  test('links a group to a vacation that had none', async () => {
+    const v = await createVacation({ name: 'Hawaii' });
+
+    await updateVacationGroup(v.id, roommates);
+
+    const [saved] = await getVacations();
+    expect(saved.splitwise_group_id).toBe('g1');
+    expect(saved.splitwise_group_name).toBe('Roommates');
+    expect(saved.splitwise_group_member_ids).toEqual(['1', '2', '3']);
+  });
+
+  test('replaces an existing link wholesale', async () => {
+    const v = await createVacation({
+      name: 'Hawaii',
+      splitwise_group_id: 'gOld', splitwise_group_name: 'Old',
+      splitwise_group_member_ids: ['9'],
+    });
+
+    await updateVacationGroup(v.id, roommates);
+
+    const [saved] = await getVacations();
+    expect(saved.splitwise_group_id).toBe('g1');
+    expect(saved.splitwise_group_name).toBe('Roommates');
+    expect(saved.splitwise_group_member_ids).toEqual(['1', '2', '3']);
+  });
+
+  test('null clears all three fields together', async () => {
+    const v = await createVacation({
+      name: 'Hawaii',
+      splitwise_group_id: 'g1', splitwise_group_name: 'Roommates',
+      splitwise_group_member_ids: ['1', '2'],
+    });
+
+    await updateVacationGroup(v.id, null);
+
+    const [saved] = await getVacations();
+    expect(saved.splitwise_group_id).toBeNull();
+    expect(saved.splitwise_group_name).toBeNull();
+    expect(saved.splitwise_group_member_ids).toBeNull();
+  });
+
+  test('leaves the rest of the vacation untouched', async () => {
+    const v = await createVacation({ name: 'Hawaii', start_date: '2026-10-01', end_date: '2026-10-08' });
+
+    await updateVacationGroup(v.id, roommates);
+
+    const [saved] = await getVacations();
+    expect(saved.name).toBe('Hawaii');
+    expect(saved.start_date).toBe('2026-10-01');
+    expect(saved.status).toBe(v.status);
+  });
+
+  test('is a no-op for an unknown id', async () => {
+    await expect(updateVacationGroup('nope', roommates)).resolves.toBeUndefined();
   });
 });

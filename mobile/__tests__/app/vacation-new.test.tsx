@@ -10,6 +10,7 @@ jest.mock('@/components/ToastProvider', () => ({ useToast: () => ({ show: jest.f
 import { render, fireEvent, screen, waitFor, act } from '@testing-library/react-native';
 import NewVacationScreen from '@/app/vacation/new';
 import { useVacationStore } from '@/stores/vacationStore';
+import { useGroupStore } from '@/stores/groupStore';
 import { useAuthStore } from '@/stores/authStore';
 import { getGroups, SplitwiseAuthError } from '@/lib/splitwise';
 import { getCachedGroups, replaceCachedGroups } from '@/lib/db';
@@ -38,6 +39,7 @@ beforeEach(() => {
   (getCachedGroups as jest.Mock).mockResolvedValue([]);
   (replaceCachedGroups as jest.Mock).mockResolvedValue(undefined);
   useAuthStore.setState({ tokenValid: true });
+  useGroupStore.setState({ groups: [], isLoading: false, isStale: false });
 });
 
 async function renderScreen() {
