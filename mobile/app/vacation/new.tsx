@@ -5,9 +5,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useVacationStore } from '@/stores/vacationStore';
-import { useAuthStore } from '@/stores/authStore';
-import { getGroups, SplitwiseAuthError } from '@/lib/splitwise';
-import { getCachedGroups, replaceCachedGroups } from '@/lib/db';
+import { useGroupStore } from '@/stores/groupStore';
 import { VacationConflictError } from '@/lib/vacationErrors';
 import { SplitwiseGroup } from '@/lib/types';
 import { useToast } from '@/components/ToastProvider';
@@ -23,38 +21,15 @@ export default function NewVacationScreen() {
   const [name, setName] = useState('');
   const [startDate, setStartDate] = useState<string | null>(null);
   const [endDate, setEndDate] = useState<string | null>(null);
-  const [groups, setGroups] = useState<SplitwiseGroup[]>([]);
+  const groups = useGroupStore((s) => s.groups);
+  const loadGroups = useGroupStore((s) => s.load);
   const [selectedGroup, setSelectedGroup] = useState<SplitwiseGroup | null>(null);
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [loadingGroups, setLoadingGroups] = useState(false);
 
   useEffect(() => {
-    void (async () => {
-      setLoadingGroups(true);
-      try {
-        const cached = await getCachedGroups();
-        if (cached.length > 0) setGroups(cached);
-      } catch (e) {
-        console.error('Failed to read cached groups', e);
-      }
-      try {
-        const fresh = await getGroups();
-        await replaceCachedGroups(fresh);
-        setGroups(fresh);
-        useAuthStore.getState().reportAuthSuccess();
-      } catch (err) {
-        // Keep the cache; a trip can still be created against known groups.
-        if (err instanceof SplitwiseAuthError) {
-          useAuthStore.getState().reportAuthFailure();
-        } else {
-          console.error('Failed to refresh Splitwise groups', err);
-        }
-      } finally {
-        setLoadingGroups(false);
-      }
-    })();
-  }, []);
+    void loadGroups();
+  }, [loadGroups]);
 
   // The picker can only ever produce an ordered range, so the old format and
   // ordering checks are gone. The one reachable invalid state is a half-picked
