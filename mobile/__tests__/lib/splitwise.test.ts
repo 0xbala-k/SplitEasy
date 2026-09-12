@@ -168,7 +168,7 @@ test('getExpense returns owed shares keyed by user id', async () => {
       ],
     },
   });
-  const shares = await getExpense('555');
+  const { shares } = await getExpense('555');
   expect(shares).toEqual({ '1': 10, '2': 10, '3': 10 });
   const [url] = mockFetch.mock.calls[0];
   expect(url).toContain('/get_expense/555');
@@ -181,8 +181,26 @@ test('getExpense throws SplitwiseAuthError on 401', async () => {
 
 test('getExpense coerces a malformed owed_share to 0', async () => {
   mockResponse({ expense: { users: [{ user: { id: 2 }, owed_share: '' }] } });
-  const shares = await getExpense('5');
+  const { shares } = await getExpense('5');
   expect(shares).toEqual({ '2': 0 });
+});
+
+test('getExpense reports a numeric group_id as a string', async () => {
+  mockResponse({ expense: { group_id: 42, users: [] } });
+  const { groupId } = await getExpense('5');
+  expect(groupId).toBe('42');
+});
+
+test('getExpense normalizes group_id: 0 to null (Splitwise\'s "no group")', async () => {
+  mockResponse({ expense: { group_id: 0, users: [] } });
+  const { groupId } = await getExpense('5');
+  expect(groupId).toBeNull();
+});
+
+test('getExpense normalizes a missing group_id to null', async () => {
+  mockResponse({ expense: { users: [] } });
+  const { groupId } = await getExpense('5');
+  expect(groupId).toBeNull();
 });
 
 test('updateExpense URL-encodes the expense id', async () => {

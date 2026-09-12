@@ -24,12 +24,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePlaidStore } from '@/stores/plaidStore';
 import { useVacationStore } from '@/stores/vacationStore';
 import { useAuthStore } from '@/stores/authStore';
-import { useTransactionStore, SPLITWISE_WATERMARK_KEY } from '@/stores/transactionStore';
+import { useTransactionStore, SPLITWISE_WATERMARK_KEY, scaleFriendShares } from '@/stores/transactionStore';
 import { WorkerError } from '@/lib/worker';
 import * as splitwise from '@/lib/splitwise';
-import { SplitwiseAuthError, getExpensesUpdatedAfter } from '@/lib/splitwise';
-import { getLocalExpenseState, upsertInboxItem, updateImportedExpense, deleteImportedExpense, acceptSplitwiseExpense, updateTransactionFields, updateInboxItemFields, getNewTransactions } from '@/lib/db';
-import { SplitwiseInboxItem } from '@/lib/types';
+import { SplitwiseAuthError, getExpensesUpdatedAfter, deleteExpense, getExpense, updateExpense } from '@/lib/splitwise';
+import { getLocalExpenseState, upsertInboxItem, updateImportedExpense, deleteImportedExpense, acceptSplitwiseExpense, updateTransactionFields, updateInboxItemFields, getNewTransactions, clearReview, deleteTransactionsByPlaidIds, revertReviewedAmount, getSplitDecision } from '@/lib/db';
+import { SplitwiseInboxItem, ReviewItem } from '@/lib/types';
 
 const mockGetNew = db.getNewTransactions as jest.Mock;
 const mockUpsert = db.upsertTransactions as jest.Mock;
@@ -608,5 +608,250 @@ describe('addManualTransaction', () => {
 
     expect(db.createManualTransaction).toHaveBeenCalledWith(input);
     expect(mockGetNew).toHaveBeenCalled();
+  });
+});
+
+describe('acceptReview', () => {
+  function reviewItem(over: Partial<ReviewItem> = {}): ReviewItem {
+    return {
+      id: 'p1',
+      merchant_name: 'Cafe',
+      amount: 47.85,
+      amount_changed_from: 42.1,
+      currency: 'USD',
+      date: '2026-07-01',
+      reason: 'amount_changed',
+      split: { friend_names: ['Alice', 'Bob'], amount_each: 14.03 },
+      splitwise_expense_id: 'e1',
+      expense_id: 'e1',
+      transaction_ids: ['p1'],
+      member_transaction_ids: ['p1'],
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    (getSplitDecision as jest.Mock).mockResolvedValue({
+      id: 'd1',
+      transaction_id: 'p1',
+      splitwise_expense_id: 'e1',
+      friend_ids: ['f1', 'f2'],
+      friend_names: ['Alice', 'Bob'],
+      amount_each: 14.03,
+      created_at: '2026-07-01T00:00:00Z',
+      description: 'Cafe',
+    });
+  });
+
+  test('scales each friend share by new/old and pushes the new total', async () => {
+    // Owner 'me' owed 20.10, Alice 12.00, Bob 10.00 of the old 42.10 total.
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 20.1, f1: 12, f2: 10 }, groupId: null });
+    (updateExpense as jest.Mock).mockResolvedValue({ amount_each: 22.85 });
+    useAuthStore.setState({ user_id: 'me' });
+
+    await useTransactionStore.getState().acceptReview(reviewItem());
+
+    // 47.85 / 42.10 = 1.13657...  →  12.00 → 13.64, 10.00 → 11.37
+    expect(updateExpense).toHaveBeenCalledWith('e1', expect.objectContaining({
+      amount: 47.85,
+      friendShares: { f1: 13.64, f2: 11.37 },
+    }));
+    expect(clearReview).toHaveBeenCalledWith(['p1']);
+  });
+
+  test('an equal split stays equal at the new total, and the owner absorbs the remainder', async () => {
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 14.04, f1: 14.03, f2: 14.03 }, groupId: null });
+    (updateExpense as jest.Mock).mockResolvedValue({ amount_each: 15.95 });
+    useAuthStore.setState({ user_id: 'me' });
+
+    // Old total 42.10 split equally three ways (14.03/14.03/14.04) scales by
+    // 47.85 / 42.10 = 1.13657...: each friend's 14.03 → 15.95.
+    await useTransactionStore.getState().acceptReview(reviewItem());
+
+    const shares = (updateExpense as jest.Mock).mock.calls[0][1].friendShares;
+    expect(shares).toEqual({ f1: 15.95, f2: 15.95 });
+    expect(47.85 - (shares.f1 + shares.f2)).toBeCloseTo(15.95, 2); // owner's implied share
+  });
+
+  test('a custom (unequal) split keeps its proportions at the new total', async () => {
+    // Old total 42.10: f1 owed 30, f2 owed 12.10 — a 5:2-ish custom split.
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 0, f1: 30, f2: 12.1 }, groupId: null });
+    (updateExpense as jest.Mock).mockResolvedValue({ amount_each: 0 });
+    useAuthStore.setState({ user_id: 'me' });
+
+    await useTransactionStore.getState().acceptReview(reviewItem());
+
+    const shares = (updateExpense as jest.Mock).mock.calls[0][1].friendShares;
+    // 47.85 / 42.10 = 1.13657...  →  30 → 34.10, 12.10 → 13.75
+    expect(shares).toEqual({ f1: 34.1, f2: 13.75 });
+  });
+
+  test('falls back to an equal split when the share read fails', async () => {
+    (getExpense as jest.Mock).mockRejectedValue(new Error('offline'));
+    (updateExpense as jest.Mock).mockResolvedValue({ amount_each: 15.95 });
+    useAuthStore.setState({ user_id: 'me' });
+
+    await useTransactionStore.getState().acceptReview(reviewItem());
+
+    expect(updateExpense).toHaveBeenCalledWith('e1', expect.objectContaining({
+      amount: 47.85,
+      friendShares: undefined,
+      groupId: undefined,
+    }));
+  });
+
+  test('passes the expense group id through to updateExpense', async () => {
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 20.1, f1: 12, f2: 10 }, groupId: '999' });
+    (updateExpense as jest.Mock).mockResolvedValue({ amount_each: 22.85 });
+    useAuthStore.setState({ user_id: 'me' });
+
+    await useTransactionStore.getState().acceptReview(reviewItem());
+
+    expect(updateExpense).toHaveBeenCalledWith('e1', expect.objectContaining({ groupId: '999' }));
+  });
+
+  test('refuses to push when the split has not reached Splitwise yet', async () => {
+    await expect(
+      useTransactionStore.getState().acceptReview(reviewItem({ splitwise_expense_id: null, expense_id: 'p1' }))
+    ).rejects.toThrow('SPLIT_NOT_PUSHED');
+
+    expect(updateExpense).not.toHaveBeenCalled();
+    expect(clearReview).not.toHaveBeenCalled();
+  });
+
+  test('throws instead of rewriting the expense owner-only when the decision is missing', async () => {
+    (getSplitDecision as jest.Mock).mockResolvedValue(null);
+
+    await expect(
+      useTransactionStore.getState().acceptReview(reviewItem())
+    ).rejects.toThrow();
+
+    expect(updateExpense).not.toHaveBeenCalled();
+    expect(clearReview).not.toHaveBeenCalled();
+  });
+
+  test('does not clear the review when updateExpense throws', async () => {
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 20.1, f1: 12, f2: 10 }, groupId: null });
+    (updateExpense as jest.Mock).mockRejectedValue(new Error('SPLITWISE_ERROR'));
+    useAuthStore.setState({ user_id: 'me' });
+
+    await expect(useTransactionStore.getState().acceptReview(reviewItem())).rejects.toThrow();
+
+    expect(clearReview).not.toHaveBeenCalled();
+  });
+
+  test('an auth failure on the accept path reports to authStore', async () => {
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 20.1, f1: 12, f2: 10 }, groupId: null });
+    (updateExpense as jest.Mock).mockRejectedValue(new SplitwiseAuthError());
+    useAuthStore.setState({ user_id: 'me', tokenValid: true });
+
+    await expect(useTransactionStore.getState().acceptReview(reviewItem())).rejects.toBeInstanceOf(SplitwiseAuthError);
+
+    expect(useAuthStore.getState().tokenValid).toBe(false);
+  });
+
+  test('a reversed item deletes the expense, the rows, and the review', async () => {
+    const item = reviewItem({ reason: 'reversed', amount_changed_from: null });
+
+    await useTransactionStore.getState().acceptReview(item);
+
+    expect(deleteExpense).toHaveBeenCalledWith('e1');
+    expect(deleteTransactionsByPlaidIds).toHaveBeenCalledWith(['p1']);
+    expect(updateExpense).not.toHaveBeenCalled();
+  });
+
+  test('a reversed item refuses to delete when the split has not pushed yet', async () => {
+    await expect(
+      useTransactionStore.getState().acceptReview(
+        reviewItem({ reason: 'reversed', splitwise_expense_id: null, expense_id: 'p1' })
+      )
+    ).rejects.toThrow('SPLIT_NOT_PUSHED');
+
+    expect(deleteExpense).not.toHaveBeenCalled();
+  });
+
+  test('a combined split with an unchanged sibling pushes the true total to updateExpense', async () => {
+    // tx1 posted at 12 (changed from 10), tx2 never changed and stayed 20 —
+    // the true total is 32, not the flagged-only 12 (Critical 1).
+    const item = reviewItem({
+      amount: 32, amount_changed_from: 30,
+      transaction_ids: ['tx1'], member_transaction_ids: ['tx1', 'tx2'],
+    });
+    (getExpense as jest.Mock).mockResolvedValue({ shares: { me: 10, f1: 10, f2: 10 }, groupId: null });
+    (updateExpense as jest.Mock).mockResolvedValue({ amount_each: 10 });
+    useAuthStore.setState({ user_id: 'me' });
+
+    await useTransactionStore.getState().acceptReview(item);
+
+    expect(updateExpense).toHaveBeenCalledWith('e1', expect.objectContaining({ amount: 32 }));
+    expect(clearReview).toHaveBeenCalledWith(['tx1']);
+  });
+
+  test('accepting a reversed combined row reverts every member but deletes only the flagged rows', async () => {
+    const item = reviewItem({
+      reason: 'reversed', amount_changed_from: null,
+      transaction_ids: ['tx1'], member_transaction_ids: ['tx1', 'tx2'],
+    });
+
+    await useTransactionStore.getState().acceptReview(item);
+
+    expect(deleteExpense).toHaveBeenCalledWith('e1');
+    // deleteCombinedSplit reverts every member (tx1 and tx2) to 'new'...
+    expect(mockRevertCombined).toHaveBeenCalledWith(['tx1', 'tx2']);
+    // ...but only the flagged row is actually deleted; tx2 stays as 'new'.
+    expect(deleteTransactionsByPlaidIds).toHaveBeenCalledWith(['tx1']);
+  });
+});
+
+describe('rejectReview', () => {
+  test('an amount_changed item reverts the local amount', async () => {
+    await useTransactionStore.getState().rejectReview({
+      id: 'p1', merchant_name: 'Cafe', amount: 47.85, amount_changed_from: 42.1,
+      currency: 'USD', date: '2026-07-01', reason: 'amount_changed',
+      split: { friend_names: ['Alice'], amount_each: 23.93 },
+      splitwise_expense_id: 'e1', expense_id: 'e1', transaction_ids: ['p1'],
+    });
+
+    expect(revertReviewedAmount).toHaveBeenCalledWith(['p1']);
+    expect(clearReview).not.toHaveBeenCalled();  // revertReviewedAmount clears it itself
+  });
+
+  test('a reversed item keeps the split and only clears the review', async () => {
+    await useTransactionStore.getState().rejectReview({
+      id: 'p1', merchant_name: 'Cafe', amount: 20, amount_changed_from: null,
+      currency: 'USD', date: '2026-07-01', reason: 'reversed',
+      split: { friend_names: ['Alice'], amount_each: 10 },
+      splitwise_expense_id: 'e1', expense_id: 'e1', transaction_ids: ['p1'],
+    });
+
+    expect(clearReview).toHaveBeenCalledWith(['p1']);
+    expect(revertReviewedAmount).not.toHaveBeenCalled();
+    expect(deleteExpense).not.toHaveBeenCalled();
+  });
+});
+
+describe('scaleFriendShares', () => {
+  test('an equal split stays equal at the new total', () => {
+    const result = scaleFriendShares({ f1: 14.03, f2: 14.03 }, ['f1', 'f2'], 42.1, 47.85);
+    // 47.85 / 42.10 = 1.13657...  →  14.03 → 15.95
+    expect(result).toEqual({ f1: 15.95, f2: 15.95 });
+  });
+
+  test('a custom split keeps its proportions', () => {
+    const result = scaleFriendShares({ f1: 30, f2: 12.1 }, ['f1', 'f2'], 42.1, 47.85);
+    expect(result).toEqual({ f1: 34.1, f2: 13.75 });
+  });
+
+  test('returns undefined for an old amount of zero (no meaningful ratio)', () => {
+    expect(scaleFriendShares({ f1: 10 }, ['f1'], 0, 20)).toBeUndefined();
+  });
+
+  test('returns undefined for an empty friend list', () => {
+    expect(scaleFriendShares({}, [], 10, 20)).toBeUndefined();
+  });
+
+  test('a friend missing from the shares map scales from zero', () => {
+    const result = scaleFriendShares({}, ['f1'], 10, 20);
+    expect(result).toEqual({ f1: 0 });
   });
 });

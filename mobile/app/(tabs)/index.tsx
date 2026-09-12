@@ -15,7 +15,7 @@ import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { useToast } from '@/components/ToastProvider';
 import { showDialog } from '@/lib/dialog';
 import {
-  getSplitDecision, getTransactionsByIds, deleteTransactionsByPlaidIds, removeTransactionFromVacation,
+  getSplitDecision, getTransactionsByIds, removeTransactionFromVacation,
   TransactionFieldPatch, InboxFieldPatch,
 } from '@/lib/db';
 import { Transaction, SplitDecision, ReviewItem, SplitwiseInboxItem } from '@/lib/types';
@@ -25,6 +25,7 @@ import { Colors, Spacing, Radius, Shadow, merchantColor } from '@/lib/theme';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
 import { useBucketEditor } from '@/hooks/useBucketEditor';
 import { TransactionDetailSheet, DetailSheetMode, DetailSheetResult } from '@/components/TransactionDetailSheet';
+import { ReviewActionSheet } from '@/components/ReviewActionSheet';
 
 // Clears the absolute-positioned selectBar so it doesn't cover the last row.
 const SELECT_BAR_CLEARANCE = 88;
@@ -51,9 +52,10 @@ export default function NewTransactionsScreen() {
   const topInset = useSafeAreaInsets().top;
   const {
     transactions, isLoading, review, load, refresh, skip, loadReview, resolveReview,
-    deleteSplit, deleteCombinedSplit, merchantBuckets, setBucket,
+    merchantBuckets, setBucket,
     splitwiseInbox, loadInbox, acceptInboxItem, dismissInboxItem,
     editTransaction, editInboxItem, excludeTransaction, addManualTransaction,
+    acceptReview, rejectReview,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
   const [isConnected, setIsConnected] = useState(true);
@@ -80,6 +82,12 @@ export default function NewTransactionsScreen() {
   const detailSheetRef = useRef<BottomSheetModal>(null);
   const [detailBucket, setDetailBucket] = useState<Bucket>('misc');
   const detailBucketSheetRef = useRef<BottomSheetModal>(null);
+
+  // ReviewActionSheet's state: presents Accept/Edit/Reject for a "Needs
+  // review" row instead of routing the tap straight to a hard-wired outcome.
+  const [reviewTarget, setReviewTarget] = useState<ReviewItem | null>(null);
+  const reviewSheetRef = useRef<BottomSheetModal>(null);
+  const [reviewPendingPresent, setReviewPendingPresent] = useState(false);
 
   useEffect(() => {
     load();
@@ -320,35 +328,97 @@ export default function NewTransactionsScreen() {
     setPendingPresent(true);
   }
 
-  function openReviewReversed(item: ReviewItem) {
-    const isCombined = item.transaction_ids.length > 1;
-    const label = isCombined ? `${item.transaction_ids.length} transactions` : item.merchant_name;
-    showDialog(
-      'Charge reversed',
-      `The pending charge for ${label} never posted. This removes the Splitwise expense and clears it from your review queue.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete expense',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              if (isCombined) {
-                await deleteCombinedSplit(item.transaction_ids, item.expense_id);
-              } else {
-                await deleteSplit(item.transaction_ids[0], item.expense_id);
-              }
-              await deleteTransactionsByPlaidIds(item.transaction_ids);
-              await load();
-              await loadReview();
-              toast.show('Reversed charge removed', 'success');
-            } catch {
-              toast.show('Failed to remove. Please try again.', 'error');
-            }
+  // Present from an effect, after the sheet has rendered with an item:
+  // ReviewActionSheet returns null while item is null, so on the first tap
+  // the ref is still null and a synchronous present() silently does nothing.
+  useEffect(() => {
+    if (!reviewPendingPresent) return;
+    reviewSheetRef.current?.present();
+    setReviewPendingPresent(false);
+  }, [reviewPendingPresent]);
+
+  function openReviewSheet(item: ReviewItem) {
+    setReviewTarget(item);
+    setReviewPendingPresent(true);
+  }
+
+  async function runReviewAccept(item: ReviewItem) {
+    try {
+      await acceptReview(item);
+      toast.show(
+        item.reason === 'reversed' ? 'Reversed charge removed' : 'Splitwise updated',
+        'success'
+      );
+    } catch (err) {
+      toast.show(
+        err instanceof Error && err.message === 'SPLIT_NOT_PUSHED'
+          ? "That split hasn't reached Splitwise yet. Try again in a moment."
+          : 'Could not update Splitwise. Please try again.',
+        'error'
+      );
+    } finally {
+      setReviewTarget(null);
+    }
+  }
+
+  async function handleReviewAccept() {
+    const item = reviewTarget;
+    if (!item) return;
+    reviewSheetRef.current?.dismiss();
+
+    // Deleting the Splitwise expense is destructive and has no undo — confirm
+    // first, same as history.tsx's "Delete split?" / "Remove from
+    // SplitEasy?" dialogs for the identical operation. amount_changed stays a
+    // single tap: it's not destructive.
+    if (item.reason === 'reversed') {
+      const label = item.member_transaction_ids.length > 1
+        ? `${item.member_transaction_ids.length} transactions`
+        : item.merchant_name;
+      showDialog(
+        'Charge reversed',
+        `The pending charge for ${label} never posted. This removes the Splitwise expense and clears it from your review queue.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete expense',
+            style: 'destructive',
+            onPress: () => void runReviewAccept(item),
           },
-        },
-      ]
-    );
+        ]
+      );
+      return;
+    }
+
+    await runReviewAccept(item);
+  }
+
+  async function handleReviewReject() {
+    const item = reviewTarget;
+    if (!item) return;
+    reviewSheetRef.current?.dismiss();
+    try {
+      await rejectReview(item);
+      toast.show(item.reason === 'reversed' ? 'Split kept' : 'Amount restored', 'success');
+    } catch {
+      toast.show('Could not update. Please try again.', 'error');
+    } finally {
+      setReviewTarget(null);
+    }
+  }
+
+  function handleReviewEdit() {
+    const item = reviewTarget;
+    if (!item) return;
+    reviewSheetRef.current?.dismiss();
+    setReviewTarget(null);
+    if (!item.splitwise_expense_id) {
+      // Same guard acceptReview enforces (SPLIT_NOT_PUSHED): opening the
+      // editor here would call getExpense(undefined) instead of showing a
+      // useful message.
+      toast.show("That split hasn't reached Splitwise yet. Try again in a moment.", 'error');
+      return;
+    }
+    void openReviewEdit(item);
   }
 
   function handleSplitSuccess(amountEach: number) {
@@ -435,7 +505,7 @@ export default function NewTransactionsScreen() {
           }
           ListHeaderComponent={
             <>
-              <ReviewSection items={review} onAmountChanged={openReviewEdit} onReversed={openReviewReversed} />
+              <ReviewSection items={review} onPress={openReviewSheet} />
               <SplitwiseSection
                 items={splitwiseInbox}
                 onAccept={openDetailInbox}
@@ -493,6 +563,13 @@ export default function NewTransactionsScreen() {
         bucket={detailBucket}
         merchantName={detailTarget?.merchant_name ?? detailInbox?.description ?? ''}
         onSelect={handleDetailBucketSelect}
+      />
+      <ReviewActionSheet
+        ref={reviewSheetRef}
+        item={reviewTarget}
+        onAccept={handleReviewAccept}
+        onEdit={handleReviewEdit}
+        onReject={handleReviewReject}
       />
       {selectMode && (
         <View style={styles.selectBar}>
@@ -556,23 +633,17 @@ function LoadingSkeleton() {
 // pending→posted transition needs attention surface here, not in a new tab.
 function ReviewSection({
   items,
-  onAmountChanged,
-  onReversed,
+  onPress,
 }: {
   items: ReviewItem[];
-  onAmountChanged: (item: ReviewItem) => void;
-  onReversed: (item: ReviewItem) => void;
+  onPress: (item: ReviewItem) => void;
 }) {
   if (items.length === 0) return null;
   return (
     <View style={styles.reviewSection}>
       <Text style={styles.reviewHeading}>Needs review · {items.length}</Text>
       {items.map((item) => (
-        <ReviewRow
-          key={item.id}
-          item={item}
-          onPress={() => (item.reason === 'amount_changed' ? onAmountChanged(item) : onReversed(item))}
-        />
+        <ReviewRow key={item.id} item={item} onPress={() => onPress(item)} />
       ))}
     </View>
   );

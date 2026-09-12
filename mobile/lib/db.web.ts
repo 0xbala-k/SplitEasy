@@ -12,7 +12,7 @@ import { todayLocal } from '@/lib/date';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
 import { Bucket, BucketSource, resolveBucket, normalizeMerchant } from '@/lib/buckets';
 import { SpendRow } from '@/lib/spend';
-import { applyLocks, addLocks, parseLocks, serializeLocks } from '@/lib/editLocks';
+import { applyLocks, addLocks, parseLocks, serializeLocks, removeLocks } from '@/lib/editLocks';
 import { collapseOps } from '@/lib/splitwiseQueue';
 
 const DB_NAME = 'spliteasy';
@@ -233,6 +233,14 @@ function addNullable(a: number | null, b: number | null): number | null {
 
 // Groups review-eligible rows by shared Splitwise expense id, exactly as
 // groupHistoryRows does for history — one row per expense, amounts summed.
+//
+// A row may be an unflagged sibling of a flagged member (see the widened
+// filter in getReviewTransactions): it contributes its own `amount` to BOTH
+// the group's `amount` and `amount_changed_from`, since it never changed and
+// must not move the ratio Accept scales friend shares by. `transaction_ids`
+// keeps its old meaning — flagged members only, the ones whose review is
+// being resolved — while `member_transaction_ids` carries every member so
+// Accept can act on (and Reject/Edit can load) the whole expense.
 function groupReviewRows(rows: Transaction[], decisions: SplitDecision[]): ReviewItem[] {
   const byTxId = new Map(decisions.map((d) => [d.transaction_id, d]));
   const items: ReviewItem[] = [];
@@ -240,38 +248,51 @@ function groupReviewRows(rows: Transaction[], decisions: SplitDecision[]): Revie
 
   for (const t of rows) {
     const d = byTxId.get(t.id);
+    const flagged = t.review_reason != null;
     const key = d?.splitwise_expense_id ?? t.id;
     const existing = groups.get(key);
     if (existing) {
       existing.amount += t.amount;
-      existing.amount_changed_from = addNullable(existing.amount_changed_from, t.amount_changed_from ?? null);
-      existing.transaction_ids.push(t.id);
-      // Mixed reasons across members of one expense: 'reversed' wins, matching
-      // lib/db.ts's groupReviewRows.
-      if (t.review_reason === 'reversed') existing.reason = 'reversed';
+      existing.amount_changed_from = addNullable(
+        existing.amount_changed_from,
+        flagged ? (t.amount_changed_from ?? null) : t.amount
+      );
+      existing.member_transaction_ids.push(t.id);
+      if (flagged) {
+        existing.transaction_ids.push(t.id);
+        // Mixed reasons across members of one expense: 'reversed' wins, matching
+        // lib/db.ts's groupReviewRows.
+        if (t.review_reason === 'reversed') existing.reason = 'reversed';
+      }
     } else {
       const item: ReviewItem = {
         id: t.id,
         merchant_name: t.merchant_name,
         amount: t.amount,
-        amount_changed_from: t.amount_changed_from ?? null,
+        amount_changed_from: flagged ? (t.amount_changed_from ?? null) : t.amount,
         currency: t.currency,
         date: t.date,
         reason: (t.review_reason as ReviewReason) ?? 'amount_changed',
         split: { friend_names: d?.friend_names ?? [], amount_each: d?.amount_each ?? 0 },
+        splitwise_expense_id: d?.splitwise_expense_id ?? null,
         expense_id: d?.splitwise_expense_id ?? t.id,
-        transaction_ids: [t.id],
+        transaction_ids: flagged ? [t.id] : [],
+        member_transaction_ids: [t.id],
       };
       groups.set(key, item);
       items.push(item);
     }
   }
 
-  for (const g of groups.values()) {
-    if (g.transaction_ids.length > 1) g.id = g.expense_id;
+  // A group with no flagged member can't happen given the filter below, but
+  // drop it defensively rather than ever surfacing a meaningless review row.
+  const result = items.filter((item) => item.transaction_ids.length > 0);
+
+  for (const item of result) {
+    if (item.member_transaction_ids.length > 1) item.id = item.expense_id;
   }
 
-  return items;
+  return result;
 }
 
 export async function getReviewTransactions(): Promise<ReviewItem[]> {
@@ -280,7 +301,24 @@ export async function getReviewTransactions(): Promise<ReviewItem[]> {
     req(tx.objectStore(TX_STORE).getAll() as IDBRequest<Transaction[]>),
     req(tx.objectStore(DECISION_STORE).getAll() as IDBRequest<SplitDecision[]>),
   ]);
-  const rows = all.filter((t) => t.review_reason != null).sort(byDateDesc);
+  // Widened beyond `review_reason != null`: when any member of a Splitwise
+  // expense is flagged, every split row sharing that expense id is pulled in
+  // too, flagged or not — mirrors lib/db.ts's widened SQL query (Critical 1).
+  const byTxId = new Map(decisions.map((d) => [d.transaction_id, d]));
+  const flaggedExpenseIds = new Set(
+    all
+      .filter((t) => t.review_reason != null)
+      .map((t) => byTxId.get(t.id)?.splitwise_expense_id)
+      .filter((id): id is string => !!id)
+  );
+  const rows = all
+    .filter((t) => {
+      if (t.review_reason != null) return true;
+      if (t.status !== 'split') return false;
+      const expenseId = byTxId.get(t.id)?.splitwise_expense_id;
+      return !!expenseId && flaggedExpenseIds.has(expenseId);
+    })
+    .sort(byDateDesc);
   return groupReviewRows(rows, decisions);
 }
 
@@ -291,6 +329,31 @@ export async function clearReview(transactionIds: string[]): Promise<void> {
   for (const id of transactionIds) {
     const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
     if (existing) store.put({ ...existing, review_reason: null, amount_changed_from: null });
+  }
+  await done(tx);
+}
+
+/**
+ * Undo an amount_changed review by restoring the pre-posting amount.
+ * Mirrors lib/db.ts's revertReviewedAmount, including the amount lock and the
+ * review_reason = 'amount_changed' guard — see that function for the why.
+ */
+export async function revertReviewedAmount(transactionIds: string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const tx = (await dbReady()).transaction(TX_STORE, 'readwrite');
+  const store = tx.objectStore(TX_STORE);
+  for (const id of transactionIds) {
+    const existing = await req(store.get(id) as IDBRequest<Transaction | undefined>);
+    if (!existing) continue;
+    if (existing.review_reason !== 'amount_changed') continue;
+    if (existing.amount_changed_from == null) continue;
+    store.put({
+      ...existing,
+      amount: existing.amount_changed_from,
+      review_reason: null,
+      amount_changed_from: null,
+      edited_fields: parseLocks(addLocks(existing.edited_fields, ['amount'])),
+    });
   }
   await done(tx);
 }
@@ -579,7 +642,13 @@ export async function rekeyTransaction(
 
   const name = posted.merchant_name ?? posted.name;
   const changed = Math.round(existing.amount * 100) !== Math.round(posted.amount * 100);
-  const reviewReason: ReviewReason | null = changed && existing.status === 'split' ? 'amount_changed' : null;
+  // A locked amount means the user already ruled on this row (Reject, or a
+  // hand edit) — re-raising a review over it would bounce the row right back
+  // into the queue on every sync, which is reachable whenever
+  // posted.transaction_id === oldId (see lib/db.ts's rekeyTransaction).
+  const amountLocked = parseLocks(existing.edited_fields).includes('amount');
+  const reviewReason: ReviewReason | null =
+    changed && existing.status === 'split' && !amountLocked ? 'amount_changed' : null;
   const amountChangedFrom = reviewReason ? existing.amount : null;
 
   const writable = applyLocks(
@@ -649,9 +718,25 @@ export async function upsertSplitDecision(decision: SplitDecision): Promise<void
   await done(tx);
 }
 
+// Every caller pairs this with reverting the transaction to 'new' (see
+// transactionStore.deleteSplit and revertCombinedSplit below), so this is
+// also where an `amount` lock is dropped: it was protecting a same-id rekey
+// against re-raising a since-resolved review (see revertReviewedAmount's
+// comment), and it must not outlive the split it was protecting — otherwise
+// a re-split transaction stays stuck at the wrong amount forever. Every
+// other lock is left alone. Both stores share one transaction so a failure
+// can't drop the decision without also clearing the lock, or vice versa.
 export async function deleteSplitDecision(transactionId: string): Promise<void> {
-  const tx = (await dbReady()).transaction(DECISION_STORE, 'readwrite');
+  const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
   tx.objectStore(DECISION_STORE).delete(transactionId);
+  const txStore = tx.objectStore(TX_STORE);
+  const existing = await req(txStore.get(transactionId) as IDBRequest<Transaction | undefined>);
+  if (existing) {
+    txStore.put({
+      ...existing,
+      edited_fields: parseLocks(removeLocks(existing.edited_fields, ['amount'])),
+    });
+  }
   await done(tx);
 }
 
@@ -684,6 +769,8 @@ export async function persistCombinedSplit(decisions: SplitDecision[]): Promise<
 
 // Atomically delete every member's decision row and revert its transaction to
 // 'new'. Single transaction so a failure can't leave the group half-reverted.
+// Also drops each row's `amount` lock, for the same reason deleteSplitDecision
+// does — a lock protecting a same-id rekey must not outlive the split.
 export async function revertCombinedSplit(transactionIds: string[]): Promise<void> {
   if (transactionIds.length === 0) return;
   const tx = (await dbReady()).transaction([TX_STORE, DECISION_STORE], 'readwrite');
@@ -694,7 +781,13 @@ export async function revertCombinedSplit(transactionIds: string[]): Promise<voi
   transactionIds.forEach((id, i) => {
     tx.objectStore(DECISION_STORE).delete(id);
     const existing = rows[i];
-    if (existing) txStore.put(withClearedNonManualBucket({ ...existing, status: 'new' }));
+    if (existing) {
+      txStore.put(withClearedNonManualBucket({
+        ...existing,
+        status: 'new',
+        edited_fields: parseLocks(removeLocks(existing.edited_fields, ['amount'])),
+      }));
+    }
   });
   await done(tx);
 }
