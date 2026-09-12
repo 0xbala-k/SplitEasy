@@ -141,17 +141,31 @@ export async function deleteExpense(expenseId: string): Promise<void> {
   await swPost(`/delete_expense/${encodeURIComponent(expenseId)}`, {});
 }
 
-// Returns each participant's owed_share (in dollars) keyed by Splitwise user id.
-export async function getExpense(expenseId: string): Promise<Record<string, number>> {
+/**
+ * Read an expense's owed shares (in dollars, keyed by Splitwise user id) and
+ * the group it belongs to.
+ *
+ * groupId matters because every write path rebuilds the whole expense body and
+ * PUTs it — a group we don't re-send is a group the expense loses.
+ *
+ * Splitwise reports group_id: 0 (not null) for a non-group expense.
+ */
+export async function getExpense(
+  expenseId: string
+): Promise<{ shares: Record<string, number>; groupId: string | null }> {
   const data = await swGet<{
-    expense: { users: { user: { id: number }; owed_share: string }[] };
+    expense: {
+      group_id?: number | string | null;
+      users: { user: { id: number }; owed_share: string }[];
+    };
   }>(`/get_expense/${encodeURIComponent(expenseId)}`);
   const shares: Record<string, number> = {};
   for (const u of data.expense.users) {
     const owed = parseFloat(u.owed_share);
     shares[String(u.user.id)] = Number.isNaN(owed) ? 0 : owed;
   }
-  return shares;
+  const groupId = data.expense.group_id ? String(data.expense.group_id) : null;
+  return { shares, groupId };
 }
 
 // Splitwise caps a page at 100 and offers no cursor, so pagination is by

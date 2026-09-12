@@ -204,8 +204,27 @@ export interface ReviewItem {
   date: string;
   reason: ReviewReason;
   split: { friend_names: string[]; amount_each: number };
+  /**
+   * Splitwise's id for the expense, or null while the split's create is still
+   * queued (see pending_splitwise_ops). This is the ONLY field any Splitwise
+   * call may use — `expense_id` below can be a Plaid transaction id.
+   */
+  splitwise_expense_id: string | null;
+  /**
+   * Stable key for collapsing a combined split's members into one row.
+   * Falls back to the transaction id when the split has not pushed yet, so it
+   * is never null and never safe to send to Splitwise.
+   */
   expense_id: string;
-  transaction_ids: string[];   // 1 entry for single, N for combined
+  transaction_ids: string[];   // 1 entry for single, N for combined — flagged members only
+  /**
+   * Every transaction sharing this Splitwise expense, flagged or not.
+   *
+   * `amount` is summed across all of these, so the total pushed to Splitwise
+   * is the expense's real total. `transaction_ids` stays flagged-only — those
+   * are the rows whose review is being resolved.
+   */
+  member_transaction_ids: string[];
 }
 
 export type VacationStatus = 'draft' | 'active' | 'ended';

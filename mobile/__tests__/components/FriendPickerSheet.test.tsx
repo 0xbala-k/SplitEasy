@@ -134,7 +134,7 @@ beforeEach(() => {
   (useTransactionStore as jest.Mock).mockImplementation((sel) =>
     sel({ markSplit: jest.fn(), commitCombinedSplit: mockCommitCombined })
   );
-  mockGetExpense.mockResolvedValue({ '1': 10, '2': 10 });
+  mockGetExpense.mockResolvedValue({ shares: { '1': 10, '2': 10 }, groupId: null });
   mockUpdateExpense.mockResolvedValue({ amount_each: 10 });
   mockUpsert.mockResolvedValue(undefined);
   mockCreateExpense.mockResolvedValue({ expense_id: 'expNew', amount_each: 10 });

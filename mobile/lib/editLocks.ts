@@ -38,6 +38,21 @@ export function addLocks(
 }
 
 /**
+ * Drop fields from a stored lock list, leaving every other lock alone.
+ *
+ * Used when a lock has outlived what it was protecting — e.g. deleting a
+ * split must drop its `amount` lock, since the row is going back to 'new'
+ * and needs to track the bank's amount again.
+ */
+export function removeLocks(
+  raw: string | string[] | null | undefined,
+  fields: string[]
+): string | null {
+  const drop = new Set(fields);
+  return serializeLocks(parseLocks(raw).filter((f) => !drop.has(f)));
+}
+
+/**
  * Strip every key the user has locked from an upstream write.
  *
  * Returns only the keys the caller may still write, so a caller builds its

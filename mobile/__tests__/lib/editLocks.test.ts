@@ -1,5 +1,5 @@
 // mobile/__tests__/lib/editLocks.test.ts
-import { parseLocks, serializeLocks, addLocks, applyLocks } from '@/lib/editLocks';
+import { parseLocks, serializeLocks, addLocks, applyLocks, removeLocks } from '@/lib/editLocks';
 
 describe('parseLocks', () => {
   test('returns [] for null, undefined and empty string', () => {
@@ -79,5 +79,27 @@ describe('applyLocks', () => {
     const copy = { ...incoming };
     applyLocks(incoming, '["amount"]');
     expect(incoming).toEqual(copy);
+  });
+});
+
+describe('removeLocks', () => {
+  test('drops the named field, leaving other locks alone', () => {
+    expect(removeLocks('["amount","merchant_name"]', ['amount'])).toBe('["merchant_name"]');
+  });
+
+  test('returns null when the last lock is removed', () => {
+    expect(removeLocks('["amount"]', ['amount'])).toBeNull();
+  });
+
+  test('is a no-op when the field was never locked', () => {
+    expect(removeLocks('["merchant_name"]', ['amount'])).toBe('["merchant_name"]');
+  });
+
+  test('returns null for a NULL column', () => {
+    expect(removeLocks(null, ['amount'])).toBeNull();
+  });
+
+  test('accepts the web array representation', () => {
+    expect(removeLocks(['amount', 'date'], ['amount'])).toBe('["date"]');
   });
 });

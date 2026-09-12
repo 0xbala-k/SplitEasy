@@ -2,7 +2,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchTransactions, WorkerError } from '@/lib/worker';
-import { deleteExpense, getExpensesUpdatedAfter, SplitwiseAuthError } from '@/lib/splitwise';
+import { deleteExpense, getExpensesUpdatedAfter, getExpense, updateExpense, SplitwiseAuthError } from '@/lib/splitwise';
 import { decideInboxAction } from '@/lib/splitwiseInbox';
 import {
   getNewTransactions,
@@ -15,6 +15,9 @@ import {
   markTransactionsReversed,
   getReviewTransactions,
   clearReview,
+  revertReviewedAmount,
+  deleteTransactionsByPlaidIds,
+  getSplitDecision,
   getMerchantBuckets,
   setTransactionBucket,
   getSplitwiseInbox,
@@ -56,6 +59,8 @@ interface TransactionState {
   deleteCombinedSplit: (transactionIds: string[], splitwiseExpenseId: string) => Promise<void>;
   loadReview: () => Promise<void>;
   resolveReview: (transactionIds: string[]) => Promise<void>;
+  acceptReview: (item: ReviewItem) => Promise<void>;
+  rejectReview: (item: ReviewItem) => Promise<void>;
   setBucket: (ids: string[], bucket: Bucket) => Promise<void>;
   loadInbox: () => Promise<void>;
   syncSplitwiseInbox: () => Promise<void>;
@@ -66,6 +71,33 @@ interface TransactionState {
   excludeTransaction: (id: string) => Promise<void>;
   restoreTransaction: (id: string) => Promise<void>;
   addManualTransaction: (input: ManualTransactionInput) => Promise<void>;
+}
+
+/**
+ * Scale each friend's owed share by newAmount/oldAmount, in integer cents.
+ *
+ * Preserves the split's shape: an equal split stays equal at the new total and
+ * a custom split keeps its proportions. The owner is deliberately excluded —
+ * buildExpenseBody derives the owner's share as amount - sum(friendShares), so
+ * the owner absorbs the rounding remainder exactly as everywhere else.
+ *
+ * Returns undefined when it cannot scale honestly (no friends, or an old
+ * amount of zero, which has no meaningful ratio), which the caller passes
+ * straight through to updateExpense as "split this equally".
+ */
+export function scaleFriendShares(
+  shares: Record<string, number>,
+  friendIds: string[],
+  oldAmount: number,
+  newAmount: number
+): Record<string, number> | undefined {
+  if (friendIds.length === 0 || oldAmount <= 0) return undefined;
+  const ratio = newAmount / oldAmount;
+  const out: Record<string, number> = {};
+  for (const id of friendIds) {
+    out[id] = Math.round((shares[id] ?? 0) * ratio * 100) / 100;
+  }
+  return out;
 }
 
 export const useTransactionStore = create<TransactionState>((set, get) => ({
@@ -194,6 +226,97 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
   resolveReview: async (transactionIds) => {
     await clearReview(transactionIds);
     await get().loadReview();
+  },
+
+  /**
+   * Apply what the bank reported.
+   *
+   * amount_changed: push the posted amount to the existing expense, keeping
+   * the split's shape. reversed: delete the expense and the local rows.
+   *
+   * Throws SPLIT_NOT_PUSHED when the split's create is still queued — its
+   * splitwise_expense_id is null, and there is nothing upstream to act on yet.
+   */
+  acceptReview: async (item) => {
+    const expenseId = item.splitwise_expense_id;
+    if (!expenseId) throw new Error('SPLIT_NOT_PUSHED');
+
+    if (item.reason === 'reversed') {
+      // Revert every member of the expense (not just the flagged ones), so no
+      // sibling that posted normally is left pointing at a deleted expense —
+      // then delete only the flagged rows outright. A sibling that posted
+      // normally reverts to 'new' instead of being deleted.
+      if (item.member_transaction_ids.length > 1) {
+        await get().deleteCombinedSplit(item.member_transaction_ids, expenseId);
+      } else {
+        await get().deleteSplit(item.member_transaction_ids[0], expenseId);
+      }
+      await deleteTransactionsByPlaidIds(item.transaction_ids);
+      await get().load();
+      await get().loadReview();
+      return;
+    }
+
+    const decision = await getSplitDecision(item.transaction_ids[0]);
+    // An absent decision has no friends to preserve — pushing forward would
+    // rewrite the expense as owner-only, silently removing every participant.
+    if (!decision) throw new Error('SPLIT_DECISION_MISSING');
+    const friendIds = decision.friend_ids;
+    let friendShares: Record<string, number> | undefined;
+    let groupId: string | undefined;
+    try {
+      const { shares, groupId: fetchedGroupId } = await getExpense(expenseId);
+      friendShares = scaleFriendShares(
+        shares,
+        friendIds,
+        item.amount_changed_from ?? 0,
+        item.amount
+      );
+      groupId = fetchedGroupId ?? undefined;
+    } catch {
+      // Network or auth failure reading the current shares/group: fall back to
+      // an equal split of the new total with no group. The user can still
+      // correct either via Edit.
+      friendShares = undefined;
+      groupId = undefined;
+    }
+
+    try {
+      await updateExpense(expenseId, {
+        amount: item.amount,
+        description: decision.description || item.merchant_name,
+        currency: item.currency,
+        currentUserId: useAuthStore.getState().user_id!,
+        friendIds,
+        friendShares,
+        groupId,
+      });
+    } catch (err) {
+      if (err instanceof SplitwiseAuthError) useAuthStore.getState().reportAuthFailure();
+      throw err;
+    }
+
+    await clearReview(item.transaction_ids);
+    await get().loadReview();
+    await get().load();
+  },
+
+  /**
+   * Decline what the bank reported and clear the row.
+   *
+   * amount_changed: restore the pre-posting amount so it matches the untouched
+   * Splitwise expense again (revertReviewedAmount clears the review columns as
+   * part of the same write). reversed: there is no amount to revert, so keep
+   * the split exactly as it is and only clear the queue entry.
+   */
+  rejectReview: async (item) => {
+    if (item.reason === 'amount_changed') {
+      await revertReviewedAmount(item.transaction_ids);
+    } else {
+      await clearReview(item.transaction_ids);
+    }
+    await get().loadReview();
+    await get().load();
   },
 
   // Takes a list because a combined split is one row over several
