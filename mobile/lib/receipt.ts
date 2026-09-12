@@ -52,8 +52,11 @@ export interface ReceiptComputeResult {
  *   fallback (see the tax fallback in computeReceiptShares).
  * - Works for negative totalCents without throwing; the result always sums
  *   to exactly `totalCents`.
+ *
+ * Exported so lib/shares.ts can reuse it — the shares split mode is the same
+ * weighted apportionment, with share counts as the weights.
  */
-function distribute(totalCents: number, weights: number[]): number[] {
+export function distribute(totalCents: number, weights: number[]): number[] {
   const n = weights.length;
   const weightSum = weights.reduce((a, b) => a + b, 0);
   if (weightSum === 0) {
