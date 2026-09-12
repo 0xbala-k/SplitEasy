@@ -16,9 +16,11 @@ import { useGroupStore } from '@/stores/groupStore';
 import { TransactionRow } from '@/components/TransactionRow';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { AddToVacationSheet } from '@/components/AddToVacationSheet';
+import { HistoryActionSheet } from '@/components/HistoryActionSheet';
 import { useToast } from '@/components/ToastProvider';
 import { EditDatesSheet } from '@/components/EditDatesSheet';
 import { GroupPickerSheet } from '@/components/GroupPickerSheet';
+import { useSplitEditor } from '@/hooks/useSplitEditor';
 import { HistoryItem, SplitwiseGroup, Transaction } from '@/lib/types';
 import { formatDayLabel, formatDayLabelWithYear } from '@/lib/date';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
@@ -67,6 +69,11 @@ export default function VacationDetailScreen() {
     getVacationPendingTransactions(id).then(setPending).catch(console.error);
     getVacationHistory(id).then(setHistory).catch(console.error);
   }, [id]);
+
+  // Edits/deletes an already-split recap row. No resolveMode: this page never
+  // shows excluded rows, so the hook's default (imported -> readOnly,
+  // everything else -> default) is exactly right.
+  const splitEditor = useSplitEditor({ onChange: refresh });
 
   useFocusEffect(
     useCallback(() => {
@@ -369,7 +376,7 @@ export default function VacationDetailScreen() {
             <View style={styles.historySection}>
               <Text style={styles.sectionHeader}>Already split</Text>
               {history.map((h) => (
-                <HistoryRecapRow key={h.id} item={h} />
+                <HistoryRecapRow key={h.id} item={h} onPress={() => splitEditor.openFor(h)} />
               ))}
             </View>
           ) : null
@@ -407,6 +414,16 @@ export default function VacationDetailScreen() {
         groupMemberIds={vacation.splitwise_group_member_ids ?? undefined}
         onSuccess={handleSplitSuccess}
       />
+      {/*
+        A second, separate FriendPickerSheet: the one above splits *pending*
+        trip transactions and carries the trip's groupId/groupMemberIds; this
+        one (from useSplitEditor) edits splits that already exist, for the
+        "Already split" recap rows below. Two FriendPickerSheets on one screen
+        is deliberate — they have separate refs and never present at the same
+        time. Don't "fix" this into one.
+      */}
+      <FriendPickerSheet ref={splitEditor.pickerRef} {...splitEditor.pickerProps} />
+      <HistoryActionSheet ref={splitEditor.actionRef} {...splitEditor.actionProps} />
       <AddToVacationSheet
         ref={addRef}
         vacationId={vacation.id}
@@ -430,10 +447,19 @@ export default function VacationDetailScreen() {
   );
 }
 
-function HistoryRecapRow({ item }: { item: HistoryItem }) {
+function HistoryRecapRow({ item, onPress }: { item: HistoryItem; onPress: () => void }) {
   const color = merchantColor(item.merchant_name);
   return (
-    <View style={styles.recapRow}>
+    <Pressable
+      style={({ pressed }) => [styles.recapRow, pressed && styles.recapRowPressed]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={
+        item.status === 'skipped'
+          ? `Split ${item.merchant_name}`
+          : `Edit or delete split for ${item.merchant_name}`
+      }
+    >
       <View style={[styles.recapAvatar, { backgroundColor: color + '18' }]}>
         <Text style={[styles.recapAvatarText, { color }]}>{item.merchant_name[0].toUpperCase()}</Text>
       </View>
@@ -450,7 +476,7 @@ function HistoryRecapRow({ item }: { item: HistoryItem }) {
         )}
       </View>
       <Text style={styles.recapAmount}>${item.amount.toFixed(2)}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -491,6 +517,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surface, borderRadius: Radius.lg,
     padding: Spacing.md, marginBottom: 8, ...Shadow.sm,
   },
+  recapRowPressed: { backgroundColor: Colors.surfaceMuted },
   recapAvatar: { width: 36, height: 36, borderRadius: Radius.sm, justifyContent: 'center', alignItems: 'center', marginRight: Spacing.md },
   recapAvatarText: { fontSize: 14, fontWeight: '700' },
   recapInfo: { flex: 1 },
