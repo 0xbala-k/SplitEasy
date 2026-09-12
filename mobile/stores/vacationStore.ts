@@ -7,9 +7,10 @@ import {
   endVacation as dbEndVacation,
   deleteVacation as dbDeleteVacation,
   updateVacationDates as dbUpdateVacationDates,
+  updateVacationGroup as dbUpdateVacationGroup,
   reconcileVacationStatuses,
 } from '@/lib/db';
-import { Vacation, CreateVacationInput } from '@/lib/types';
+import { Vacation, CreateVacationInput, SplitwiseGroup } from '@/lib/types';
 
 interface VacationState {
   vacations: Vacation[];
@@ -22,6 +23,7 @@ interface VacationState {
   endVacation: (id: string) => Promise<void>;
   deleteVacation: (id: string) => Promise<void>;
   updateDates: (id: string, startDate: string | null, endDate: string | null) => Promise<void>;
+  updateGroup: (id: string, group: SplitwiseGroup | null) => Promise<void>;
 }
 
 export const useVacationStore = create<VacationState>((set, get) => ({
@@ -70,5 +72,12 @@ export const useVacationStore = create<VacationState>((set, get) => ({
     // now, or push an active vacation's end into the past, and status has to
     // follow the dates the same way it does on create.
     await get().reconcile();
+  },
+
+  // Plain load(), not reconcile(): unlike dates, a group cannot make a draft
+  // due now or push an active trip's end into the past.
+  updateGroup: async (id, group) => {
+    await dbUpdateVacationGroup(id, group);
+    await get().load();
   },
 }));
