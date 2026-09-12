@@ -96,6 +96,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const [tipCents, setTipCents] = useState(0);
     const [useReceiptTotal, setUseReceiptTotal] = useState(false);
     const autoToggledRef = useRef(false);
+    // Latches so the Groups tab's lazy load (see showGroupsTab below) fires at
+    // most once per open, even if the user flips between Friends and Groups
+    // repeatedly — the store is cache-first, so a refetch on every tap would
+    // be wasted network, not a correctness issue, but it's still pointless.
+    const groupsLoadedRef = useRef(false);
     const toast = useToast();
 
     // Receipt-mode state is never loaded from a persisted edit decision (see
@@ -131,6 +136,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       autoToggledRef.current = false;
       setFriendTab('friends');
       setPickedGroup(null);
+      groupsLoadedRef.current = false;
     }
 
     useEffect(() => {
@@ -201,10 +207,6 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [openToken]);
-
-    useEffect(() => {
-      void loadGroups();
-    }, [loadGroups]);
 
     const filtered = useMemo(() => {
       const q = query.trim().toLowerCase();
@@ -380,6 +382,21 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     // React throws "rendered more hooks than during the previous render" —
     // which unmounts the whole tree (blank screen) on tapping Split.
     if (members.length === 0) return null;
+
+    // Groups are loaded lazily, on first switch to the Groups tab, not on
+    // mount — the picker is mounted unconditionally by several screens
+    // (Transactions, History, vacation detail) whether or not it's ever
+    // opened, let alone switched to Groups. The vacation detail screen also
+    // loads groups itself, gated on `canEditGroup`; a mount-time load here
+    // would bypass that gate and double-fetch. The store is cache-first, so
+    // the cached list (if any) still renders instantly on this first switch.
+    function showGroupsTab() {
+      setFriendTab('groups');
+      if (!groupsLoadedRef.current) {
+        groupsLoadedRef.current = true;
+        void loadGroups();
+      }
+    }
 
     function switchToCustom() {
       const baseShareCents = Math.floor(totalCents / n);
@@ -678,7 +695,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
               </Pressable>
               <Pressable
                 style={[styles.tabBtn, friendTab === 'groups' && styles.tabBtnActive]}
-                onPress={() => setFriendTab('groups')}
+                onPress={showGroupsTab}
                 accessibilityRole="button"
                 accessibilityState={{ selected: friendTab === 'groups' }}
               >

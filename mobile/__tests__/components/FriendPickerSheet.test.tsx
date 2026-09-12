@@ -687,6 +687,25 @@ describe('groups in the friend picker', () => {
     useGroupStore.setState({ groups: [roommates], isLoading: false, isStale: false });
   });
 
+  test('groups are not loaded until the Groups tab is opened', async () => {
+    renderPicker();
+    // Flush any pending microtasks from mount without ever pressing Groups.
+    await Promise.resolve();
+    expect(mockGetGroups).not.toHaveBeenCalled();
+  });
+
+  test('switching to the Groups tab triggers the load; switching back and forth does not refetch', async () => {
+    const { getByText } = renderPicker();
+    expect(mockGetGroups).not.toHaveBeenCalled();
+
+    fireEvent.press(getByText('Groups'));
+    await waitFor(() => expect(mockGetGroups).toHaveBeenCalledTimes(1));
+
+    fireEvent.press(getByText('Friends'));
+    fireEvent.press(getByText('Groups'));
+    expect(mockGetGroups).toHaveBeenCalledTimes(1);
+  });
+
   test('the Groups tab lists the user groups', async () => {
     const { getByText } = renderPicker();
 
@@ -704,6 +723,34 @@ describe('groups in the friend picker', () => {
     // Back on the Friends tab, with both members ticked.
     await waitFor(() => expect(getByLabelText('Alice').props.accessibilityState.checked).toBe(true));
     expect(getByLabelText('Bob').props.accessibilityState.checked).toBe(true);
+  });
+
+  // Modeled on the top-level 're-presenting (openToken change) re-runs the
+  // pre-fill' test. `friendTab` and `pickedGroup` reset in the render-phase
+  // `openToken` block (see the long comment above it in the component) —
+  // this is the one thing exercising that reset for the groups feature, so a
+  // future "cleanup" converting that block to a useEffect (which the comment
+  // explicitly warns against) would go uncaught without it.
+  test('reopening the picker (openToken change) resets the tab and clears the picked group chip', async () => {
+    const { getByText, getByLabelText, queryByLabelText, queryByText, rerender } = render(
+      <FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
+    );
+
+    fireEvent.press(getByText('Groups'));
+    fireEvent.press(getByText('Roommates'));
+    await waitFor(() => getByLabelText('Remove group Roommates'));
+
+    rerender(
+      <FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={2} onSuccess={jest.fn()} />
+    );
+
+    // The chip is gone...
+    expect(queryByLabelText('Remove group Roommates')).toBeNull();
+    // ...and the view is back on the Friends tab: friend rows render again
+    // (a group row is an accessibilityRole="button" labeled by the group's
+    // name, not a friend's), and the group's own name is no longer listed.
+    expect(getByLabelText('Alice')).toBeTruthy();
+    expect(queryByText('Roommates')).toBeNull();
   });
 
   test('a picked group shows a removable chip', async () => {
@@ -803,5 +850,48 @@ describe('groups in the friend picker', () => {
     fireEvent.press(getByText('Custom'));
 
     expect(queryByText('Groups')).toBeNull();
+  });
+
+  // Splitwise groups can contain people the user has no friendship with —
+  // `member_ids` isn't guaranteed to be a subset of the friends list. Every
+  // other fixture group here maps 1:1 onto fixture friends, so this group
+  // deliberately includes an id ('stranger1') absent from the friends fixture
+  // to prove pickGroup's `friendIds.has(id)` filter actually runs, rather
+  // than everything passing incidentally because nothing exercises it.
+  const familyWithAStranger: SplitwiseGroup = {
+    id: 'g4',
+    name: 'Family',
+    member_ids: ['f1', 'stranger1'],
+    member_names: ['Alice', 'Not A Friend'],
+  };
+
+  test('a group with a non-friend member selects only the real friends', async () => {
+    useGroupStore.setState({ groups: [roommates, familyWithAStranger] });
+    const { getByText, getByLabelText, queryByLabelText } = renderPicker();
+
+    fireEvent.press(getByText('Groups'));
+    fireEvent.press(getByText('Family'));
+
+    await waitFor(() => expect(getByLabelText('Alice').props.accessibilityState.checked).toBe(true));
+    // The stranger isn't a friend, so it never gets a row to check in the
+    // first place — this alone would hold even if `pickGroup` selected the
+    // stranger's id unfiltered, since only real friends ever get rendered.
+    expect(queryByLabelText('Not A Friend')).toBeNull();
+
+    // The equal-split preview divides by `selected.size` directly (not by the
+    // count of real friend rows), so a stray non-friend id left in `selected`
+    // would silently inflate the head count and shrink everyone's share. tx
+    // total is $20; with only Alice actually selected that's $20 / 2 people =
+    // $10.00 each. An unfiltered pick (2 ids) would instead show $6.67 among
+    // 3 people — this is the assertion that would actually catch a dropped
+    // filter, unlike the checkbox/row assertions above.
+    expect(getByText('$10.00 each · 2 people')).toBeTruthy();
+
+    fireEvent.press(getByLabelText('Add split to Splitwise'));
+
+    await waitFor(() => expect(mockEnqueueOp).toHaveBeenCalled());
+    const payload = lastEnqueuedPayload();
+    expect(payload.friendIds).toEqual(['f1']);
+    expect(payload.friendIds).not.toContain('stranger1');
   });
 });
