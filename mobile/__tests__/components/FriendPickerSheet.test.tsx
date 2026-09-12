@@ -747,22 +747,44 @@ describe('shares split mode', () => {
     expect(screen.getByLabelText('Add split to Splitwise').props.accessibilityState.disabled).toBe(true);
   });
 
-  test('share counts do not leak into the next sheet session', () => {
+  test('re-entering Shares mode always reseeds every participant at one share, never the prior count', async () => {
     const { rerender } = render(
       <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={1} onSuccess={jest.fn()} />
     );
     fireEvent.press(screen.getByLabelText('Alice'));
     fireEvent.press(screen.getByText('Shares'));
+    // Owner 1, Alice 1 -> bump Alice to 4: $100 across 1:4 -> $20 / $80.
     fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    expect(await screen.findByText(/\$80\.00/)).toBeTruthy();
+
+    // Leave Shares mode and come straight back to it, in the same sheet
+    // session. This re-runs switchToShares while Alice's raised count is
+    // still sitting in shareCounts state -- it must reseed her back to one
+    // share (a fresh 1:1 split -> $50/$50) rather than carrying the old
+    // count forward. This is the guarantee that would break if switchToShares
+    // were ever changed to merge in the previous shareCounts instead of
+    // rebuilding the map from scratch.
+    fireEvent.press(screen.getByText('Equal'));
+    fireEvent.press(screen.getByText('Shares'));
+    expect(screen.getByLabelText("Alice's share count").props.value).toBe('1');
+    expect(await screen.findAllByText(/\$50\.00/)).toHaveLength(2);
+
+    // The same guarantee is what a user actually relies on across sheet
+    // sessions: closing this sheet and opening a new one to split a
+    // different charge must not inherit Alice's raised count either.
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    fireEvent.press(screen.getByLabelText("Increase Alice's share count"));
+    expect(await screen.findByText(/\$80\.00/)).toBeTruthy();
 
     rerender(
       <FriendPickerSheet transaction={{ ...tx, amount: 100, status: 'new' }} openToken={2} onSuccess={jest.fn()} />
     );
     fireEvent.press(screen.getByLabelText('Alice'));
     fireEvent.press(screen.getByText('Shares'));
-
-    // If shareCounts had leaked, Alice would still be at 2 shares from the
-    // previous session instead of freshly reseeded at 1.
     expect(screen.getByLabelText("Alice's share count").props.value).toBe('1');
+    expect(await screen.findAllByText(/\$50\.00/)).toHaveLength(2);
   });
 });
