@@ -13,9 +13,20 @@ jest.mock('@/lib/db', () => ({
   deleteImportedExpense: jest.fn().mockResolvedValue(undefined),
   setTransactionBucket: jest.fn(),
   removeTransactionFromVacation: jest.fn(),
+  // FriendPickerSheet's group-loading effect (Task 2) reads/refreshes the
+  // group cache on every mount, and history.tsx always mounts the sheet.
+  getCachedGroups: jest.fn().mockResolvedValue([]),
+  replaceCachedGroups: jest.fn().mockResolvedValue(undefined),
 }));
 // Mocked so a test can assert the app NEVER writes to a friend's expense.
-jest.mock('@/lib/splitwise', () => ({ deleteExpense: jest.fn() }));
+// getGroups/SplitwiseAuthError are here only because FriendPickerSheet's
+// group-loading effect (Task 2) runs on every mount, real class kept so the
+// store's own `instanceof SplitwiseAuthError` check doesn't blow up.
+jest.mock('@/lib/splitwise', () => ({
+  deleteExpense: jest.fn(),
+  getGroups: jest.fn().mockResolvedValue([]),
+  SplitwiseAuthError: jest.requireActual('@/lib/splitwise').SplitwiseAuthError,
+}));
 jest.mock('@/lib/dialog', () => ({ showDialog: jest.fn() }));
 // history.tsx always mounts FriendPickerSheet (with `transaction` non-null as
 // soon as any row is selected, action-sheet rows included), so its body always
