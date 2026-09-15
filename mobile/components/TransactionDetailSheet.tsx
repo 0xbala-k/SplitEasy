@@ -29,6 +29,7 @@ export interface DetailSheetResult {
   amount: number;
   date: string;
   my_share?: number; // 'inbox' mode only
+  vacation_id?: string | null; // 'inbox' mode only
   bucket: Bucket;
 }
 
@@ -38,6 +39,12 @@ export interface TransactionDetailSheetProps {
   inboxItem?: SplitwiseInboxItem | null; // 'inbox'
   bucket: Bucket;
   bucketLocked?: boolean;
+  // 'inbox' mode only. The host owns the choice — same division of labour as
+  // `bucket`/`onBucketPress` — and the sheet echoes the id back on submit so
+  // the accept sees one consistent snapshot of what was on screen.
+  vacationId?: string | null;
+  vacationName?: string | null;
+  onVacationPress?: () => void;
   openToken: number;
   onSubmit: (result: DetailSheetResult) => void;
   onDelete?: () => void; // omit in 'create' mode; label follows the mode
@@ -74,7 +81,11 @@ function parseAmountForMode(raw: string, mode: DetailSheetMode): number | null {
 }
 
 export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDetailSheetProps>(
-  ({ mode, transaction, inboxItem, bucket, bucketLocked, openToken, onSubmit, onDelete, onBucketPress }, ref) => {
+  ({
+    mode, transaction, inboxItem, bucket, bucketLocked,
+    vacationId, vacationName, onVacationPress,
+    openToken, onSubmit, onDelete, onBucketPress,
+  }, ref) => {
     const [name, setName] = useState('');
     const [amount, setAmount] = useState('');
     const [share, setShare] = useState('');
@@ -126,6 +137,7 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
         amount: parsedAmount,
         date,
         ...(mode === 'inbox' && parsedShare !== null ? { my_share: parsedShare } : {}),
+        ...(mode === 'inbox' ? { vacation_id: vacationId ?? null } : {}),
         bucket,
       });
     }
@@ -200,6 +212,22 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
             placeholder="YYYY-MM-DD"
           />
 
+          {mode === 'inbox' && (
+            <>
+              <Text style={styles.label}>Vacation</Text>
+              <Pressable
+                style={styles.vacationRow}
+                onPress={onVacationPress}
+                accessibilityRole="button"
+                accessibilityLabel="Vacation"
+              >
+                <Text style={[styles.vacationName, !vacationName && styles.vacationNone]} numberOfLines={1}>
+                  {vacationName ?? 'None'}
+                </Text>
+              </Pressable>
+            </>
+          )}
+
           <Text style={styles.label}>Bucket</Text>
           <View accessibilityLabel="Bucket" accessibilityState={{ disabled: !!bucketLocked }}>
             <BucketChip bucket={bucket} locked={bucketLocked} onPress={bucketLocked ? undefined : onBucketPress} />
@@ -217,6 +245,17 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
 );
 
 const styles = StyleSheet.create({
+  vacationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceMuted,
+  },
+  vacationName: { flex: 1, minWidth: 0, fontSize: 15, color: Colors.textPrimary, fontWeight: '500' },
+  vacationNone: { color: Colors.textSecondary, fontWeight: '400' },
   body: {
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.sm,

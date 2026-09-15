@@ -59,7 +59,7 @@ jest.mock('expo-router', () => ({
 }));
 
 import React from 'react';
-import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { render, fireEvent, screen, waitFor, within } from '@testing-library/react-native';
 import TransactionsScreen from '@/app/(tabs)/index';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useVacationStore } from '@/stores/vacationStore';
@@ -139,7 +139,7 @@ it('choosing a bucket in the sheet, then accepting, uses that bucket', async () 
   fireEvent.press(await screen.findByLabelText('Move Dinner to Food'));
   fireEvent.press(screen.getByText('Accept'));
   await waitFor(() => expect(accept).toHaveBeenCalledWith(
-    expect.objectContaining({ expense_id: '555' }), 'food'
+    expect.objectContaining({ expense_id: '555' }), 'food', null
   ));
 });
 
@@ -159,7 +159,10 @@ it('a group-matched expense renders locked and still requires Accept', async () 
   jest.useFakeTimers();
   try {
     const accept = jest.fn().mockResolvedValue(undefined);
-    useVacationStore.setState({ activeVacation: vacation({ splitwise_group_id: '42' }) });
+    useVacationStore.setState({
+      activeVacation: vacation({ splitwise_group_id: '42' }),
+      vacations: [vacation({ splitwise_group_id: '42' })],
+    });
     useTransactionStore.setState({ splitwiseInbox: [item({ group_id: '42' })], acceptInboxItem: accept });
     render(<ToastProvider><TransactionsScreen /></ToastProvider>);
     fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
@@ -167,11 +170,11 @@ it('a group-matched expense renders locked and still requires Accept', async () 
     expect(screen.getByLabelText('Bucket').props.accessibilityState.disabled).toBe(true);
     fireEvent.press(screen.getByText('Accept'));
     await waitFor(() => expect(accept).toHaveBeenCalledWith(
-      expect.objectContaining({ expense_id: '555', group_id: '42' }), expect.any(String)
+      expect.objectContaining({ expense_id: '555', group_id: '42' }), expect.any(String), 'vac1'
     ));
-    // The store, not the screen, forces 'travel' from here — the screen no
-    // longer has its own vacation-specific toast copy.
-    expect(await screen.findByText('Added to History')).toBeTruthy();
+    // The store, not the screen, forces 'travel' from here; the toast names
+    // the trip the expense landed in rather than the generic History copy.
+    expect(await screen.findByText('Added to Tokyo')).toBeTruthy();
   } finally {
     jest.clearAllTimers();
     jest.useRealTimers();
@@ -256,4 +259,78 @@ test('accepting a group-matched inbox expense assigns travel regardless of the c
   // The store, not the screen, forces 'travel'. The screen must not have
   // pre-empted that decision by passing something else it computed itself.
   expect(acceptInboxItem.mock.calls[0][0].expense_id).toBe('e1');
+});
+
+describe('choosing a vacation at accept time', () => {
+  it('seeds the row from the group match and locks the bucket', async () => {
+    useVacationStore.setState({
+      activeVacation: vacation({ splitwise_group_id: '42' }),
+      vacations: [vacation({ splitwise_group_id: '42' })],
+    });
+    useTransactionStore.setState({ splitwiseInbox: [item({ group_id: '42' })] });
+    render(<TransactionsScreen />);
+    fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+
+    expect(within(screen.getByLabelText('Vacation')).getByText('Tokyo')).toBeTruthy();
+    expect(screen.getByLabelText('Bucket').props.accessibilityState.disabled).toBe(true);
+  });
+
+  it('shows None when nothing matches', async () => {
+    useTransactionStore.setState({ splitwiseInbox: [item({ group_id: '42' })] });
+    render(<TransactionsScreen />);
+    fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+
+    expect(within(screen.getByLabelText('Vacation')).getByText('None')).toBeTruthy();
+    expect(screen.getByLabelText('Bucket').props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('routes the accept to a trip picked by hand, group match or not', async () => {
+    jest.useFakeTimers();
+    try {
+      const accept = jest.fn().mockResolvedValue(undefined);
+      useVacationStore.setState({
+        activeVacation: null,
+        vacations: [vacation({ id: 'v2', name: 'Banff', status: 'draft' })],
+      });
+      useTransactionStore.setState({ splitwiseInbox: [item()], acceptInboxItem: accept });
+      render(<ToastProvider><TransactionsScreen /></ToastProvider>);
+      fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+
+      fireEvent.press(screen.getByLabelText('Vacation'));
+      fireEvent.press(await screen.findByLabelText('Banff'));
+      // Picking a trip locks the bucket, the same way a group match already did.
+      expect(screen.getByLabelText('Bucket').props.accessibilityState.disabled).toBe(true);
+
+      fireEvent.press(screen.getByText('Accept'));
+      await waitFor(() => expect(accept).toHaveBeenCalledWith(
+        expect.objectContaining({ expense_id: '555' }), expect.any(String), 'v2'
+      ));
+      expect(await screen.findByText('Added to Banff')).toBeTruthy();
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('clearing a seeded trip back to None accepts outside every vacation', async () => {
+    const accept = jest.fn().mockResolvedValue(undefined);
+    useVacationStore.setState({
+      activeVacation: vacation({ splitwise_group_id: '42' }),
+      vacations: [vacation({ splitwise_group_id: '42' })],
+    });
+    useTransactionStore.setState({ splitwiseInbox: [item({ group_id: '42' })], acceptInboxItem: accept });
+    render(<TransactionsScreen />);
+    fireEvent.press(await screen.findByLabelText('Add Dinner to history'));
+
+    fireEvent.press(screen.getByLabelText('Vacation'));
+    fireEvent.press(await screen.findByLabelText('None'));
+    expect(screen.getByLabelText('Bucket').props.accessibilityState.disabled).toBe(false);
+
+    fireEvent.press(screen.getByText('Accept'));
+    // Explicitly null, not undefined: the store falls back to the group match
+    // on undefined, which would drag the expense back into Tokyo.
+    await waitFor(() => expect(accept).toHaveBeenCalledWith(
+      expect.objectContaining({ expense_id: '555' }), expect.any(String), null
+    ));
+  });
 });

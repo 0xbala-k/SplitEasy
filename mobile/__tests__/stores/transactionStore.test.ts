@@ -556,6 +556,28 @@ describe('accept and dismiss', () => {
     await useTransactionStore.getState().acceptInboxItem(item, 'food');
     expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', null);
   });
+
+  it('routes to the vacation the caller names, over the group match', async () => {
+    (useVacationStore.getState as jest.Mock).mockReturnValue({
+      reconcile: mockReconcile,
+      activeVacation: { id: 'vac1', name: 'Tokyo', splitwise_group_id: '42' },
+    });
+    const item = { expense_id: '555', group_id: '42' } as SplitwiseInboxItem;
+    await useTransactionStore.getState().acceptInboxItem(item, 'food', 'vac2');
+    expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', 'vac2');
+  });
+
+  it('accepts outside any vacation when the caller explicitly passes null', async () => {
+    // The picker seeds itself from the group match, so clearing it back to
+    // "None" must beat the derivation rather than fall through to it.
+    (useVacationStore.getState as jest.Mock).mockReturnValue({
+      reconcile: mockReconcile,
+      activeVacation: { id: 'vac1', name: 'Tokyo', splitwise_group_id: '42' },
+    });
+    const item = { expense_id: '555', group_id: '42' } as SplitwiseInboxItem;
+    await useTransactionStore.getState().acceptInboxItem(item, 'food', null);
+    expect(acceptSplitwiseExpense).toHaveBeenCalledWith(item, 'food', null);
+  });
 });
 
 describe('editTransaction / editInboxItem', () => {

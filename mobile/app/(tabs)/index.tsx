@@ -26,6 +26,7 @@ import { BucketPickerSheet } from '@/components/BucketPickerSheet';
 import { useBucketEditor } from '@/hooks/useBucketEditor';
 import { TransactionDetailSheet, DetailSheetMode, DetailSheetResult } from '@/components/TransactionDetailSheet';
 import { ReviewActionSheet } from '@/components/ReviewActionSheet';
+import { VacationPickerSheet } from '@/components/VacationPickerSheet';
 
 // Clears the absolute-positioned selectBar so it doesn't cover the last row.
 const SELECT_BAR_CLEARANCE = 88;
@@ -58,6 +59,9 @@ export default function NewTransactionsScreen() {
     acceptReview, rejectReview,
   } = useTransactionStore();
   const needsReauth = usePlaidStore((s) => s.needs_reauth);
+  // Every trip, ended included: a friend often adds the trip dinner days after
+  // everyone got home, which is precisely what automatic attribution misses.
+  const vacations = useVacationStore((s) => s.vacations);
   const [isConnected, setIsConnected] = useState(true);
   const [selected, setSelected] = useState<Transaction | null>(null);
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -81,7 +85,12 @@ export default function NewTransactionsScreen() {
   const [detailPendingPresent, setDetailPendingPresent] = useState(false);
   const detailSheetRef = useRef<BottomSheetModal>(null);
   const [detailBucket, setDetailBucket] = useState<Bucket>('misc');
+  // The trip an inbox expense is being accepted into. Seeded from the group
+  // match on open, then owned by the picker — including a deliberate clear
+  // back to null, which must beat the seed.
+  const [detailVacationId, setDetailVacationId] = useState<string | null>(null);
   const detailBucketSheetRef = useRef<BottomSheetModal>(null);
+  const detailVacationSheetRef = useRef<BottomSheetModal>(null);
 
   // ReviewActionSheet's state: presents Accept/Edit/Reject for a "Needs
   // review" row instead of routing the tap straight to a hard-wired outcome.
@@ -121,6 +130,7 @@ export default function NewTransactionsScreen() {
     setDetailMode('create');
     setDetailTarget(null);
     setDetailInbox(null);
+    setDetailVacationId(null);
     setDetailBucket('misc');
     setDetailToken((t) => t + 1);
     setDetailPendingPresent(true);
@@ -130,6 +140,12 @@ export default function NewTransactionsScreen() {
     setDetailMode('inbox');
     setDetailInbox(item);
     setDetailTarget(null);
+    // Seed with what the automatic rule would have done, so the common case
+    // is one tap and the picker is only for the exceptions.
+    const active = useVacationStore.getState().activeVacation;
+    setDetailVacationId(
+      active?.splitwise_group_id && item.group_id === active.splitwise_group_id ? active.id : null
+    );
     setDetailBucket(resolveBucket({
       merchant_name: item.description,
       plaid_category: null,
@@ -143,6 +159,11 @@ export default function NewTransactionsScreen() {
   function handleDetailBucketSelect(bucket: Bucket) {
     setDetailBucket(bucket);
     detailBucketSheetRef.current?.dismiss();
+  }
+
+  function handleDetailVacationSelect(vacationId: string | null) {
+    setDetailVacationId(vacationId);
+    detailVacationSheetRef.current?.dismiss();
   }
 
   async function handleDetailSubmit(result: DetailSheetResult) {
@@ -194,8 +215,10 @@ export default function NewTransactionsScreen() {
         // handed, so it must see the edited values, not the stale ones.
         const fresh = useTransactionStore.getState().splitwiseInbox
           .find((i) => i.expense_id === detailInbox.expense_id) ?? { ...detailInbox, ...patch };
-        await acceptInboxItem(fresh, result.bucket);
-        toast.show('Added to History', 'success');
+        const vacationId = result.vacation_id ?? null;
+        await acceptInboxItem(fresh, result.bucket, vacationId);
+        const trip = vacations.find((v) => v.id === vacationId);
+        toast.show(trip ? `Added to ${trip.name}` : 'Added to History', 'success');
       } catch {
         toast.show('Could not save. Please try again.', 'error');
       }
@@ -548,11 +571,10 @@ export default function NewTransactionsScreen() {
         transaction={detailTarget}
         inboxItem={detailInbox}
         bucket={detailBucket}
-        bucketLocked={!!(() => {
-          const activeVacation = useVacationStore.getState().activeVacation;
-          return activeVacation?.splitwise_group_id &&
-            detailInbox?.group_id === activeVacation.splitwise_group_id;
-        })()}
+        bucketLocked={detailMode === 'inbox' && !!detailVacationId}
+        vacationId={detailVacationId}
+        vacationName={vacations.find((v) => v.id === detailVacationId)?.name ?? null}
+        onVacationPress={() => detailVacationSheetRef.current?.present()}
         openToken={detailToken}
         onSubmit={handleDetailSubmit}
         onDelete={detailMode === 'create' ? undefined : handleDetailDelete}
@@ -563,6 +585,12 @@ export default function NewTransactionsScreen() {
         bucket={detailBucket}
         merchantName={detailTarget?.merchant_name ?? detailInbox?.description ?? ''}
         onSelect={handleDetailBucketSelect}
+      />
+      <VacationPickerSheet
+        ref={detailVacationSheetRef}
+        vacations={vacations}
+        selectedVacationId={detailVacationId}
+        onSelect={handleDetailVacationSelect}
       />
       <ReviewActionSheet
         ref={reviewSheetRef}
