@@ -152,3 +152,58 @@ test('edit mode allows a negative amount (refund/credit) without any edits', () 
     expect.objectContaining({ merchant_name: 'RAW NAME', amount: -25, date: '2026-07-01' })
   );
 });
+
+describe('inbox mode vacation row', () => {
+  const item = {
+    expense_id: 'e1', description: 'Dinner', cost: 60, currency: 'USD',
+    date: '2026-07-01', payer_name: 'Sam', my_share: 30,
+    participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+    state: 'pending' as const, fetched_at: '2026-07-01T10:00:00Z',
+  };
+
+  test('shows the chosen vacation and reports it back on accept', () => {
+    const onSubmit = jest.fn();
+    const { getByLabelText, getByText } = render(
+      <TransactionDetailSheet mode="inbox" bucket="travel" openToken={1} onSubmit={onSubmit}
+        inboxItem={item} vacationId="v2" vacationName="Banff" />
+    );
+    expect(getByLabelText('Vacation')).toBeTruthy();
+    expect(getByText('Banff')).toBeTruthy();
+
+    fireEvent.press(getByText('Accept'));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ vacation_id: 'v2' }));
+  });
+
+  test('reports a null vacation when none is chosen', () => {
+    const onSubmit = jest.fn();
+    const { getByLabelText, getByText } = render(
+      <TransactionDetailSheet mode="inbox" bucket="food" openToken={1} onSubmit={onSubmit}
+        inboxItem={item} vacationId={null} vacationName={null} />
+    );
+    expect(getByLabelText('Vacation')).toBeTruthy();
+    expect(getByText('None')).toBeTruthy();
+
+    fireEvent.press(getByText('Accept'));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ vacation_id: null }));
+  });
+
+  test('tapping the row asks the host to open the picker', () => {
+    const onVacationPress = jest.fn();
+    const { getByLabelText } = render(
+      <TransactionDetailSheet mode="inbox" bucket="food" openToken={1} onSubmit={jest.fn()}
+        inboxItem={item} vacationId={null} vacationName={null} onVacationPress={onVacationPress} />
+    );
+    fireEvent.press(getByLabelText('Vacation'));
+    expect(onVacationPress).toHaveBeenCalled();
+  });
+
+  test('a Plaid row being edited gets no vacation row', () => {
+    // Moving an already-committed transaction between trips is a different
+    // feature with different rules; this row is accept-time only.
+    const { queryByLabelText } = render(
+      <TransactionDetailSheet mode="edit" transaction={tx} bucket="food"
+        openToken={1} onSubmit={jest.fn()} onDelete={jest.fn()} />
+    );
+    expect(queryByLabelText('Vacation')).toBeNull();
+  });
+});

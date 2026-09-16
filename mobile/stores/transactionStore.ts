@@ -64,7 +64,14 @@ interface TransactionState {
   setBucket: (ids: string[], bucket: Bucket) => Promise<void>;
   loadInbox: () => Promise<void>;
   syncSplitwiseInbox: () => Promise<void>;
-  acceptInboxItem: (item: SplitwiseInboxItem, bucket: Bucket) => Promise<void>;
+  /**
+   * Accept a Splitwise expense into History.
+   *
+   * `vacationId` omitted keeps the automatic rule below; passing it — `null`
+   * included — is the caller's explicit choice and wins outright, so a picker
+   * seeded from the group match can still be cleared back to "None".
+   */
+  acceptInboxItem: (item: SplitwiseInboxItem, bucket: Bucket, vacationId?: string | null) => Promise<void>;
   dismissInboxItem: (expenseId: string) => Promise<void>;
   editTransaction: (id: string, patch: TransactionFieldPatch) => Promise<void>;
   editInboxItem: (expenseId: string, patch: InboxFieldPatch) => Promise<void>;
@@ -381,15 +388,16 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
     }
   },
 
-  acceptInboxItem: async (item, bucket) => {
+  acceptInboxItem: async (item, bucket, vacationId) => {
     const active = useVacationStore.getState().activeVacation;
     // A null group must never match a vacation with no group — that would
     // sweep every ordinary expense into the trip.
-    const vacationId =
+    const derived =
       active && active.splitwise_group_id && item.group_id === active.splitwise_group_id
         ? active.id
         : null;
-    await acceptSplitwiseExpense(item, bucket, vacationId);
+    const finalVacationId = vacationId === undefined ? derived : vacationId;
+    await acceptSplitwiseExpense(item, bucket, finalVacationId);
     set((s) => ({ splitwiseInbox: s.splitwiseInbox.filter((i) => i.expense_id !== item.expense_id) }));
   },
 
