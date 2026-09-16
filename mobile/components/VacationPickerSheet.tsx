@@ -2,6 +2,7 @@
 import { forwardRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { BottomSheetModal, BottomSheetFlatList } from '@gorhom/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Vacation } from '@/lib/types';
 import { Colors, Radius, Spacing } from '@/lib/theme';
@@ -27,6 +28,7 @@ function statusLabel(status: Vacation['status']): string {
  */
 export const VacationPickerSheet = forwardRef<BottomSheetModal, Props>(
   ({ vacations, selectedVacationId, onSelect }, ref) => {
+    const insets = useSafeAreaInsets();
     return (
       <BottomSheetModal
         ref={ref}
@@ -39,7 +41,7 @@ export const VacationPickerSheet = forwardRef<BottomSheetModal, Props>(
         <BottomSheetFlatList
           data={vacations}
           keyExtractor={(v: Vacation) => v.id}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, { paddingBottom: Spacing.xxl + insets.bottom }]}
           ListHeaderComponent={
             <View>
               <Text style={styles.title}>Vacation</Text>

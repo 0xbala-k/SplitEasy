@@ -7,11 +7,11 @@ import {
   BottomSheetFooter,
   type BottomSheetFooterProps,
 } from '@gorhom/bottom-sheet';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getNewTransactions, assignTransactionsToVacation, getSplitwiseInbox } from '@/lib/db';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useToast } from '@/components/ToastProvider';
+import { useSheetFooterInset } from '@/hooks/useSheetFooterInset';
 import { SplitwiseInboxItem, Transaction } from '@/lib/types';
 import { Colors, Radius, Shadow, Spacing, merchantColor } from '@/lib/theme';
 
@@ -31,7 +31,7 @@ type Row =
 export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
   ({ vacationId, openToken, onDone }, ref) => {
     const toast = useToast();
-    const insets = useSafeAreaInsets();
+    const { onFooterLayout, bottomInset, contentPaddingBottom } = useSheetFooterInset();
     // Accepting goes through the store, not the db directly: the Transactions
     // tab loads its inbox slice once on mount, so a direct write would leave
     // the card sitting there until that screen remounts.
@@ -105,26 +105,28 @@ export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
       // The footer style is opaque so list rows scrolling under the pinned
       // footer don't show through in the gaps beside the button.
       (footerProps: BottomSheetFooterProps) => (
-        <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.confirmBtn,
-              (selectedCount === 0 || submitting) && styles.confirmBtnDisabled,
-              pressed && selectedCount > 0 && styles.confirmBtnPressed,
-            ]}
-            onPress={() => confirmRef.current()}
-            disabled={selectedCount === 0 || submitting}
-            accessibilityRole="button"
-            accessibilityLabel="Add to vacation"
-          >
-            <Text style={[styles.confirmText, selectedCount === 0 && styles.confirmTextDisabled]}>
-              Add {selectedCount > 0 ? `(${selectedCount})` : ''}
-            </Text>
-          </Pressable>
+        <BottomSheetFooter {...footerProps} bottomInset={bottomInset} style={styles.footer}>
+          <View testID="add-to-vacation-footer" onLayout={onFooterLayout}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.confirmBtn,
+                (selectedCount === 0 || submitting) && styles.confirmBtnDisabled,
+                pressed && selectedCount > 0 && styles.confirmBtnPressed,
+              ]}
+              onPress={() => confirmRef.current()}
+              disabled={selectedCount === 0 || submitting}
+              accessibilityRole="button"
+              accessibilityLabel="Add to vacation"
+            >
+              <Text style={[styles.confirmText, selectedCount === 0 && styles.confirmTextDisabled]}>
+                Add {selectedCount > 0 ? `(${selectedCount})` : ''}
+              </Text>
+            </Pressable>
+          </View>
         </BottomSheetFooter>
       ),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [selectedCount, submitting, insets.bottom]
+      [selectedCount, submitting, bottomInset, onFooterLayout]
     );
 
     return (
@@ -138,10 +140,11 @@ export const AddToVacationSheet = forwardRef<BottomSheetModal, Props>(
         footerComponent={renderFooter}
       >
         <BottomSheetFlatList
+          testID="add-to-vacation-list"
           data={rows}
           keyExtractor={(row) => row.key}
           style={styles.list}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: contentPaddingBottom }]}
           ListHeaderComponent={<Text style={styles.title}>Add transactions</Text>}
           ListEmptyComponent={<Text style={styles.empty}>Nothing left to add.</Text>}
           renderItem={({ item: row }) => {
@@ -192,7 +195,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary, marginBottom: Spacing.md },
   empty: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginTop: Spacing.xxl },
   list: { flex: 1 },
-  listContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, paddingBottom: 90 },
+  // paddingBottom is dynamic — see contentPaddingBottom above the FlatList,
+  // which reserves room for the pinned footer's measured height.
+  listContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

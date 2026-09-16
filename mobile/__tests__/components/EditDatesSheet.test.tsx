@@ -23,19 +23,26 @@ jest.mock('@gorhom/bottom-sheet', () => {
     BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
   };
 });
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
 jest.mock('react-native-safe-area-context', () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => mockInsets,
 }));
 
+import { StyleSheet } from 'react-native';
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { EditDatesSheet } from '@/components/EditDatesSheet';
 import { formatDayLabelWithYear, toLocalDateString, yearMonthOf } from '@/lib/date';
+import { Spacing } from '@/lib/theme';
 
 const thisMonth = yearMonthOf(null);
 const dayOf = (day: number) => toLocalDateString(new Date(thisMonth.year, thisMonth.month, day));
 const dayLabel = (day: number) => formatDayLabelWithYear(dayOf(day));
 
 const saved = { start: dayOf(3), end: dayOf(6) };
+
+beforeEach(() => {
+  mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+});
 
 function renderSheet(onSave = jest.fn().mockResolvedValue(undefined), openToken = 1) {
   render(
@@ -105,6 +112,20 @@ test('the draft reseeds from the saved dates each time the sheet opens', () => {
 
   expect(screen.getByText('Tap a start and end date')).toBeTruthy();
   expect(screen.getByLabelText('Save dates').props.accessibilityState?.disabled).toBe(true);
+});
+
+test('reserves scroll room under the pinned footer using its measured height plus the safe-area inset', () => {
+  mockInsets = { top: 0, bottom: 34, left: 0, right: 0 };
+  renderSheet();
+
+  fireEvent(screen.getByTestId('edit-dates-footer'), 'layout', {
+    nativeEvent: { layout: { height: 76, width: 320, x: 0, y: 0 } },
+  });
+
+  const { paddingBottom } = StyleSheet.flatten(screen.getByTestId('edit-dates-scroll').props.contentContainerStyle);
+  // Old hardcoded guess (100) omitted the safe-area inset entirely; this must
+  // reflect the measured footer height plus that inset plus the gap.
+  expect(paddingBottom).toBe(76 + 34 + Spacing.lg);
 });
 
 test('clearing after an edit saves the cleared dates, not the abandoned range', async () => {

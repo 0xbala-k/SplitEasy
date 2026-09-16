@@ -8,12 +8,12 @@ import {
   BottomSheetFooter,
   type BottomSheetFooterProps,
 } from '@gorhom/bottom-sheet';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Transaction, SplitwiseInboxItem } from '@/lib/types';
 import { Bucket } from '@/lib/buckets';
 import { BucketChip } from '@/components/BucketChip';
 import { Colors, Radius, Spacing, Shadow } from '@/lib/theme';
 import { todayLocal } from '@/lib/date';
+import { useSheetFooterInset } from '@/hooks/useSheetFooterInset';
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -90,7 +90,7 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
     const [amount, setAmount] = useState('');
     const [share, setShare] = useState('');
     const [date, setDate] = useState('');
-    const insets = useSafeAreaInsets();
+    const { onFooterLayout, bottomInset, contentPaddingBottom } = useSheetFooterInset();
 
     // Reseed on every open. The parent bumps openToken rather than relying on
     // mount, because the modal is kept mounted between presentations.
@@ -146,16 +146,18 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
     // BottomSheetView breaks flex layout and a CTA in the body scrolls
     // off-screen on smaller devices.
     const renderFooter = (footerProps: BottomSheetFooterProps) => (
-      <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
-        <Pressable
-          style={[styles.submit, !valid && styles.submitDisabled]}
-          onPress={handleSubmit}
-          disabled={!valid}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !valid }}
-        >
-          <Text style={styles.submitText}>{SUBMIT_LABEL[mode]}</Text>
-        </Pressable>
+      <BottomSheetFooter {...footerProps} bottomInset={bottomInset} style={styles.footer}>
+        <View testID="detail-footer" onLayout={onFooterLayout} style={styles.footerInner}>
+          <Pressable
+            style={[styles.submit, !valid && styles.submitDisabled]}
+            onPress={handleSubmit}
+            disabled={!valid}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !valid }}
+          >
+            <Text style={styles.submitText}>{SUBMIT_LABEL[mode]}</Text>
+          </Pressable>
+        </View>
       </BottomSheetFooter>
     );
 
@@ -169,7 +171,11 @@ export const TransactionDetailSheet = forwardRef<BottomSheetModal, TransactionDe
         keyboardBlurBehavior="restore"
         footerComponent={renderFooter}
       >
-        <BottomSheetScrollView style={styles.body}>
+        <BottomSheetScrollView
+          testID="detail-scroll"
+          style={styles.body}
+          contentContainerStyle={[styles.bodyContent, { paddingBottom: contentPaddingBottom }]}
+        >
           <Text style={styles.label}>Merchant</Text>
           <BottomSheetTextInput
             style={styles.input}
@@ -256,10 +262,13 @@ const styles = StyleSheet.create({
   },
   vacationName: { flex: 1, minWidth: 0, fontSize: 15, color: Colors.textPrimary, fontWeight: '500' },
   vacationNone: { color: Colors.textSecondary, fontWeight: '400' },
-  body: {
+  // Padding lives on contentContainerStyle, never here: padding on a
+  // ScrollView's `style` pads the viewport instead of reserving scrollable
+  // room, which is what let the footer float over the last rows.
+  body: { flex: 1 },
+  bodyContent: {
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.sm,
-    paddingBottom: Spacing.xl,
   },
   label: {
     fontSize: 12,
@@ -292,6 +301,10 @@ const styles = StyleSheet.create({
   },
   footer: {
     backgroundColor: Colors.surface,
+  },
+  // Padding lives here, not on `footer`, so the measured onLayout height
+  // (fed to useSheetFooterInset) includes it.
+  footerInner: {
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.xl,
