@@ -91,6 +91,7 @@ export default function NewTransactionsScreen() {
   const [detailVacationId, setDetailVacationId] = useState<string | null>(null);
   const detailBucketSheetRef = useRef<BottomSheetModal>(null);
   const detailVacationSheetRef = useRef<BottomSheetModal>(null);
+  const [detailPickerPending, setDetailPickerPending] = useState<null | 'bucket' | 'vacation'>(null);
 
   // ReviewActionSheet's state: presents Accept/Edit/Reject for a "Needs
   // review" row instead of routing the tap straight to a hard-wired outcome.
@@ -116,6 +117,37 @@ export default function NewTransactionsScreen() {
     detailSheetRef.current?.present();
     setDetailPendingPresent(false);
   }, [detailPendingPresent]);
+
+  // Sheet-to-sheet transitions are sequential here — dismiss the current sheet,
+  // then present the next one from an effect — the same arrangement
+  // useSplitEditor and useBucketEditor use for the history flows.
+  //
+  // The obvious alternative, presenting a picker straight on top, stacks two
+  // modals. gorhom's default 'switch' stack behaviour then *minimizes* the
+  // detail sheet: it stays mounted but animates fully off-screen, so the
+  // transactions list shows through behind the picker and the user reads it as
+  // having been dumped back on the tab. Getting it back then depends on the
+  // library's restore path firing while both sheets animate at once, which is
+  // unreliable in the PWA — presses on a still-animating sheet get dropped.
+  useEffect(() => {
+    if (!detailPickerPending) return;
+    if (detailPickerPending === 'bucket') detailBucketSheetRef.current?.present();
+    else detailVacationSheetRef.current?.present();
+    setDetailPickerPending(null);
+  }, [detailPickerPending]);
+
+  function openDetailPicker(which: 'bucket' | 'vacation') {
+    detailSheetRef.current?.dismiss();
+    setDetailPickerPending(which);
+  }
+
+  // Re-present the detail sheet after a pick. Deliberately without bumping
+  // detailToken: the sheet reseeds from the inbox item on every token change,
+  // which would throw away edits typed before the picker was opened.
+  function closeDetailPicker(ref: typeof detailBucketSheetRef) {
+    ref.current?.dismiss();
+    setDetailPendingPresent(true);
+  }
 
   function openDetail(tx: Transaction) {
     setDetailMode('edit');
@@ -158,12 +190,12 @@ export default function NewTransactionsScreen() {
 
   function handleDetailBucketSelect(bucket: Bucket) {
     setDetailBucket(bucket);
-    detailBucketSheetRef.current?.dismiss();
+    closeDetailPicker(detailBucketSheetRef);
   }
 
   function handleDetailVacationSelect(vacationId: string | null) {
     setDetailVacationId(vacationId);
-    detailVacationSheetRef.current?.dismiss();
+    closeDetailPicker(detailVacationSheetRef);
   }
 
   async function handleDetailSubmit(result: DetailSheetResult) {
@@ -570,15 +602,18 @@ export default function NewTransactionsScreen() {
         mode={detailMode}
         transaction={detailTarget}
         inboxItem={detailInbox}
-        bucket={detailBucket}
+        // A trip forces travel/vacation in acceptSplitwiseExpense, so show that
+        // rather than the user's earlier pick behind a padlock — a locked chip
+        // reading "Misc" describes a write that will never happen.
+        bucket={detailMode === 'inbox' && detailVacationId ? 'travel' : detailBucket}
         bucketLocked={detailMode === 'inbox' && !!detailVacationId}
         vacationId={detailVacationId}
         vacationName={vacations.find((v) => v.id === detailVacationId)?.name ?? null}
-        onVacationPress={() => detailVacationSheetRef.current?.present()}
+        onVacationPress={() => openDetailPicker('vacation')}
         openToken={detailToken}
         onSubmit={handleDetailSubmit}
         onDelete={detailMode === 'create' ? undefined : handleDetailDelete}
-        onBucketPress={() => detailBucketSheetRef.current?.present()}
+        onBucketPress={() => openDetailPicker('bucket')}
       />
       <BucketPickerSheet
         ref={detailBucketSheetRef}
