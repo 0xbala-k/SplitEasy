@@ -5,12 +5,12 @@ jest.mock('@gorhom/bottom-sheet', () => {
       ({ children }: { children: React.ReactNode }, _ref: unknown) => <View>{children}</View>
     ),
     BottomSheetFlatList: ({
-      data, renderItem, ListHeaderComponent, ListEmptyComponent, keyExtractor,
+      data, renderItem, ListHeaderComponent, ListEmptyComponent, keyExtractor, contentContainerStyle,
     }: any) => {
       const Header = typeof ListHeaderComponent === 'function' ? ListHeaderComponent : () => ListHeaderComponent;
       const Empty = typeof ListEmptyComponent === 'function' ? ListEmptyComponent : () => ListEmptyComponent;
       return (
-        <View>
+        <View testID="content" style={contentContainerStyle}>
           <Header />
           {data.length === 0 && <Empty />}
           {data.map((item: any) => (
@@ -22,11 +22,17 @@ jest.mock('@gorhom/bottom-sheet', () => {
   };
 });
 jest.mock('@expo/vector-icons', () => new Proxy({}, { get: () => () => null }));
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => mockInsets,
+}));
 
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { render, fireEvent } from '@testing-library/react-native';
 import { VacationPickerSheet } from '@/components/VacationPickerSheet';
 import { Vacation } from '@/lib/types';
+import { Spacing } from '@/lib/theme';
 
 function vac(over: Partial<Vacation>): Vacation {
   return {
@@ -42,6 +48,10 @@ const vacations: Vacation[] = [
   vac({ id: 'v2', name: 'Banff', status: 'draft' }),
   vac({ id: 'v3', name: 'Iceland', status: 'ended' }),
 ];
+
+beforeEach(() => {
+  mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+});
 
 test('lists every vacation, ended ones included, plus a None row', () => {
   const { getByText } = render(
@@ -90,6 +100,16 @@ test('marks the current selection as checked', () => {
   expect(getByLabelText('Iceland').props.accessibilityState.checked).toBe(true);
   expect(getByLabelText('Tokyo').props.accessibilityState.checked).toBe(false);
   expect(getByLabelText('None').props.accessibilityState.checked).toBe(false);
+});
+
+test('reserves bottom padding for the home indicator on top of the base spacing', () => {
+  mockInsets = { top: 0, bottom: 34, left: 0, right: 0 };
+  const { getByTestId } = render(
+    <VacationPickerSheet vacations={vacations} selectedVacationId={null} onSelect={jest.fn()} />
+  );
+  const { paddingBottom } = StyleSheet.flatten(getByTestId('content').props.style);
+  // Old hardcoded Spacing.xxl alone omitted the safe-area inset entirely.
+  expect(paddingBottom).toBe(Spacing.xxl + 34);
 });
 
 test('tells the user a vacation forces the bucket to Travel', () => {

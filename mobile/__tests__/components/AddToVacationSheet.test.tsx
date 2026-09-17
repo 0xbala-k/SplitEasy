@@ -28,17 +28,20 @@ jest.mock('@gorhom/bottom-sheet', () => {
     BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
   };
 });
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
 jest.mock('react-native-safe-area-context', () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => mockInsets,
 }));
 jest.mock('@/lib/db');
 jest.mock('@expo/vector-icons', () => new Proxy({}, { get: () => () => null }));
 
+import { StyleSheet } from 'react-native';
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { AddToVacationSheet } from '@/components/AddToVacationSheet';
 import { useTransactionStore } from '@/stores/transactionStore';
 import * as db from '@/lib/db';
 import { SplitwiseInboxItem, Transaction } from '@/lib/types';
+import { Spacing } from '@/lib/theme';
 
 const mockGetNew = db.getNewTransactions as jest.Mock;
 const mockAssign = db.assignTransactionsToVacation as jest.Mock;
@@ -59,6 +62,7 @@ function inbox(id: string, over: Partial<SplitwiseInboxItem> = {}): SplitwiseInb
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
   useTransactionStore.setState({ splitwiseInbox: [] });
   mockGetNew.mockResolvedValue([tx('t1'), tx('t2')]);
   mockAssign.mockResolvedValue(undefined);
@@ -132,6 +136,21 @@ describe('Splitwise expenses', () => {
 
     await waitFor(() => expect(mockAssign).toHaveBeenCalledWith('v1', ['t1']));
     expect(mockAccept).toHaveBeenCalledWith(item, 'travel', 'v1');
+  });
+
+  it('reserves list room under the pinned footer using its measured height plus the safe-area inset', async () => {
+    mockInsets = { top: 0, bottom: 34, left: 0, right: 0 };
+    render(<AddToVacationSheet vacationId="v1" openToken={1} onDone={jest.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText('Add to vacation')).toBeTruthy());
+
+    fireEvent(screen.getByTestId('add-to-vacation-footer'), 'layout', {
+      nativeEvent: { layout: { height: 76, width: 320, x: 0, y: 0 } },
+    });
+
+    const { paddingBottom } = StyleSheet.flatten(screen.getByTestId('add-to-vacation-list').props.contentContainerStyle);
+    // Old hardcoded guess (90) omitted the safe-area inset entirely; this must
+    // reflect the measured footer height plus that inset plus the gap.
+    expect(paddingBottom).toBe(76 + 34 + Spacing.lg);
   });
 
   it('drops the imported expense from the Transactions tab inbox', async () => {

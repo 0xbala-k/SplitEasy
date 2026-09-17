@@ -14,7 +14,6 @@ import {
   BottomSheetFooter,
   type BottomSheetFooterProps,
 } from '@gorhom/bottom-sheet';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFriendStore } from '@/stores/friendStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -33,6 +32,7 @@ import { generateId } from '@/lib/id';
 import { ReceiptCapture } from '@/components/ReceiptCapture';
 import { ReceiptItemRow, ReceiptParticipant } from '@/components/ReceiptItemRow';
 import { ReceiptSummary } from '@/components/ReceiptSummary';
+import { useSheetFooterInset } from '@/hooks/useSheetFooterInset';
 
 type SplitMode = 'equal' | 'custom' | 'shares' | 'receipt';
 type ReceiptStage = 'capture' | 'assign';
@@ -66,7 +66,7 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
     const user_id = useAuthStore((s) => s.user_id);
     const markSplit = useTransactionStore((s) => s.markSplit);
     const commitCombinedSplit = useTransactionStore((s) => s.commitCombinedSplit);
-    const insets = useSafeAreaInsets();
+    const { onFooterLayout, bottomInset, contentPaddingBottom } = useSheetFooterInset();
 
     const members = useMemo(
       () =>
@@ -364,38 +364,40 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
       // The footer style is opaque so list rows scrolling under the pinned
       // footer don't show through in the gaps beside the button.
       (footerProps: BottomSheetFooterProps) => (
-        <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.addBtn,
-              ctaDisabled && styles.addBtnDisabled,
-              pressed && !ctaDisabled && styles.addBtnPressed,
-            ]}
-            onPress={() => submitRef.current()}
-            disabled={ctaDisabled}
-            accessibilityRole="button"
-            accessibilityLabel="Add split to Splitwise"
-          >
-            {submitting ? (
-              <ActivityIndicator color={Colors.textInverse} />
-            ) : (
-              <>
-                <Ionicons
-                  name="checkmark-circle-outline"
-                  size={18}
-                  color={ctaDisabled ? Colors.textTertiary : Colors.textInverse}
-                  style={{ marginRight: 6 }}
-                />
-                <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
-                  {mode === 'edit' ? 'Save changes' : 'Add to Splitwise'}
-                </Text>
-              </>
-            )}
-          </Pressable>
+        <BottomSheetFooter {...footerProps} bottomInset={bottomInset} style={styles.footer}>
+          <View testID="picker-footer" onLayout={onFooterLayout}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.addBtn,
+                ctaDisabled && styles.addBtnDisabled,
+                pressed && !ctaDisabled && styles.addBtnPressed,
+              ]}
+              onPress={() => submitRef.current()}
+              disabled={ctaDisabled}
+              accessibilityRole="button"
+              accessibilityLabel="Add split to Splitwise"
+            >
+              {submitting ? (
+                <ActivityIndicator color={Colors.textInverse} />
+              ) : (
+                <>
+                  <Ionicons
+                    name="checkmark-circle-outline"
+                    size={18}
+                    color={ctaDisabled ? Colors.textTertiary : Colors.textInverse}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={[styles.addBtnText, ctaDisabled && styles.addBtnTextDisabled]}>
+                    {mode === 'edit' ? 'Save changes' : 'Add to Splitwise'}
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          </View>
         </BottomSheetFooter>
       ),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [ctaDisabled, submitting, mode, insets.bottom]
+      [ctaDisabled, submitting, mode, bottomInset, onFooterLayout]
     );
 
     // Every hook must run before this bail-out, or the render that first
@@ -974,10 +976,11 @@ export const FriendPickerSheet = forwardRef<BottomSheetModal, Props>(
         footerComponent={renderFooter}
       >
         <BottomSheetFlatList
+          testID="picker-list"
           data={data}
           keyExtractor={(x: { id: string }) => x.id}
           style={styles.list}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: contentPaddingBottom }]}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
@@ -1264,7 +1267,9 @@ function ShareRow({
 const styles = StyleSheet.create({
   indicator: { backgroundColor: Colors.border, width: 36 },
   sheetBg: { backgroundColor: Colors.surface },
-  listContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, paddingBottom: 90 },
+  // paddingBottom is dynamic — see contentPaddingBottom above the FlatList,
+  // which reserves room for the pinned footer's measured height.
+  listContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
   footer: { backgroundColor: Colors.surface },
 
   txSummary: {

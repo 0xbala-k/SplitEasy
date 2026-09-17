@@ -28,8 +28,11 @@ jest.mock('@gorhom/bottom-sheet', () => {
     BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
   };
 });
+// Mutable so the footer-clearance test below can simulate a device with a
+// home indicator; every other test in this file relies on the zero default.
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
 jest.mock('react-native-safe-area-context', () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => mockInsets,
 }));
 jest.mock('@/lib/db');
 // Keep SplitwiseAuthError real (the component uses `instanceof`); mock the calls.
@@ -51,6 +54,7 @@ jest.mock('@/lib/receiptScan', () => ({ scanReceipt: jest.fn() }));
 // noise from the component's perspective, so stub it out.
 jest.mock('@/lib/splitwiseQueue', () => ({ flushQueue: jest.fn() }));
 
+import { StyleSheet } from 'react-native';
 import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import * as db from '@/lib/db';
@@ -62,6 +66,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useTransactionStore } from '@/stores/transactionStore';
 import { useGroupStore } from '@/stores/groupStore';
 import { SplitDecision, SplitwiseGroup, Transaction } from '@/lib/types';
+import { Spacing } from '@/lib/theme';
 
 const mockGetExpense = splitwise.getExpense as jest.Mock;
 const mockGetGroups = splitwise.getGroups as jest.Mock;
@@ -123,6 +128,7 @@ function renderEdit(openToken = 1, onSuccess = jest.fn()) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
   (useFriendStore as jest.Mock).mockReturnValue({
     friends: [{ id: '2', display_name: 'Sam', avatar_url: null }],
     isLoading: false,
@@ -1055,5 +1061,21 @@ describe('shares split mode', () => {
     fireEvent.press(screen.getByText('Shares'));
     expect(screen.getByLabelText("Alice's share count").props.value).toBe('1');
     expect(await screen.findAllByText(/\$50\.00/)).toHaveLength(2);
+  });
+});
+
+describe('footer clearance', () => {
+  // Regression: the list used to reserve a hardcoded paddingBottom (90) that
+  // didn't account for the safe-area inset the pinned footer is lifted by, so
+  // the last friend rows sat under the CTA. The reserved room must track the
+  // footer's real measured height plus that inset.
+  test('reserves the measured footer height plus the safe-area inset in the list padding', () => {
+    mockInsets = { top: 0, bottom: 34, left: 0, right: 0 };
+    render(<FriendPickerSheet transaction={{ ...tx, status: 'new' }} openToken={1} onSuccess={jest.fn()} />);
+    fireEvent(screen.getByTestId('picker-footer'), 'layout', {
+      nativeEvent: { layout: { height: 84, width: 320, x: 0, y: 0 } },
+    });
+    const listStyle = StyleSheet.flatten(screen.getByTestId('picker-list').props.contentContainerStyle);
+    expect(listStyle.paddingBottom).toBe(84 + 34 + Spacing.lg);
   });
 });

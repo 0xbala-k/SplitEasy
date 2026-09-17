@@ -7,8 +7,8 @@ import {
   BottomSheetFooter,
   type BottomSheetFooterProps,
 } from '@gorhom/bottom-sheet';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RangeCalendar, RangeCalendarFooter } from '@/components/RangeCalendar';
+import { useSheetFooterInset } from '@/hooks/useSheetFooterInset';
 import { Colors, Radius, Shadow, Spacing } from '@/lib/theme';
 
 interface Props {
@@ -21,7 +21,7 @@ interface Props {
 
 export const EditDatesSheet = forwardRef<BottomSheetModal, Props>(
   ({ startDate, endDate, openToken, onSave }, ref) => {
-    const insets = useSafeAreaInsets();
+    const { onFooterLayout, bottomInset, contentPaddingBottom } = useSheetFooterInset();
     // Edits are staged locally so backing out of the sheet leaves the saved
     // dates untouched.
     const [draftStart, setDraftStart] = useState(startDate);
@@ -64,28 +64,30 @@ export const EditDatesSheet = forwardRef<BottomSheetModal, Props>(
       // The footer background is opaque so calendar rows scrolling underneath
       // don't show through beside the button.
       (footerProps: BottomSheetFooterProps) => (
-        <BottomSheetFooter {...footerProps} bottomInset={insets.bottom} style={styles.footer}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.saveBtn,
-              disabled && styles.saveBtnDisabled,
-              pressed && !disabled && styles.saveBtnPressed,
-            ]}
-            onPress={() => saveRef.current()}
-            disabled={disabled}
-            accessibilityRole="button"
-            accessibilityLabel="Save dates"
-          >
-            {submitting ? (
-              <ActivityIndicator color={Colors.textInverse} />
-            ) : (
-              <Text style={[styles.saveText, disabled && styles.saveTextDisabled]}>Save dates</Text>
-            )}
-          </Pressable>
+        <BottomSheetFooter {...footerProps} bottomInset={bottomInset} style={styles.footer}>
+          <View testID="edit-dates-footer" onLayout={onFooterLayout}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.saveBtn,
+                disabled && styles.saveBtnDisabled,
+                pressed && !disabled && styles.saveBtnPressed,
+              ]}
+              onPress={() => saveRef.current()}
+              disabled={disabled}
+              accessibilityRole="button"
+              accessibilityLabel="Save dates"
+            >
+              {submitting ? (
+                <ActivityIndicator color={Colors.textInverse} />
+              ) : (
+                <Text style={[styles.saveText, disabled && styles.saveTextDisabled]}>Save dates</Text>
+              )}
+            </Pressable>
+          </View>
         </BottomSheetFooter>
       ),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [disabled, submitting, insets.bottom]
+      [disabled, submitting, bottomInset, onFooterLayout]
     );
 
     return (
@@ -100,7 +102,11 @@ export const EditDatesSheet = forwardRef<BottomSheetModal, Props>(
       >
         {/* The scrollable is the direct child: BottomSheetView would override
             its flex with position:absolute and push the footer off-screen. */}
-        <BottomSheetScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        <BottomSheetScrollView
+          testID="edit-dates-scroll"
+          style={styles.scroll}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: contentPaddingBottom }]}
+        >
           <Text style={styles.title}>Edit dates</Text>
           <Text style={styles.subtitle}>
             The vacation starts and ends automatically on these dates.
@@ -132,7 +138,9 @@ const styles = StyleSheet.create({
   indicator: { backgroundColor: Colors.border, width: 36 },
   sheetBg: { backgroundColor: Colors.surface },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm, paddingBottom: 100 },
+  // paddingBottom is dynamic — see contentPaddingBottom above the scrollable,
+  // which reserves room for the pinned footer's measured height.
+  scrollContent: { paddingHorizontal: Spacing.xl, paddingTop: Spacing.sm },
   title: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
   subtitle: { fontSize: 12, color: Colors.textTertiary, marginTop: Spacing.xs, marginBottom: Spacing.lg },
   footer: { backgroundColor: Colors.surface },

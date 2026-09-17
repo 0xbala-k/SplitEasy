@@ -2,6 +2,7 @@
 import { forwardRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { BottomSheetModal, BottomSheetFlatList } from '@gorhom/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { SplitwiseGroup } from '@/lib/types';
 import { Colors, Radius, Spacing } from '@/lib/theme';
@@ -18,6 +19,7 @@ interface Props {
  */
 export const GroupPickerSheet = forwardRef<BottomSheetModal, Props>(
   ({ groups, selectedGroupId, onSelect }, ref) => {
+    const insets = useSafeAreaInsets();
     return (
       <BottomSheetModal
         ref={ref}
@@ -30,7 +32,7 @@ export const GroupPickerSheet = forwardRef<BottomSheetModal, Props>(
         <BottomSheetFlatList
           data={groups}
           keyExtractor={(g: SplitwiseGroup) => g.id}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, { paddingBottom: Spacing.xxxl + insets.bottom }]}
           ListHeaderComponent={
             <View>
               <Text style={styles.title}>Splitwise group</Text>

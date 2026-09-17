@@ -26,13 +26,22 @@ jest.mock('@gorhom/bottom-sheet', () => {
     BottomSheetFooter: ({ children }: { children: React.ReactNode }) => children,
   };
 });
+// Mutable so the footer-clearance tests below can simulate a device with a
+// home indicator; every other test in this file relies on the zero default.
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
 jest.mock('react-native-safe-area-context', () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => mockInsets,
 }));
 
+import { StyleSheet } from 'react-native';
 import { render, fireEvent } from '@testing-library/react-native';
 import { TransactionDetailSheet } from '@/components/TransactionDetailSheet';
 import { Transaction } from '@/lib/types';
+import { Spacing } from '@/lib/theme';
+
+beforeEach(() => {
+  mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+});
 
 const tx: Transaction = {
   id: 'p1', merchant_name: 'RAW NAME', amount: 20, currency: 'USD',
@@ -205,5 +214,48 @@ describe('inbox mode vacation row', () => {
         openToken={1} onSubmit={jest.fn()} onDelete={jest.fn()} />
     );
     expect(queryByLabelText('Vacation')).toBeNull();
+  });
+});
+
+describe('footer clearance', () => {
+  // Regression: the scrollable used to reserve a hardcoded, too-small gap
+  // (and none of the safe-area inset) below its content, so the last rows —
+  // the Bucket/Vacation rows in inbox mode, Delete in edit mode — sat under
+  // the pinned footer, invisible and untappable. The reserved room must track
+  // the footer's real measured height plus the safe-area inset it's lifted by.
+  test('reserves the measured footer height plus the safe-area inset in the scrollable padding', () => {
+    mockInsets = { top: 0, bottom: 34, left: 0, right: 0 };
+    const { getByTestId } = render(
+      <TransactionDetailSheet mode="edit" transaction={tx} bucket="food"
+        openToken={1} onSubmit={jest.fn()} onDelete={jest.fn()} />
+    );
+    fireEvent(getByTestId('detail-footer'), 'layout', {
+      nativeEvent: { layout: { height: 100, width: 320, x: 0, y: 0 } },
+    });
+    const scrollStyle = StyleSheet.flatten(getByTestId('detail-scroll').props.contentContainerStyle);
+    expect(scrollStyle.paddingBottom).toBe(100 + 34 + Spacing.lg);
+  });
+
+  test('a taller footer measurement grows the reserved padding to match', () => {
+    const { getByTestId } = render(
+      <TransactionDetailSheet mode="inbox" bucket="food" openToken={1} onSubmit={jest.fn()}
+        inboxItem={{
+          expense_id: 'e1', description: 'Dinner', cost: 60, currency: 'USD',
+          date: '2026-07-01', payer_name: 'Sam', my_share: 30,
+          participants: [{ id: 'u2', name: 'Sam' }], group_id: null,
+          state: 'pending', fetched_at: '2026-07-01T10:00:00Z',
+        }} />
+    );
+    fireEvent(getByTestId('detail-footer'), 'layout', {
+      nativeEvent: { layout: { height: 60, width: 320, x: 0, y: 0 } },
+    });
+    const before = StyleSheet.flatten(getByTestId('detail-scroll').props.contentContainerStyle).paddingBottom;
+
+    fireEvent(getByTestId('detail-footer'), 'layout', {
+      nativeEvent: { layout: { height: 120, width: 320, x: 0, y: 0 } },
+    });
+    const after = StyleSheet.flatten(getByTestId('detail-scroll').props.contentContainerStyle).paddingBottom;
+
+    expect(after).toBe(before + 60);
   });
 });
