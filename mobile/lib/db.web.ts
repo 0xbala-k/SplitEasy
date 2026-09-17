@@ -1059,6 +1059,7 @@ export async function getSpendingRows(): Promise<SpendRow[]> {
         splitwise_expense_id: decision?.splitwise_expense_id ?? null,
         amount_each: decision?.amount_each ?? null,
         vacation_id: t.vacation_id ?? null,
+        vacation_name: vacation?.name ?? null,
         vacation_start_date: vacation?.start_date ?? null,
         vacation_started_at: vacation?.started_at ?? null,
         vacation_created_at: vacation?.created_at ?? null,

@@ -1267,7 +1267,15 @@ describe('getSpendingRows (IndexedDB)', () => {
     expect(row.splitwise_expense_id).toBe('e4');
     expect(row.amount_each).toBe(25);
     expect(row.vacation_start_date).toBe('2026-09-01');
+    expect(row.vacation_name).toBe('Trip');
     expect(row.bucket).toBe('travel');
+  });
+
+  test('web: getSpendingRows leaves vacation_name null for an unattached row', async () => {
+    await upsertTransactions([plaidTx('s5', { amount: 50 })]);
+    await updateTransactionStatus('s5', 'skipped');
+    const row = (await getSpendingRows()).find((r) => r.id === 's5')!;
+    expect(row.vacation_name).toBeNull();
   });
 });
 
