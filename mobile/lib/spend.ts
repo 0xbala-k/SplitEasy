@@ -24,6 +24,7 @@ export interface SpendRow {
   splitwise_expense_id: string | null;
   amount_each: number | null;         // owner's owed share of the WHOLE expense
   vacation_id: string | null;
+  vacation_name: string | null;
   vacation_start_date: string | null;
   vacation_started_at: string | null;
   vacation_created_at: string | null;
@@ -31,6 +32,13 @@ export interface SpendRow {
 
 export interface SpendRowWithShare extends SpendRow {
   shareCents: number;
+}
+
+/** One trip's slice of a month's travel spend. `id: null` is the catch-all. */
+export interface VacationSpend {
+  id: string | null;
+  name: string;
+  cents: number;
 }
 
 export interface MonthSpend {
@@ -41,6 +49,7 @@ export interface MonthSpend {
   byGroup: Record<BucketGroup, number>;
   otherCurrencies: { currency: string; cents: number }[];
   rows: SpendRowWithShare[];          // in `currency` only, newest first
+  byVacation: VacationSpend[];        // travel spend per trip, biggest first
 }
 
 /**
@@ -153,6 +162,45 @@ export function formatCents(cents: number, currency: string): string {
   }).format(cents / 100);
 }
 
+/** Shown for a trip saved without a name, so its row is never blank. */
+export const UNNAMED_VACATION_LABEL = 'Untitled trip';
+
+/** Groups the catch-all row of travel spend that belongs to no trip. */
+export const UNASSIGNED_TRAVEL_LABEL = 'Other travel';
+
+/**
+ * A month's travel spend broken down by trip.
+ *
+ * Membership is decided by `bucket === 'travel'`, not by `vacation_id`, so the
+ * entries always add back up to `byGroup.travel` — a travel-bucketed charge
+ * that belongs to no trip lands in the `id: null` catch-all rather than
+ * vanishing. That catch-all sorts last however large it is: it is a remainder,
+ * not a destination, and ranking it among real trips reads as if it were one.
+ */
+function rollUpVacations(rows: SpendRowWithShare[]): VacationSpend[] {
+  const byId = new Map<string | null, VacationSpend>();
+
+  for (const r of rows) {
+    if (r.bucket !== 'travel') continue;
+    const id = r.vacation_id;
+    const existing = byId.get(id);
+    if (existing) {
+      existing.cents += r.shareCents;
+      continue;
+    }
+    const name = id === null
+      ? UNASSIGNED_TRAVEL_LABEL
+      : (r.vacation_name?.trim() || UNNAMED_VACATION_LABEL);
+    byId.set(id, { id, name, cents: r.shareCents });
+  }
+
+  return [...byId.values()].sort((a, b) => {
+    if (a.id === null) return 1;
+    if (b.id === null) return -1;
+    return b.cents - a.cents || a.name.localeCompare(b.name);
+  });
+}
+
 function zeroBuckets(): Record<Bucket, number> {
   return Object.fromEntries(BUCKETS.map((b) => [b, 0])) as Record<Bucket, number>;
 }
@@ -209,5 +257,6 @@ export function aggregateMonth(rows: SpendRow[], monthKey: string): MonthSpend {
     byGroup,
     otherCurrencies: ranked.slice(1).map(([c, cents]) => ({ currency: c, cents })),
     rows: primaryRows,
+    byVacation: rollUpVacations(primaryRows),
   };
 }

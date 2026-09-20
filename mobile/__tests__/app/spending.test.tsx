@@ -26,7 +26,7 @@ function row(over: Partial<SpendRow> = {}): SpendRow {
     id: 'tx1', merchant_name: 'Cafe', amount: 20, currency: 'USD', date: '2026-08-10',
     status: 'skipped', bucket: 'food', bucket_source: 'auto',
     splitwise_expense_id: null, amount_each: null, vacation_id: null,
-    vacation_start_date: null, vacation_started_at: null, vacation_created_at: null,
+    vacation_name: null, vacation_start_date: null, vacation_started_at: null, vacation_created_at: null,
     ...over,
   };
 }
@@ -113,4 +113,73 @@ test('shows an empty state when nothing has been committed yet', async () => {
   (getSpendingRows as jest.Mock).mockResolvedValue([]);
   render(<SpendingScreen />);
   await waitFor(() => expect(screen.getByText(/Nothing yet/i)).toBeTruthy());
+});
+
+function tripRow(over: Partial<SpendRow> = {}): SpendRow {
+  return row({
+    bucket: 'travel', vacation_id: 'v1', vacation_name: 'Banff',
+    vacation_start_date: '2026-08-01', ...over,
+  });
+}
+
+test('drilling into Travel lists vacations with their totals, not transactions', async () => {
+  (getSpendingRows as jest.Mock).mockResolvedValue([
+    tripRow({ id: 'a', amount: 40, vacation_id: 'v1', vacation_name: 'Banff', merchant_name: 'Gondola' }),
+    tripRow({ id: 'b', amount: 90, vacation_id: 'v2', vacation_name: 'Tokyo', merchant_name: 'Shinkansen' }),
+  ]);
+  render(<SpendingScreen />);
+  await waitFor(() => expect(screen.getByLabelText('Travel, $130.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Travel, $130.00'));
+
+  await waitFor(() => expect(screen.getByLabelText('Tokyo, $90.00')).toBeTruthy());
+  expect(screen.getByLabelText('Banff, $40.00')).toBeTruthy();
+  // The trips stand in for the transactions until one is opened.
+  expect(screen.queryByText('Gondola')).toBeNull();
+  expect(screen.queryByText('Shinkansen')).toBeNull();
+});
+
+test('tapping a vacation reveals that trip\'s transactions', async () => {
+  (getSpendingRows as jest.Mock).mockResolvedValue([
+    tripRow({ id: 'a', amount: 40, vacation_id: 'v1', vacation_name: 'Banff', merchant_name: 'Gondola' }),
+    tripRow({ id: 'b', amount: 90, vacation_id: 'v2', vacation_name: 'Tokyo', merchant_name: 'Shinkansen' }),
+  ]);
+  render(<SpendingScreen />);
+  await waitFor(() => expect(screen.getByLabelText('Travel, $130.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Travel, $130.00'));
+
+  await waitFor(() => expect(screen.getByLabelText('Banff, $40.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Banff, $40.00'));
+
+  await waitFor(() => expect(screen.getByText('Gondola')).toBeTruthy());
+  // Opening one trip must not open the other.
+  expect(screen.queryByText('Shinkansen')).toBeNull();
+});
+
+test('travel spend belonging to no trip shows as Other travel', async () => {
+  (getSpendingRows as jest.Mock).mockResolvedValue([
+    tripRow({ id: 'a', amount: 40, merchant_name: 'Gondola' }),
+    row({ id: 'b', amount: 25, bucket: 'travel', date: '2026-08-05', merchant_name: 'Airport Parking' }),
+  ]);
+  render(<SpendingScreen />);
+  await waitFor(() => expect(screen.getByLabelText('Travel, $65.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Travel, $65.00'));
+
+  await waitFor(() => expect(screen.getByLabelText('Other travel, $25.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Other travel, $25.00'));
+  await waitFor(() => expect(screen.getByText('Airport Parking')).toBeTruthy());
+});
+
+test('leaving the Travel drill closes the trip that was open', async () => {
+  (getSpendingRows as jest.Mock).mockResolvedValue([
+    tripRow({ id: 'a', amount: 40, merchant_name: 'Gondola' }),
+  ]);
+  render(<SpendingScreen />);
+  await waitFor(() => expect(screen.getByLabelText('Travel, $40.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Travel, $40.00'));
+  await waitFor(() => expect(screen.getByLabelText('Banff, $40.00')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText('Banff, $40.00'));
+  await waitFor(() => expect(screen.getByText('Gondola')).toBeTruthy());
+
+  fireEvent.press(screen.getByLabelText('Back to all categories'));
+  await waitFor(() => expect(screen.queryByText('Gondola')).toBeNull());
 });

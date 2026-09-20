@@ -55,6 +55,7 @@ import {
   restoreTransaction,
   getExcludedTransactions,
   createManualTransaction,
+  getSpendingRows,
 } from '@/lib/db';
 import { PlaidTransaction, SplitDecision, SplitwiseInboxItem } from '@/lib/types';
 import { VacationConflictError, BucketLockedError } from '@/lib/vacationErrors';
@@ -1527,4 +1528,11 @@ describe('revertReviewedAmount', () => {
     expect(mockDb.withTransactionAsync).toHaveBeenCalledTimes(1);
     expect(mockDb.runAsync).toHaveBeenCalledTimes(2);
   });
+});
+
+test('getSpendingRows selects the vacation name so the Spending tab can label trips', async () => {
+  await getSpendingRows();
+  const sql = mockDb.getAllAsync.mock.calls.at(-1)![0] as string;
+  expect(sql).toContain('v.name');
+  expect(sql).toContain('AS vacation_name');
 });

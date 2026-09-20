@@ -87,6 +87,20 @@ export const GroupColors: Record<BucketGroup, string> = {
   misc: '#94A3B8',
 };
 
+// Per-trip donut slices, cycled by position in the Travel drill-down. Kept in
+// the blue-through-violet range the `travel` bucket already reads as, so a
+// drilled-in Travel donut still looks like the wedge it came from, while
+// staying far enough apart from each other to tell trips apart at a glance.
+export const VacationColors = [
+  '#0EA5E9', '#6366F1', '#14B8A6', '#8B5CF6',
+  '#0891B2', '#A855F7', '#22D3EE', '#4F46E5',
+];
+
+// Travel spend that belongs to no trip. Deliberately the muted grey the `misc`
+// bucket uses: it is a remainder, not a destination, and should not compete
+// with the real trips beside it.
+export const UNASSIGNED_TRAVEL_COLOR = '#94A3B8';
+
 // Merchant avatar colors — assigned by first char code mod
 const AVATAR_PALETTE = [
   '#2563EB', '#7C3AED', '#DB2777', '#EA580C',

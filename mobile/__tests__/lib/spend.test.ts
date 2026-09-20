@@ -16,6 +16,7 @@ function row(over: Partial<SpendRow> = {}): SpendRow {
     splitwise_expense_id: null,
     amount_each: null,
     vacation_id: null,
+    vacation_name: null,
     vacation_start_date: null,
     vacation_started_at: null,
     vacation_created_at: null,
@@ -242,5 +243,72 @@ describe('formatCents', () => {
 
   it('renders other currencies with their own symbol', () => {
     expect(formatCents(34000, 'EUR')).toContain('340.00');
+  });
+});
+
+describe('aggregateMonth byVacation', () => {
+  function trip(over: Partial<SpendRow> = {}): SpendRow {
+    return row({
+      bucket: 'travel',
+      status: 'skipped',
+      vacation_id: 'v1',
+      vacation_name: 'Banff',
+      vacation_start_date: '2026-08-01',
+      ...over,
+    });
+  }
+
+  it('lists one entry per vacation, biggest share first', () => {
+    const rows = [
+      trip({ id: 'a', amount: 40, vacation_id: 'v1', vacation_name: 'Banff' }),
+      trip({ id: 'b', amount: 90, vacation_id: 'v2', vacation_name: 'Tokyo' }),
+      trip({ id: 'c', amount: 10, vacation_id: 'v1', vacation_name: 'Banff' }),
+    ];
+    const month = aggregateMonth(rows, '2026-08');
+    expect(month.byVacation).toEqual([
+      { id: 'v2', name: 'Tokyo', cents: 9000 },
+      { id: 'v1', name: 'Banff', cents: 5000 },
+    ]);
+  });
+
+  it('collects travel spend with no vacation under a null id, pinned last', () => {
+    const rows = [
+      row({ id: 'a', amount: 500, bucket: 'travel', date: '2026-08-02' }),
+      trip({ id: 'b', amount: 20, vacation_id: 'v1', vacation_name: 'Banff' }),
+    ];
+    const month = aggregateMonth(rows, '2026-08');
+    // The loose $500 is the larger figure, but the catch-all still sorts last.
+    expect(month.byVacation.map((v) => v.id)).toEqual(['v1', null]);
+    expect(month.byVacation[1].cents).toBe(50000);
+  });
+
+  it('names an unnamed trip rather than showing a blank row', () => {
+    const rows = [trip({ id: 'a', amount: 10, vacation_name: null })];
+    expect(aggregateMonth(rows, '2026-08').byVacation[0].name).toBe('Untitled trip');
+  });
+
+  it('adds up to the travel group total', () => {
+    const rows = [
+      trip({ id: 'a', amount: 33.33, vacation_id: 'v1', vacation_name: 'Banff' }),
+      row({ id: 'b', amount: 12.01, bucket: 'travel', date: '2026-08-02' }),
+      row({ id: 'c', amount: 99, bucket: 'food', date: '2026-08-02' }),
+    ];
+    const month = aggregateMonth(rows, '2026-08');
+    const sum = month.byVacation.reduce((s, v) => s + v.cents, 0);
+    expect(sum).toBe(month.byGroup.travel);
+  });
+
+  it('uses the split share, not the full transaction amount', () => {
+    const rows = [
+      trip({
+        id: 'a', amount: 300, status: 'split', splitwise_expense_id: 'e1', amount_each: 100,
+      }),
+    ];
+    expect(aggregateMonth(rows, '2026-08').byVacation[0].cents).toBe(10000);
+  });
+
+  it('is empty for a month with no travel spend', () => {
+    const rows = [row({ id: 'a', amount: 40, bucket: 'food', date: '2026-08-02' })];
+    expect(aggregateMonth(rows, '2026-08').byVacation).toEqual([]);
   });
 });

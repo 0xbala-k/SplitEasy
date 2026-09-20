@@ -1229,6 +1229,7 @@ export async function getSpendingRows(): Promise<SpendRow[]> {
     `SELECT t.id, t.merchant_name, t.amount, t.currency, t.date, t.status,
             t.bucket, t.bucket_source, t.vacation_id,
             s.splitwise_expense_id, s.amount_each,
+            v.name        AS vacation_name,
             v.start_date  AS vacation_start_date,
             v.started_at  AS vacation_started_at,
             v.created_at  AS vacation_created_at

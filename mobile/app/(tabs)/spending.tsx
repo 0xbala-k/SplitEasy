@@ -13,9 +13,17 @@ import SpendingDonut, { SliceInput } from '@/components/SpendingDonut';
 import { BucketChip } from '@/components/BucketChip';
 import { BucketPickerSheet } from '@/components/BucketPickerSheet';
 import { useBucketEditor } from '@/hooks/useBucketEditor';
-import { BucketColors, Colors, GroupColors, Radius, Shadow, Spacing } from '@/lib/theme';
+import {
+  BucketColors, Colors, GroupColors, Radius, Shadow, Spacing,
+  UNASSIGNED_TRAVEL_COLOR, VacationColors,
+} from '@/lib/theme';
 
 const GROUPS: BucketGroup[] = ['travel', 'needs', 'wants', 'misc'];
+
+// Stands in for `vacation_id === null` as an expansion key. `expanded` already
+// uses null to mean "nothing is open", so the catch-all travel row needs a key
+// of its own rather than reusing it.
+const NO_TRIP_KEY = '__no_trip__';
 
 export default function SpendingScreen() {
   const topInset = useSafeAreaInsets().top;
@@ -26,7 +34,21 @@ export default function SpendingScreen() {
   const rows = useSpendStore((s) => s.rows);
   const month = useMemo(() => aggregateMonth(rows, monthKey), [rows, monthKey]);
 
-  const [expanded, setExpanded] = useState<Bucket | null>(null);
+  // Built once and used for both the donut and the list, so a trip's dot and
+  // its wedge are always the same color.
+  const vacationSlices: SliceInput[] = useMemo(
+    () => month.byVacation.map((v, i) => ({
+      key: v.id ?? NO_TRIP_KEY,
+      label: v.name,
+      cents: v.cents,
+      color: v.id === null ? UNASSIGNED_TRAVEL_COLOR : VacationColors[i % VacationColors.length],
+    })),
+    [month.byVacation]
+  );
+
+  // A bucket name when drilled into Needs/Wants/Misc, a vacation key when
+  // drilled into Travel — the two never render at the same time.
+  const [expanded, setExpanded] = useState<string | null>(null);
   // setBucket already reloads the store, so the hook needs no onDone here.
   const editor = useBucketEditor(setBucket);
 
@@ -46,14 +68,22 @@ export default function SpendingScreen() {
   const atOldest = months.indexOf(monthKey) === months.length - 1;
   const atNewest = months.indexOf(monthKey) <= 0;
 
-  // Top level shows the four groups; drilled in, the group's own buckets.
-  const slices: SliceInput[] = drill
-    ? GROUP_BUCKETS[drill].map((b) => ({
-        key: b, label: BUCKET_LABEL[b], cents: month.byBucket[b], color: BucketColors[b],
-      }))
-    : GROUPS.map((g) => ({
-        key: g, label: GROUP_LABEL[g], cents: month.byGroup[g], color: GroupColors[g],
-      }));
+  // Travel's only bucket is `travel`, so breaking it down by bucket would draw
+  // a one-slice donut and a list that just repeats the header. Trips are the
+  // breakdown that actually exists inside Travel, so drill there by vacation.
+  const byTrip = drill === 'travel';
+
+  // Top level shows the four groups; drilled in, the group's own buckets —
+  // except Travel, which shows its trips.
+  const slices: SliceInput[] = byTrip
+    ? vacationSlices
+    : drill
+      ? GROUP_BUCKETS[drill].map((b) => ({
+          key: b, label: BUCKET_LABEL[b], cents: month.byBucket[b], color: BucketColors[b],
+        }))
+      : GROUPS.map((g) => ({
+          key: g, label: GROUP_LABEL[g], cents: month.byGroup[g], color: GroupColors[g],
+        }));
 
   const centerCents = drill ? month.byGroup[drill] : month.totalCents;
   // The month itself is already shown (and navigable) in the header above, so
@@ -80,6 +110,11 @@ export default function SpendingScreen() {
 
   const listBuckets: Bucket[] = drill ? GROUP_BUCKETS[drill] : [];
   const rowsFor = (b: Bucket) => month.rows.filter((r) => r.bucket === b);
+  // Mirrors how byVacation is grouped (see rollUpVacations): travel-bucketed
+  // rows keyed by trip, with the unattached ones under NO_TRIP_KEY.
+  const rowsForTrip = (key: string) => month.rows.filter(
+    (r) => r.bucket === 'travel' && (r.vacation_id ?? NO_TRIP_KEY) === key
+  );
 
   if (months.length === 0) {
     return (
@@ -156,7 +191,32 @@ export default function SpendingScreen() {
         )}
 
         <View style={styles.list}>
-          {drill
+          {byTrip
+            ? vacationSlices.map((v) => (
+                <View key={v.key}>
+                  <Pressable
+                    style={styles.bucketRow}
+                    onPress={() => setExpanded(expanded === v.key ? null : v.key)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${v.label}, ${formatCents(v.cents, month.currency)}`}
+                  >
+                    <View style={[styles.dot, { backgroundColor: v.color }]} />
+                    <Text style={styles.bucketName} numberOfLines={1}>{v.label}</Text>
+                    <Text style={styles.bucketAmount} numberOfLines={1}>
+                      {formatCents(v.cents, month.currency)}
+                    </Text>
+                    <Ionicons
+                      name={expanded === v.key ? 'chevron-up' : 'chevron-down'}
+                      size={16}
+                      color={Colors.textTertiary}
+                    />
+                  </Pressable>
+                  {expanded === v.key && rowsForTrip(v.key).map((r) => (
+                    <TransactionLine key={r.id} row={r} currency={month.currency} onEdit={openEditor} />
+                  ))}
+                </View>
+              ))
+            : drill
             ? listBuckets.map((b) => (
                 <View key={b}>
                   <Pressable
