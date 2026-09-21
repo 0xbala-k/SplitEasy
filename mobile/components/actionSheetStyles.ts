@@ -1,10 +1,11 @@
 // mobile/components/actionSheetStyles.ts
 //
-// Shared StyleSheet for ReviewActionSheet and HistoryActionSheet: the two are
-// structural twins (see each component's own comment), and every one of these
-// rules was previously duplicated verbatim between them. Keep it that way —
-// only add a rule here if both components use the exact same values; anything
-// that diverges belongs back in the component's own StyleSheet.
+// Shared StyleSheet for ReviewActionSheet, HistoryActionSheet and
+// VacationTransactionActionSheet: the three are structural twins (see each
+// component's own comment), and every one of these rules was previously
+// duplicated verbatim between them. Keep it that way — only add a rule here
+// if ALL of them use the exact same values; anything that diverges belongs
+// back in the component's own StyleSheet.
 import { StyleSheet } from 'react-native';
 import { Colors, Radius, Spacing } from '@/lib/theme';
 

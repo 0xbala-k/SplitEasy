@@ -17,6 +17,7 @@ import { TransactionRow } from '@/components/TransactionRow';
 import { FriendPickerSheet } from '@/components/FriendPickerSheet';
 import { AddToVacationSheet } from '@/components/AddToVacationSheet';
 import { HistoryActionSheet } from '@/components/HistoryActionSheet';
+import { VacationTransactionActionSheet } from '@/components/VacationTransactionActionSheet';
 import { useToast } from '@/components/ToastProvider';
 import { EditDatesSheet } from '@/components/EditDatesSheet';
 import { GroupPickerSheet } from '@/components/GroupPickerSheet';
@@ -58,8 +59,13 @@ export default function VacationDetailScreen() {
   const [pickerToken, setPickerToken] = useState(0);
   const [addToken, setAddToken] = useState(0);
   const [datesToken, setDatesToken] = useState(0);
-  const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add' | 'dates' | 'group'>(null);
+  const [pendingPresent, setPendingPresent] = useState<null | 'picker' | 'add' | 'dates' | 'group' | 'actions'>(null);
+  // The row whose action sheet is open. Held here rather than read back off
+  // `pending` so the sheet keeps rendering its summary through the dismiss
+  // animation after refresh() has already dropped the row from the list.
+  const [actionTx, setActionTx] = useState<Transaction | null>(null);
   const pickerRef = useRef<BottomSheetModal>(null);
+  const actionsRef = useRef<BottomSheetModal>(null);
   const addRef = useRef<BottomSheetModal>(null);
   const datesRef = useRef<BottomSheetModal>(null);
   const groupRef = useRef<BottomSheetModal>(null);
@@ -102,6 +108,9 @@ export default function VacationDetailScreen() {
     } else if (pendingPresent === 'group') {
       groupRef.current?.present();
       setPendingPresent(null);
+    } else if (pendingPresent === 'actions') {
+      actionsRef.current?.present();
+      setPendingPresent(null);
     }
   }, [pendingPresent]);
 
@@ -141,10 +150,20 @@ export default function VacationDetailScreen() {
     openCombine(pending);
   }
 
+  function openActions(tx: Transaction) {
+    setActionTx(tx);
+    setPendingPresent('actions');
+  }
+
+  // Both handlers are reached two ways — from the action sheet and from the
+  // row's swipe underlay / inline button — so each dismisses the sheet
+  // unconditionally. Dismissing one that was never presented is a no-op.
   async function handleRemove(txId: string) {
     try {
       await removeTransactionFromVacation(txId);
+      actionsRef.current?.dismiss();
       refresh();
+      toast.show('Moved to Transactions', 'success');
     } catch {
       toast.show('Could not remove transaction. Please try again.', 'error');
     }
@@ -155,6 +174,7 @@ export default function VacationDetailScreen() {
       // status only — vacation_id survives, so this stays trip spend and
       // materializes into the Travel bucket at its full amount.
       await updateTransactionStatus(txId, 'skipped');
+      actionsRef.current?.dismiss();
       refresh();
     } catch {
       toast.show('Could not skip transaction. Please try again.', 'error');
@@ -365,6 +385,7 @@ export default function VacationDetailScreen() {
             onSkip={() => handleSkip(item.id)}
             onRemove={() => handleRemove(item.id)}
             onSplit={() => openCombine([item])}
+            onPress={() => openActions(item)}
             onLongPress={() => { setSelectMode(true); setSelectedIds(new Set([item.id])); }}
             selectMode={selectMode}
             selected={selectedIds.has(item.id)}
@@ -422,6 +443,12 @@ export default function VacationDetailScreen() {
         is deliberate — they have separate refs and never present at the same
         time. Don't "fix" this into one.
       */}
+      <VacationTransactionActionSheet
+        ref={actionsRef}
+        transaction={actionTx}
+        onMoveOut={() => actionTx && handleRemove(actionTx.id)}
+        onSkip={() => actionTx && handleSkip(actionTx.id)}
+      />
       <FriendPickerSheet ref={splitEditor.pickerRef} {...splitEditor.pickerProps} />
       <HistoryActionSheet ref={splitEditor.actionRef} {...splitEditor.actionProps} />
       <AddToVacationSheet
