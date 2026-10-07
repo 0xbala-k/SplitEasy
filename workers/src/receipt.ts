@@ -66,7 +66,7 @@ export const RECEIPT_PROMPT =
   'than guessing. If the image is not a receipt, return an empty items array.';
 
 export const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com';
-const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
 export function parseMoneyToCents(s: string | null | undefined): number | null {
   if (typeof s !== 'string') return null;
@@ -147,8 +147,14 @@ export async function callGemini(env: GeminiEnv, base64: string, mimeType: strin
         responseMimeType: 'application/json',
         responseSchema: RECEIPT_SCHEMA,
         temperature: 0,
+        // Gemini 3.x models think by default; on gemini-3.8-flash that pushed a
+        // 24-line Costco receipt past the timeout. Transcription doesn't
+        // need deep reasoning, so keep it at "low".
+        thinkingConfig: { thinkingLevel: 'low' },
       },
     }),
-    signal: AbortSignal.timeout(20_000),
+    // Long receipts legitimately take 20s+; the client has no timeout of
+    // its own, so this is the only cap.
+    signal: AbortSignal.timeout(45_000),
   });
 }

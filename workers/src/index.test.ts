@@ -564,11 +564,12 @@ describe('POST /receipt/parse', () => {
     expect(res.status).toBe(200);
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain('gemini-2.5-flash');
+    expect(url).toContain('gemini-3.5-flash-lite');
     expect(url).toContain('generativelanguage.googleapis.com');
     expect((init.headers as Record<string, string>)['x-goog-api-key']).toBe('test_gemini_key');
     const sentBody = JSON.parse(init.body as string);
     expect(sentBody.generationConfig.responseMimeType).toBe('application/json');
+    expect(sentBody.generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'low' });
     expect(sentBody.contents[0].parts[0].inline_data.data).toBe('ZmFrZS1pbWFnZS1kYXRh');
 
     const body = await res.json() as {
