@@ -4,14 +4,13 @@
 // compress it client-side (so the Worker's request body and the Gemini call
 // stay small and fast), then send it to the Worker for structured parsing.
 //
-// Single cross-platform implementation — confirmed against the actual
-// installed source of expo-image-manipulator's web build that manipulateAsync
-// loads the `uri` argument via `new Image(); img.src = uri` (a standard Web
-// Platform API that accepts `data:` URIs by spec), and that expo-image-picker's
-// web picker returns exactly a `data:` URI as `asset.uri` (via
-// `FileReader.readAsDataURL`). See task-4-report.md for the full trace.
+// The downscale/compress step is platform-split (receiptImage.ts vs
+// receiptImage.web.ts): expo-image-manipulator's web build ignores
+// format/compress and emits PNG, which pushed busy photos past the Worker's
+// body cap. expo-image-picker's web picker returns a `data:` URI as
+// `asset.uri`, which the web encoder loads via `new Image()`.
 import * as ImagePicker from 'expo-image-picker';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { encodeReceiptImage } from '@/lib/receiptImage';
 import { parseReceipt, WorkerError } from '@/lib/worker';
 import { ParsedReceipt } from '@/lib/types';
 
@@ -19,8 +18,6 @@ export type ReceiptScanOutcome =
   | { status: 'cancelled' }
   | { status: 'ok'; receipt: ParsedReceipt }
   | { status: 'failed'; reason: 'parse' | 'network' | 'image' };
-
-const MAX_DIMENSION = 1600;
 
 export async function scanReceipt(source: 'camera' | 'library'): Promise<ReceiptScanOutcome> {
   // Picker/permission calls can reject with native OS errors (e.g. "Different
@@ -60,16 +57,9 @@ export async function scanReceipt(source: 'camera' | 'library'): Promise<Receipt
 
   const asset = result.assets[0];
 
-  let base64: string | undefined;
+  let base64: string;
   try {
-    const actions = asset.width && asset.width < MAX_DIMENSION ? [] : [{ resize: { width: MAX_DIMENSION } }];
-    const manipulated = await manipulateAsync(asset.uri, actions, {
-      compress: 0.7,
-      format: SaveFormat.JPEG,
-      base64: true,
-    });
-    base64 = manipulated.base64;
-    if (!base64) throw new Error('manipulateAsync returned no base64 output');
+    base64 = await encodeReceiptImage(asset.uri, asset.width);
   } catch {
     return { status: 'failed', reason: 'image' };
   }
