@@ -6,7 +6,7 @@ compatibility_date = "2026-03-25"
 # PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV (sandbox|development|production)
 # WORKER_API_KEY, SPLITWISE_CLIENT_ID, SPLITWISE_CLIENT_SECRET
 # GEMINI_API_KEY (required for receipt parsing)
-# GEMINI_MODEL (optional, defaults to gemini-2.5-flash)
+# GEMINI_MODEL (optional, defaults to gemini-3.5-flash-lite)
 
 # Rate limit for POST /receipt/parse, keyed by CF-Connecting-IP.
 # WORKER_API_KEY is embedded in the web bundle (extractable from the PWA's

@@ -251,11 +251,16 @@ async function handleReceiptParse(req: Request, env: Env): Promise<Response> {
   let geminiRes: Response;
   try {
     geminiRes = await callGemini(env, image_base64, mime_type);
-  } catch {
+  } catch (err) {
     // Network failure or AbortSignal.timeout firing (AbortError).
+    console.error('receipt: gemini fetch failed', String(err));
     return json({ error: 'RECEIPT_PARSE_FAILED' }, 502);
   }
   if (!geminiRes.ok) {
+    // The client sees a generic 502, so log Gemini's status and body here —
+    // otherwise a retired model id (404) and a quota hit (429) are
+    // indistinguishable from the outside.
+    console.error('receipt: gemini error', geminiRes.status, (await geminiRes.text()).slice(0, 1000));
     return json({ error: 'RECEIPT_PARSE_FAILED' }, 502);
   }
 
@@ -269,7 +274,8 @@ async function handleReceiptParse(req: Request, env: Env): Promise<Response> {
   try {
     if (typeof text !== 'string') throw new Error('missing candidate text');
     raw = JSON.parse(text);
-  } catch {
+  } catch (err) {
+    console.error('receipt: unparseable gemini output', String(err), JSON.stringify(geminiData).slice(0, 1000));
     return json({ error: 'RECEIPT_PARSE_FAILED' }, 502);
   }
 
