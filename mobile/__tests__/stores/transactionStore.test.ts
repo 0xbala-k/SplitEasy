@@ -259,6 +259,13 @@ test('refresh sets needs_reauth on ITEM_LOGIN_REQUIRED', async () => {
   expect(mockSetNeedsReauth).toHaveBeenCalledWith(true);
 });
 
+test('refresh clears needs_reauth after every bank syncs successfully', async () => {
+  mockFetchTxs.mockResolvedValue(syncPage({}));
+  await useTransactionStore.getState().refresh();
+  expect(mockSetNeedsReauth).toHaveBeenCalledWith(false);
+  expect(mockSetNeedsReauth).not.toHaveBeenCalledWith(true);
+});
+
 test('skip updates DB status and removes from in-memory list', async () => {
   useTransactionStore.setState({
     transactions: [

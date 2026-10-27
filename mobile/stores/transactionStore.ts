@@ -168,6 +168,9 @@ export const useTransactionStore = create<TransactionState>((set, get) => ({
           await usePlaidStore.getState().saveCursor(id, pageCursor);
         }
       }
+      // Every bank synced, so whatever tripped ITEM_LOGIN_REQUIRED is gone (relinked
+      // or removed). Without this the banner outlives the problem it reports.
+      await usePlaidStore.getState().setNeedsReauth(false);
       await get().syncSplitwiseInbox();
       await get().load();
     } catch (err) {
